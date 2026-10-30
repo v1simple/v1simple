@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installFetchMock, jsonResponse } from '../test/fetch-mock.js';
+import { refreshDeviceSettings } from '#lib/stores/deviceSettings.svelte.js';
 import Page from './+page.svelte';
 
 function installDefaultFetch(overrides = []) {
@@ -49,6 +50,42 @@ function installDefaultFetch(overrides = []) {
 
 function countCalls(fetchMock, url) {
     return fetchMock.mock.calls.filter(([requestUrl]) => requestUrl === url).length;
+}
+
+function installModeFetch(initial = {}, overrides = []) {
+    const state = { proxy_ble: true, proxy_name: 'V1-Proxy', enabled: false, ...initial };
+    const fetchMock = installDefaultFetch([
+        ...overrides,
+        {
+            method: 'GET', match: '/api/device/settings',
+            respond: () => jsonResponse({ proxy_ble: state.proxy_ble, proxy_name: state.proxy_name })
+        },
+        {
+            method: 'GET', match: '/api/obd/config',
+            respond: () => jsonResponse({ enabled: state.enabled })
+        },
+        {
+            method: 'POST', match: '/api/device/settings',
+            respond: ({ init }) => {
+                if (init.body.has('proxy_ble')) {
+                    state.proxy_ble = init.body.get('proxy_ble') === 'true';
+                    // Enabling either mode disables the other in the firmware's settings mutation.
+                    if (state.proxy_ble) state.enabled = false;
+                }
+                if (init.body.has('proxy_name')) state.proxy_name = init.body.get('proxy_name');
+                return jsonResponse({ success: true });
+            }
+        },
+        {
+            method: 'POST', match: '/api/obd/config',
+            respond: ({ init }) => {
+                state.enabled = JSON.parse(init.body).enabled;
+                if (state.enabled) state.proxy_ble = false;
+                return jsonResponse({ success: true });
+            }
+        }
+    ]);
+    return { state, fetchMock };
 }
 
 describe('dashboard route page', () => {
@@ -399,113 +436,266 @@ describe('dashboard route page', () => {
         unmount();
     });
 
-    it('saves Proxy / App mode explicitly by disabling OBD before enabling proxy', async () => {
-        let deviceSettings = { proxy_ble: false, proxy_name: 'V1-Proxy' };
-        let obdSettings = { enabled: true };
-        const fetchMock = installDefaultFetch([
-            {
-                method: 'GET',
-                match: '/api/device/settings',
-                respond: () => jsonResponse(deviceSettings)
-            },
-            {
-                method: 'GET',
-                match: '/api/obd/config',
-                respond: () => jsonResponse(obdSettings)
-            },
-            {
-                method: 'POST',
-                match: '/api/obd/config',
-                respond: ({ init }) => {
-                    obdSettings = { ...obdSettings, ...JSON.parse(init.body) };
-                    return jsonResponse({ success: true });
-                }
-            },
-            {
-                method: 'POST',
-                match: '/api/device/settings',
-                respond: ({ init }) => {
-                    deviceSettings = {
-                        ...deviceSettings,
-                        proxy_ble: init.body.get('proxy_ble') === 'true',
-                        proxy_name: init.body.get('proxy_name') || deviceSettings.proxy_name
-                    };
-                    return jsonResponse({ success: true });
-                }
-            }
-        ]);
+    it.each([
+        ['OBD', 'Proxy / App', { proxy_ble: false, enabled: true }, '/api/device/settings'],
+        ['Display only', 'Proxy / App', { proxy_ble: false, enabled: false }, '/api/device/settings'],
+        ['Proxy / App', 'OBD', { proxy_ble: true, enabled: false }, '/api/obd/config'],
+        ['Display only', 'OBD', { proxy_ble: false, enabled: false }, '/api/obd/config']
+    ])('switches %s to %s with one firmware-owned mode mutation', async (from, target, initial, endpoint) => {
+        const { state, fetchMock } = installModeFetch(initial);
         const { unmount } = render(Page);
-
-        await screen.findByText('OBD saved');
-        await fireEvent.click(screen.getByRole('button', { name: /Proxy \/ App/ }));
-
-        await screen.findByText('Proxy / App pending save');
-        await screen.findByText('Proxy / App is selected but not saved yet.');
+        await screen.findByText(`${from} saved`);
+        await fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${target}`) }));
+        await screen.findByText(`${target} pending save`);
         expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
         await fireEvent.click(screen.getByRole('button', { name: /save operating mode/i }));
-
-        await screen.findByText('Proxy / App mode saved. Reboot normally to apply.');
-        await screen.findByText('Proxy / App saved');
+        await screen.findByText(`${target} mode saved. Reboot normally to apply.`);
+        await screen.findByText(`${target} saved`);
         const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
-        expect(posts.map(([url]) => url)).toEqual(['/api/obd/config', '/api/device/settings']);
-        expect(JSON.parse(posts[0][1].body)).toEqual({ enabled: false });
-        expect(posts[1][1].body.get('proxy_ble')).toBe('true');
-
+        expect(posts.map(([url]) => url)).toEqual([endpoint]);
+        expect(state.proxy_ble).toBe(target === 'Proxy / App');
+        expect(state.enabled).toBe(target === 'OBD');
+        const lastPost = fetchMock.mock.calls.findLastIndex(([, init]) => init?.method === 'POST');
+        expect(fetchMock.mock.calls.slice(lastPost + 1).some(([url]) => url === '/api/device/settings')).toBe(true);
         unmount();
     });
 
-    it('saves OBD mode explicitly by disabling proxy before enabling OBD', async () => {
-        let deviceSettings = { proxy_ble: true, proxy_name: 'V1-Proxy' };
-        let obdSettings = { enabled: false };
-        const fetchMock = installDefaultFetch([
+    it('saves a dirty name before OBD without first disabling the current mode', async () => {
+        const { state, fetchMock } = installModeFetch();
+        const { unmount } = render(Page);
+        await screen.findByText('Proxy / App saved');
+        await fireEvent.input(screen.getByLabelText('Proxy Name'), { target: { value: 'Road Proxy' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^OBD/ }));
+        await fireEvent.click(screen.getByRole('button', { name: /save operating mode/i }));
+        await screen.findByText('OBD mode saved. Reboot normally to apply.');
+        const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
+        expect(posts.map(([url]) => url)).toEqual(['/api/device/settings', '/api/obd/config']);
+        expect([...posts[0][1].body.entries()]).toEqual([['proxy_name', 'Road Proxy']]);
+        expect(state).toEqual({ proxy_ble: false, enabled: true, proxy_name: 'Road Proxy' });
+        expect(screen.getByLabelText('Proxy Name')).toHaveValue('Road Proxy');
+        unmount();
+    });
+
+    it.each([
+        ['Proxy / App', { proxy_ble: false, enabled: true }, '/api/device/settings', 'OBD'],
+        ['OBD', { proxy_ble: true, enabled: false }, '/api/obd/config', 'Proxy / App']
+    ])('retains the saved mode when enabling %s fails', async (target, initial, endpoint, previous) => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const { state, fetchMock } = installModeFetch(initial, [
+            { method: 'POST', match: endpoint, respond: jsonResponse({ error: 'save failed' }, 500) }
+        ]);
+        const { unmount } = render(Page);
+        await screen.findByText(`${previous} saved`);
+        await fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${target}`) }));
+        await fireEvent.click(screen.getByRole('button', { name: /save operating mode/i }));
+        await screen.findByText('Failed to save operating mode.');
+        await screen.findByText(`${previous} saved`);
+        expect(state).toMatchObject(initial);
+        expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+        expect(screen.queryByText(`${target} mode saved. Reboot normally to apply.`)).not.toBeInTheDocument();
+        unmount();
+    });
+
+    it('keeps a rejected name draft and does not start the OBD change', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const { state, fetchMock } = installModeFetch({}, [
+            { method: 'POST', match: '/api/device/settings', respond: jsonResponse({ error: 'save failed' }, 500) }
+        ]);
+        const { unmount } = render(Page);
+        await screen.findByText('Proxy / App saved');
+        await fireEvent.input(screen.getByLabelText('Proxy Name'), { target: { value: 'Unsaved Proxy' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^OBD/ }));
+        await fireEvent.click(screen.getByRole('button', { name: /save operating mode/i }));
+        await screen.findByText('Failed to save operating mode.');
+        await waitFor(() => expect(screen.getByRole('button', { name: /save proxy name/i })).toBeEnabled());
+        expect(screen.getByLabelText('Proxy Name')).toHaveValue('Unsaved Proxy');
+        expect(state).toEqual({ proxy_ble: true, enabled: false, proxy_name: 'V1-Proxy' });
+        const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
+        expect(posts).toHaveLength(1);
+        expect(posts[0][1].body.has('proxy_ble')).toBe(false);
+        unmount();
+    });
+
+    it('reports a saved name separately when the following OBD change fails', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const { state } = installModeFetch({}, [
+            { method: 'POST', match: '/api/obd/config', respond: jsonResponse({ error: 'save failed' }, 500) }
+        ]);
+        const { unmount } = render(Page);
+        await screen.findByText('Proxy / App saved');
+        await fireEvent.input(screen.getByLabelText('Proxy Name'), { target: { value: 'Road Proxy' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^OBD/ }));
+        await fireEvent.click(screen.getByRole('button', { name: /save operating mode/i }));
+        await screen.findByText('Proxy name saved, but failed to save operating mode.');
+        await screen.findByText('Proxy / App saved');
+        expect(state).toEqual({ proxy_ble: true, enabled: false, proxy_name: 'Road Proxy' });
+        expect(screen.getByLabelText('Proxy Name')).toHaveValue('Road Proxy');
+        unmount();
+    });
+
+    it('reloads the actual saved mode after a lost OBD response without claiming success', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const { state, fetchMock } = installModeFetch({}, [{
+            method: 'POST', match: '/api/obd/config', respond: () => {
+                state.enabled = true;
+                state.proxy_ble = false;
+                throw new Error('response lost');
+            }
+        }]);
+        const { unmount } = render(Page);
+        await screen.findByText('Proxy / App saved');
+        await fireEvent.click(screen.getByRole('button', { name: /^OBD/ }));
+        await fireEvent.click(screen.getByRole('button', { name: /save operating mode/i }));
+        await screen.findByText('Failed to save operating mode.');
+        await screen.findByText('OBD saved');
+        expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+        expect(screen.queryByText('OBD mode saved. Reboot normally to apply.')).not.toBeInTheDocument();
+        unmount();
+    });
+
+    it('invalidates a pre-write settings poll after a lost OBD response', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        let holdSettings = false;
+        let releaseSettings;
+        const { state, fetchMock } = installModeFetch({}, [
             {
-                method: 'GET',
-                match: '/api/device/settings',
-                respond: () => jsonResponse(deviceSettings)
-            },
-            {
-                method: 'GET',
-                match: '/api/obd/config',
-                respond: () => jsonResponse(obdSettings)
-            },
-            {
-                method: 'POST',
-                match: '/api/device/settings',
-                respond: ({ init }) => {
-                    deviceSettings = {
-                        ...deviceSettings,
-                        proxy_ble: init.body.get('proxy_ble') === 'true',
-                        proxy_name: init.body.get('proxy_name') || deviceSettings.proxy_name
-                    };
-                    return jsonResponse({ success: true });
+                method: 'GET', match: '/api/device/settings', respond: () => {
+                    const response = jsonResponse({ proxy_ble: state.proxy_ble, proxy_name: state.proxy_name });
+                    if (!holdSettings) return response;
+                    holdSettings = false;
+                    return new Promise((resolve) => { releaseSettings = () => resolve(response); });
                 }
             },
             {
-                method: 'POST',
-                match: '/api/obd/config',
-                respond: ({ init }) => {
-                    obdSettings = { ...obdSettings, ...JSON.parse(init.body) };
+                method: 'POST', match: '/api/obd/config', respond: () => {
+                    state.enabled = true;
+                    state.proxy_ble = false;
+                    throw new Error('response lost after commit');
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+        await screen.findByText('Proxy / App saved');
+        // Start the real shared poll owner, holding its pre-write observation.
+        holdSettings = true;
+        const pendingPoll = refreshDeviceSettings();
+        const readsBeforeWrite = countCalls(fetchMock, '/api/device/settings');
+        await fireEvent.click(screen.getByRole('button', { name: /^OBD/ }));
+        await fireEvent.click(screen.getByRole('button', { name: /save operating mode/i }));
+        await screen.findByText('Failed to save operating mode.');
+        releaseSettings();
+        await pendingPoll;
+        await screen.findByText('OBD saved');
+        expect(countCalls(fetchMock, '/api/device/settings')).toBeGreaterThan(readsBeforeWrite);
+        expect(screen.queryByText('Proxy / App saved')).not.toBeInTheDocument();
+        expect(screen.queryByText('OBD mode saved. Reboot normally to apply.')).not.toBeInTheDocument();
+        unmount();
+    });
+
+    it('reconciles a lost name-save response before retrying the combined OBD change', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        let holdSettings = false;
+        let releaseSettings;
+        let loseNameResponse = true;
+        const { state, fetchMock } = installModeFetch({}, [
+            {
+                method: 'GET', match: '/api/device/settings', respond: () => {
+                    const response = jsonResponse({ proxy_ble: state.proxy_ble, proxy_name: state.proxy_name });
+                    if (!holdSettings) return response;
+                    holdSettings = false;
+                    return new Promise((resolve) => { releaseSettings = () => resolve(response); });
+                }
+            },
+            {
+                method: 'POST', match: '/api/device/settings', respond: ({ init }) => {
+                    state.proxy_name = init.body.get('proxy_name');
+                    if (loseNameResponse) {
+                        loseNameResponse = false;
+                        throw new Error('name response lost after commit');
+                    }
                     return jsonResponse({ success: true });
                 }
             }
         ]);
         const { unmount } = render(Page);
-
         await screen.findByText('Proxy / App saved');
+        holdSettings = true;
+        const pendingPoll = refreshDeviceSettings();
+        await fireEvent.input(screen.getByLabelText('Proxy Name'), { target: { value: 'Road Proxy' } });
         await fireEvent.click(screen.getByRole('button', { name: /^OBD/ }));
-
-        await screen.findByText('OBD pending save');
-        await screen.findByText('OBD is selected but not saved yet.');
-        expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
         await fireEvent.click(screen.getByRole('button', { name: /save operating mode/i }));
+        await screen.findByText('Failed to save operating mode.');
+        releaseSettings();
+        await pendingPoll;
+        await screen.findByText('Proxy / App saved');
+        expect(screen.getByLabelText('Proxy Name')).toHaveValue('Road Proxy');
+        expect(state).toEqual({ proxy_ble: true, enabled: false, proxy_name: 'Road Proxy' });
+        expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
 
+        await fireEvent.click(screen.getByRole('button', { name: /^OBD/ }));
+        await fireEvent.click(screen.getByRole('button', { name: /save operating mode/i }));
         await screen.findByText('OBD mode saved. Reboot normally to apply.');
-        await screen.findByText('OBD saved');
         const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
         expect(posts.map(([url]) => url)).toEqual(['/api/device/settings', '/api/obd/config']);
-        expect(posts[0][1].body.get('proxy_ble')).toBe('false');
-        expect(JSON.parse(posts[1][1].body)).toEqual({ enabled: true });
+        unmount();
+    });
 
+    it('reports a failed final reload instead of a successful mode save', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const { state } = installModeFetch({}, [{
+            method: 'GET', match: '/api/obd/config',
+            respond: () => state.enabled
+                ? jsonResponse({ error: 'read failed' }, 500)
+                : jsonResponse({ enabled: false })
+        }]);
+        const { unmount } = render(Page);
+        await screen.findByText('Proxy / App saved');
+        await fireEvent.input(screen.getByLabelText('Proxy Name'), { target: { value: 'Road Proxy' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^OBD/ }));
+        await fireEvent.click(screen.getByRole('button', { name: /save operating mode/i }));
+        await screen.findByText('Failed to load operating mode.');
+        expect(screen.queryByText('OBD mode saved. Reboot normally to apply.')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Proxy Name')).toHaveValue('Road Proxy');
+        expect(state).toEqual({ proxy_ble: false, enabled: true, proxy_name: 'Road Proxy' });
+        unmount();
+    });
+
+    it('blocks further mode and name changes while the mode write is pending', async () => {
+        let finishWrite;
+        const response = new Promise((resolve) => { finishWrite = resolve; });
+        const { state, fetchMock } = installModeFetch({}, [{
+            method: 'POST', match: '/api/obd/config', respond: () => response
+        }]);
+        const { unmount } = render(Page);
+        await screen.findByText('Proxy / App saved');
+        await fireEvent.click(screen.getByRole('button', { name: /^OBD/ }));
+        const save = screen.getByRole('button', { name: /save operating mode/i });
+        await fireEvent.click(save);
+        expect(save).toBeDisabled();
+        expect(screen.getByRole('button', { name: /^Proxy \/ App/ })).toBeDisabled();
+        expect(screen.getByRole('button', { name: /save proxy name/i })).toBeDisabled();
+        expect(screen.getByLabelText('Proxy Name')).toBeDisabled();
+        await fireEvent.click(save);
+        expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+        state.enabled = true;
+        state.proxy_ble = false;
+        finishWrite(jsonResponse({ success: true }));
+        await screen.findByText('OBD mode saved. Reboot normally to apply.');
+        unmount();
+    });
+
+    it('keeps the draft when an explicit proxy name save fails', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        installModeFetch({}, [{
+            method: 'POST', match: '/api/device/settings', respond: jsonResponse({ error: 'save failed' }, 500)
+        }]);
+        const { unmount } = render(Page);
+        await screen.findByText('Proxy / App saved');
+        await fireEvent.input(screen.getByLabelText('Proxy Name'), { target: { value: 'Unsaved Proxy' } });
+        await fireEvent.click(screen.getByRole('button', { name: /save proxy name/i }));
+        await screen.findByText('Failed to save proxy name.');
+        await waitFor(() => expect(screen.getByRole('button', { name: /save proxy name/i })).toBeEnabled());
+        expect(screen.getByLabelText('Proxy Name')).toHaveValue('Unsaved Proxy');
         unmount();
     });
 });

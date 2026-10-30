@@ -2222,10 +2222,14 @@ void test_proxy_mode_disables_obd_setting() {
     DeviceSettingsUpdate update;
     update.hasProxyBLE = true;
     update.proxyBLE = true;
-    manager.applyDeviceSettingsUpdate(update);
+    TEST_ASSERT_TRUE(manager.applyDeviceSettingsUpdate(update).success);
 
     TEST_ASSERT_TRUE(manager.get().proxyBLE);
     TEST_ASSERT_FALSE(manager.get().obdEnabled);
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_TRUE(reloaded.get().proxyBLE);
+    TEST_ASSERT_FALSE(reloaded.get().obdEnabled);
 }
 
 void test_obd_mode_disables_proxy_setting() {
@@ -2236,10 +2240,14 @@ void test_obd_mode_disables_proxy_setting() {
     ObdSettingsUpdate update;
     update.hasEnabled = true;
     update.enabled = true;
-    manager.applyObdSettingsUpdate(update);
+    TEST_ASSERT_TRUE(manager.applyObdSettingsUpdate(update).success);
 
     TEST_ASSERT_TRUE(manager.get().obdEnabled);
     TEST_ASSERT_FALSE(manager.get().proxyBLE);
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_TRUE(reloaded.get().obdEnabled);
+    TEST_ASSERT_FALSE(reloaded.get().proxyBLE);
 }
 
 void test_load_heals_legacy_proxy_obd_conflict_to_obd_mode() {
@@ -4265,9 +4273,11 @@ void test_obd_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state() {
 
     TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
     TEST_ASSERT_FALSE(manager.get().obdEnabled);
+    TEST_ASSERT_TRUE(manager.get().proxyBLE);
     SettingsManager rebooted(storage, profiles);
     rebooted.load();
     TEST_ASSERT_FALSE(rebooted.get().obdEnabled);
+    TEST_ASSERT_TRUE(rebooted.get().proxyBLE);
 }
 
 void test_not_ready_profile_catalog_is_unsafe_for_http_and_first_sd_backup() {
@@ -6198,6 +6208,49 @@ void test_generated_current_backup_is_applicable_and_rebuilds_identically() {
     manager.mutableSettings().wifiStaSlots[0].lastConnectedAtSec = 55;
     manager.mutableSettings().refreshWifiClientAliasFromSlots();
 
+    auto& source = manager.mutableSettings();
+    source.slot0Name = "ZERO";
+    source.slot0Color = 0x1111;
+    source.slot0VolumeOverride = true;
+    source.slot0Volume = 0;
+    source.slot0MuteVolume = 0;
+    source.slot0DarkModeOverride = true;
+    source.slot0DarkMode = false;
+    source.slot0_default.profileName = "City";
+    source.slot1Name = "ROAD";
+    source.slot1Color = 0x2222;
+    source.slot1VolumeOverride = true;
+    source.slot1Volume = 6;
+    source.slot1MuteVolume = 2;
+    source.slot1DarkModeOverride = true;
+    source.slot1DarkMode = true;
+    source.slot1AlertPersist = 3;
+    source.slot1PriorityArrow = true;
+    source.slot1_highway.profileName = "Highway";
+    source.slot2Name = "QUIET";
+    source.slot2Color = 0x3333;
+    source.slot2AlertPersist = 5;
+    source.slot2_comfort.profileName = "Quiet";
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("City")).success);
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Highway")).success);
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Quiet")).success);
+
+    // Pin the external field sequence independently of the importer/exporter;
+    // equal omissions in both paths must not make this round trip pass.
+    const char* expectedSlotJson =
+        "\"slot0Name\":\"ZERO\",\"slot0Color\":4369,\"slot0Volume\":0,\"slot0MuteVolume\":0,"
+        "\"slot0DarkMode\":false,\"slot0VolumeOverride\":true,\"slot0DarkModeOverride\":true,"
+        "\"slot0MuteToZero\":false,\"slot0AlertPersist\":0,\"slot0PriorityArrow\":false,"
+        "\"slot0ProfileName\":\"City\",\"slot0Mode\":0,"
+        "\"slot1Name\":\"ROAD\",\"slot1Color\":8738,\"slot1Volume\":6,\"slot1MuteVolume\":2,"
+        "\"slot1DarkMode\":true,\"slot1VolumeOverride\":true,\"slot1DarkModeOverride\":true,"
+        "\"slot1MuteToZero\":false,\"slot1AlertPersist\":3,\"slot1PriorityArrow\":true,"
+        "\"slot1ProfileName\":\"Highway\",\"slot1Mode\":0,"
+        "\"slot2Name\":\"QUIET\",\"slot2Color\":13107,\"slot2Volume\":255,\"slot2MuteVolume\":255,"
+        "\"slot2DarkMode\":false,\"slot2VolumeOverride\":false,\"slot2DarkModeOverride\":false,"
+        "\"slot2MuteToZero\":false,\"slot2AlertPersist\":5,\"slot2PriorityArrow\":false,"
+        "\"slot2ProfileName\":\"Quiet\",\"slot2Mode\":0,\"profiles\":";
+
     for (const auto transport : {BackupPayloadBuilder::BackupTransport::HttpDownload,
                                  BackupPayloadBuilder::BackupTransport::SdBackup}) {
         JsonDocument first;
@@ -6205,6 +6258,22 @@ void test_generated_current_backup_is_applicable_and_rebuilds_identically() {
             first, manager.get(), profiles, transport, 4321).safeToCommit);
         TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(first));
         TEST_ASSERT_TRUE(backupDocumentCanApply(first, manager.get(), profiles));
+        String firstJson;
+        serializeJson(first, firstJson);
+        TEST_ASSERT_NOT_NULL(std::strstr(firstJson.c_str(), expectedSlotJson));
+        for (int index = 0; index < 3; ++index) {
+            auto recipient = manager.mutableSettings().autoPushSlotView(index);
+            recipient.name = "CHANGED";
+            recipient.color = 0x4444;
+            recipient.volume = 4;
+            recipient.muteVolume = 1;
+            recipient.volumeOverride = true;
+            recipient.darkMode = true;
+            recipient.darkModeOverride = true;
+            recipient.alertPersist = 1;
+            recipient.priorityArrow = !recipient.priorityArrow;
+            recipient.config.profileName = "";
+        }
         TEST_ASSERT_TRUE(manager.applyBackupDocument(first, true).success);
         TEST_ASSERT_TRUE_MESSAGE(BackupPayloadBuilder::settingsTextIsSerializable(manager.get()),
                                  "applied backup text must remain canonical");
@@ -6231,9 +6300,7 @@ void test_generated_current_backup_is_applicable_and_rebuilds_identically() {
         JsonDocument rebuilt;
         TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
             rebuilt, manager.get(), profiles, transport, 4321).safeToCommit);
-        String firstJson;
         String rebuiltJson;
-        serializeJson(first, firstJson);
         serializeJson(rebuilt, rebuiltJson);
         TEST_ASSERT_EQUAL_STRING(firstJson.c_str(), rebuiltJson.c_str());
     }

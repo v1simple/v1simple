@@ -68,8 +68,6 @@ class AutoPushModule {
     void process();
     // Stop pending detector writes and release leases when the durable owner expires.
     void cancelForTimeout();
-    bool appendStatusJson(JsonObject root) const;
-    String getStatusJson() const;
     bool isActive() const { return state_.step != Step::Idle; }
     ExecutionSummary executionSummary() const;
 
@@ -168,7 +166,6 @@ class AutoPushModule {
 
     struct ComponentStatus {
         bool requested = false;
-        bool beforeAvailable = false;
         bool needed = false;
         bool sent = false;
         bool verified = false;
@@ -182,10 +179,6 @@ class AutoPushModule {
         uint32_t operationId = 0;
         Result result = Result::NONE;
         FailureReason reason = FailureReason::NONE;
-        int slotIndex = 0;
-        String profileName;
-        bool profileLoaded = false;
-        bool inTheBoxApplied = false;
         ComponentStatus userSettings;
         ComponentStatus display;
         ComponentStatus mode;
@@ -193,31 +186,15 @@ class AutoPushModule {
         ComponentStatus customFrequencies;
         std::array<uint8_t, 6> beforeUserBytes{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
         std::array<uint8_t, 6> desiredUserBytes{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
-        std::array<uint8_t, 6> effectiveUserBytes{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
-        std::array<uint8_t, 6> supportedUserMasks{{0, 0, 0, 0, 0, 0}};
-        bool alpLaserOverrideActive = false;
-        bool alpLaserOverrideApplied = false;
         bool beforeDisplayOn = true;
-        bool desiredDisplayOn = true;
         uint8_t beforeMode = 0;
-        uint8_t desiredMode = 0;
         uint8_t beforeMainVolume = 0;
         uint8_t beforeMutedVolume = 0;
-        uint8_t desiredMainVolume = 0;
-        uint8_t desiredMutedVolume = 0;
-        uint8_t volumeCommandAux = 0;
-        V1VolumePolicy volumePolicy = V1VolumePolicy::Unchanged;
-        V1VolumeFeedbackPolicy volumeFeedback = V1VolumeFeedbackPolicy::None;
-        V1VolumeDisconnectPolicy volumeDisconnect = V1VolumeDisconnectPolicy::RestoreSaved;
         uint8_t beforeSavedMainVolume = 0;
         uint8_t beforeSavedMutedVolume = 0;
         bool beforeBluetoothIndicatorActive = false;
-        bool desiredBluetoothIndicatorActive = false;
         FixedDefinitionList requestedCustomDefinitions;
         FixedDefinitionList effectiveCustomDefinitions;
-        bool customCommitResultAvailable = false;
-        uint8_t customCommitResultRaw = 0;
-        int16_t customCommitInvalidDefinitionIndex = -1;
     };
 
     struct State {

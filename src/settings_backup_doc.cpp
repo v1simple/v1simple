@@ -743,42 +743,30 @@ void applyBackupProfileSlotFields(const JsonDocument& doc, V1Settings& settings,
         settings.autoPushProfileSchemaVersion = 0;
     }
     if (doc["activeSlot"].is<int>()) settings.activeSlot = std::max(0, std::min(doc["activeSlot"].as<int>(), 2));
-    AutoPushSlot* slots[] = {&settings.slot0_default, &settings.slot1_highway, &settings.slot2_comfort};
     for (int i = 0; i < 3; ++i) {
-        char profileKey[24], modeKey[16];
-        std::snprintf(profileKey, sizeof(profileKey), "slot%dProfileName", i);
+        auto slot = settings.autoPushSlotView(i);
+        char modeKey[16];
         std::snprintf(modeKey, sizeof(modeKey), "slot%dMode", i);
-        if (prepared.hasProfileName[i]) slots[i]->profileName = std::move(prepared.profileNames[i]);
-        if (doc[modeKey].is<int>()) slots[i]->mode = normalizeV1ModeValue(doc[modeKey]);
+        if (prepared.hasProfileName[i]) slot.config.profileName = std::move(prepared.profileNames[i]);
+        if (doc[modeKey].is<int>()) slot.config.mode = normalizeV1ModeValue(doc[modeKey]);
     }
     if (scope != BackupRestoreScope::Full) return;
-    String* names[] = {&settings.slot0Name, &settings.slot1Name, &settings.slot2Name};
-    uint16_t* colors[] = {&settings.slot0Color, &settings.slot1Color, &settings.slot2Color};
-    uint8_t* volumes[] = {&settings.slot0Volume, &settings.slot1Volume, &settings.slot2Volume};
-    uint8_t* muteVolumes[] = {&settings.slot0MuteVolume, &settings.slot1MuteVolume, &settings.slot2MuteVolume};
-    bool* darkModes[] = {&settings.slot0DarkMode, &settings.slot1DarkMode, &settings.slot2DarkMode};
-    bool* volumeOverrides[] = {&settings.slot0VolumeOverride, &settings.slot1VolumeOverride,
-                               &settings.slot2VolumeOverride};
-    bool* darkModeOverrides[] = {&settings.slot0DarkModeOverride, &settings.slot1DarkModeOverride,
-                                 &settings.slot2DarkModeOverride};
-    bool* muteToZero[] = {&settings.slot0MuteToZero, &settings.slot1MuteToZero, &settings.slot2MuteToZero};
-    uint8_t* persists[] = {&settings.slot0AlertPersist, &settings.slot1AlertPersist, &settings.slot2AlertPersist};
-    bool* priorityArrows[] = {&settings.slot0PriorityArrow, &settings.slot1PriorityArrow, &settings.slot2PriorityArrow};
     static constexpr uint16_t colorDefaults[] = {0x400A, 0x07E0, 0x8410};
     for (int i = 0; i < 3; ++i) {
+        auto slot = settings.autoPushSlotView(i);
         char key[24];
         std::snprintf(key, sizeof(key), "slot%dName", i);
-        if (prepared.hasDisplayName[i]) *names[i] = std::move(prepared.displayNames[i]);
-        std::snprintf(key, sizeof(key), "slot%dColor", i); if (doc[key].is<int>()) *colors[i] = sanitizeRgb565Color(doc[key], colorDefaults[i]);
-        std::snprintf(key, sizeof(key), "slot%dVolume", i); if (doc[key].is<int>()) *volumes[i] = clampSlotVolumeValue(doc[key]);
-        std::snprintf(key, sizeof(key), "slot%dMuteVolume", i); if (doc[key].is<int>()) *muteVolumes[i] = clampSlotVolumeValue(doc[key]);
-        std::snprintf(key, sizeof(key), "slot%dDarkMode", i); restoreBackupBool(doc, key, *darkModes[i]);
-        std::snprintf(key, sizeof(key), "slot%dVolumeOverride", i); restoreBackupBool(doc, key, *volumeOverrides[i]);
-        std::snprintf(key, sizeof(key), "slot%dDarkModeOverride", i); restoreBackupBool(doc, key, *darkModeOverrides[i]);
-        std::snprintf(key, sizeof(key), "slot%dMuteToZero", i); restoreBackupBool(doc, key, *muteToZero[i]);
-        std::snprintf(key, sizeof(key), "slot%dAlertPersist", i); if (doc[key].is<int>()) *persists[i] = clampU8(doc[key], 0, 5);
-        std::snprintf(key, sizeof(key), "slot%dPriorityArrow", i); restoreBackupBool(doc, key, *priorityArrows[i]);
-        sanitizeSlotVolumePair(*volumes[i], *muteVolumes[i]);
+        if (prepared.hasDisplayName[i]) slot.name = std::move(prepared.displayNames[i]);
+        std::snprintf(key, sizeof(key), "slot%dColor", i); if (doc[key].is<int>()) slot.color = sanitizeRgb565Color(doc[key], colorDefaults[i]);
+        std::snprintf(key, sizeof(key), "slot%dVolume", i); if (doc[key].is<int>()) slot.volume = clampSlotVolumeValue(doc[key]);
+        std::snprintf(key, sizeof(key), "slot%dMuteVolume", i); if (doc[key].is<int>()) slot.muteVolume = clampSlotVolumeValue(doc[key]);
+        std::snprintf(key, sizeof(key), "slot%dDarkMode", i); restoreBackupBool(doc, key, slot.darkMode);
+        std::snprintf(key, sizeof(key), "slot%dVolumeOverride", i); restoreBackupBool(doc, key, slot.volumeOverride);
+        std::snprintf(key, sizeof(key), "slot%dDarkModeOverride", i); restoreBackupBool(doc, key, slot.darkModeOverride);
+        std::snprintf(key, sizeof(key), "slot%dMuteToZero", i); restoreBackupBool(doc, key, slot.muteToZero);
+        std::snprintf(key, sizeof(key), "slot%dAlertPersist", i); if (doc[key].is<int>()) slot.alertPersist = clampU8(doc[key], 0, 5);
+        std::snprintf(key, sizeof(key), "slot%dPriorityArrow", i); restoreBackupBool(doc, key, slot.priorityArrow);
+        sanitizeSlotVolumePair(slot.volume, slot.muteVolume);
     }
 }
 

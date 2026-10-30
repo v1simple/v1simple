@@ -395,44 +395,34 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     const uint8_t exportedProfileSchemaVersion = settings.autoPushProfileSchemaVersion;
     doc["autoPushProfileSchemaVersion"] = exportedProfileSchemaVersion;
     doc["activeSlot"] = settings.activeSlot;
-    doc["slot0Name"] = settings.slot0Name;
-    doc["slot0Color"] = settings.slot0Color;
-    doc["slot0Volume"] = settings.slot0Volume;
-    doc["slot0MuteVolume"] = settings.slot0MuteVolume;
-    doc["slot0DarkMode"] = settings.slot0DarkMode;
-    doc["slot0VolumeOverride"] = settings.slot0VolumeOverride;
-    doc["slot0DarkModeOverride"] = settings.slot0DarkModeOverride;
-    doc["slot0MuteToZero"] = settings.slot0MuteToZero;
-    doc["slot0AlertPersist"] = settings.slot0AlertPersist;
-    doc["slot0PriorityArrow"] = settings.slot0PriorityArrow;
-    doc["slot0ProfileName"] = settings.slot0_default.profileName;
-    doc["slot0Mode"] = settings.slot0_default.mode;
-
-    doc["slot1Name"] = settings.slot1Name;
-    doc["slot1Color"] = settings.slot1Color;
-    doc["slot1Volume"] = settings.slot1Volume;
-    doc["slot1MuteVolume"] = settings.slot1MuteVolume;
-    doc["slot1DarkMode"] = settings.slot1DarkMode;
-    doc["slot1VolumeOverride"] = settings.slot1VolumeOverride;
-    doc["slot1DarkModeOverride"] = settings.slot1DarkModeOverride;
-    doc["slot1MuteToZero"] = settings.slot1MuteToZero;
-    doc["slot1AlertPersist"] = settings.slot1AlertPersist;
-    doc["slot1PriorityArrow"] = settings.slot1PriorityArrow;
-    doc["slot1ProfileName"] = settings.slot1_highway.profileName;
-    doc["slot1Mode"] = settings.slot1_highway.mode;
-
-    doc["slot2Name"] = settings.slot2Name;
-    doc["slot2Color"] = settings.slot2Color;
-    doc["slot2Volume"] = settings.slot2Volume;
-    doc["slot2MuteVolume"] = settings.slot2MuteVolume;
-    doc["slot2DarkMode"] = settings.slot2DarkMode;
-    doc["slot2VolumeOverride"] = settings.slot2VolumeOverride;
-    doc["slot2DarkModeOverride"] = settings.slot2DarkModeOverride;
-    doc["slot2MuteToZero"] = settings.slot2MuteToZero;
-    doc["slot2AlertPersist"] = settings.slot2AlertPersist;
-    doc["slot2PriorityArrow"] = settings.slot2PriorityArrow;
-    doc["slot2ProfileName"] = settings.slot2_comfort.profileName;
-    doc["slot2Mode"] = settings.slot2_comfort.mode;
+    for (int index = 0; index < 3; ++index) {
+        const auto slot = settings.autoPushSlotView(index);
+        char key[24];
+        std::snprintf(key, sizeof(key), "slot%dName", index);
+        doc[key] = slot.name;
+        std::snprintf(key, sizeof(key), "slot%dColor", index);
+        doc[key] = slot.color;
+        std::snprintf(key, sizeof(key), "slot%dVolume", index);
+        doc[key] = slot.volume;
+        std::snprintf(key, sizeof(key), "slot%dMuteVolume", index);
+        doc[key] = slot.muteVolume;
+        std::snprintf(key, sizeof(key), "slot%dDarkMode", index);
+        doc[key] = slot.darkMode;
+        std::snprintf(key, sizeof(key), "slot%dVolumeOverride", index);
+        doc[key] = slot.volumeOverride;
+        std::snprintf(key, sizeof(key), "slot%dDarkModeOverride", index);
+        doc[key] = slot.darkModeOverride;
+        std::snprintf(key, sizeof(key), "slot%dMuteToZero", index);
+        doc[key] = slot.muteToZero;
+        std::snprintf(key, sizeof(key), "slot%dAlertPersist", index);
+        doc[key] = slot.alertPersist;
+        std::snprintf(key, sizeof(key), "slot%dPriorityArrow", index);
+        doc[key] = slot.priorityArrow;
+        std::snprintf(key, sizeof(key), "slot%dProfileName", index);
+        doc[key] = slot.config.profileName;
+        std::snprintf(key, sizeof(key), "slot%dMode", index);
+        doc[key] = slot.config.mode;
+    }
 
     JsonArray profilesArr = doc["profiles"].to<JsonArray>();
     if (profileManager.isReady()) {

@@ -1,7 +1,5 @@
 #include <unity.h>
 
-#include <ArduinoJson.h>
-
 #include "../mocks/Arduino.h"
 
 #ifndef ARDUINO
@@ -275,8 +273,27 @@ void injectMatchingDisplayDuringSend() { observeDisplay(ble.lastDisplayOnValue, 
 void injectMatchingModeDuringSend() { observeDisplay(true, ble.lastModeValue); }
 void injectMatchingVolumeDuringSend() { observeCurrentVolume(ble.lastVolume, ble.lastMuteVolume); }
 
-bool statusContains(const char* text) {
-    return module.getStatusJson().indexOf(text) >= 0;
+using ApplyResult = AutoPushModule::PublicResult;
+using ApplyComponent = V1SettingsOperationStore::Component;
+using ApplyOutcome = V1SettingsOperationStore::ComponentOutcome;
+using ApplyReason = V1SettingsOperationStore::ComponentReason;
+
+V1SettingsOperationStore::ComponentSummary componentStatus(ApplyComponent component) {
+    return module.executionSummary().components[static_cast<size_t>(component)];
+}
+
+bool hasComponentOutcome(ApplyOutcome outcome) {
+    for (const auto& component : module.executionSummary().components) {
+        if (component.outcome == outcome) return true;
+    }
+    return false;
+}
+
+bool hasComponentReason(ApplyReason reason) {
+    for (const auto& component : module.executionSummary().components) {
+        if (component.reason == reason) return true;
+    }
+    return false;
 }
 
 void at(unsigned long now) {
@@ -474,7 +491,7 @@ void test_queue_rejects_failed_active_slot_persistence_before_operation_or_detec
     TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"none\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::None);
 }
 
 void test_queue_stages_every_owned_string_and_definition_capacity_before_activation() {
@@ -483,7 +500,6 @@ void test_queue_stages_every_owned_string_and_definition_capacity_before_activat
         AutoPushAdmissionFailurePoint::SlotProfile,
         AutoPushAdmissionFailurePoint::ProfileName,
         AutoPushAdmissionFailurePoint::ProfileDescription,
-        AutoPushAdmissionFailurePoint::StatusProfile,
         AutoPushAdmissionFailurePoint::DefinitionCapacity,
     };
     for (const AutoPushAdmissionFailurePoint failure : failures) {
@@ -566,18 +582,18 @@ void test_full_apply_requires_fresh_canonical_readbacks_for_every_component() {
     finishFullApply();
 
     TEST_ASSERT_FALSE(module.isActive());
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
-    TEST_ASSERT_TRUE(statusContains("\"profile\":{\"requested\":true"));
-    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"verified\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
+    for (const auto component : {ApplyComponent::UserSettings, ApplyComponent::Display,
+                                 ApplyComponent::Mode, ApplyComponent::Volume}) {
+        TEST_ASSERT_TRUE(componentStatus(component).requested);
+        TEST_ASSERT_TRUE(componentStatus(component).verified);
+        TEST_ASSERT_EQUAL_INT(ApplyOutcome::Verified, componentStatus(component).outcome);
+    }
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.setDisplayOnCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.setModeCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.requestAllVolumeCalls);
-    JsonDocument status;
-    const String statusJson = module.getStatusJson();
-    TEST_ASSERT_FALSE(deserializeJson(status, statusJson.c_str()));
-    TEST_ASSERT_EQUAL_STRING("succeeded", status["result"].as<const char*>());
     TEST_ASSERT_TRUE(ble.consumeVerifyPushMatchEdge());
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
 }
@@ -598,8 +614,13 @@ void test_all_noop_components_are_proven_unchanged_without_writes() {
     queueAndPreflight();
 
     TEST_ASSERT_FALSE(module.isActive());
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
-    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"unchanged\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
+    for (const auto component : {ApplyComponent::UserSettings, ApplyComponent::Display,
+                                 ApplyComponent::Mode, ApplyComponent::Volume}) {
+        TEST_ASSERT_TRUE(componentStatus(component).verified);
+        TEST_ASSERT_FALSE(componentStatus(component).sent);
+        TEST_ASSERT_EQUAL_INT(ApplyOutcome::Unchanged, componentStatus(component).outcome);
+    }
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
@@ -617,12 +638,18 @@ void test_slot_modifiers_win_over_profile_without_changing_direct_profile_apply(
     stageSnapshot(makeSnapshot());
     queueAndPreflight();
 
-    JsonDocument slotStatus;
-    const String slotJson = module.getStatusJson();
-    TEST_ASSERT_FALSE(deserializeJson(slotStatus, slotJson.c_str()));
-    TEST_ASSERT_TRUE(slotStatus["components"]["display"]["desired"].as<bool>());
-    TEST_ASSERT_EQUAL_UINT8(8, slotStatus["components"]["volume"]["desired"]["main"].as<int>());
-    TEST_ASSERT_EQUAL_UINT8(2, slotStatus["components"]["volume"]["desired"]["muted"].as<int>());
+    verifyUserBytes();
+    TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls); // Slot keeps the already-on display.
+    at(160);
+    observeDisplay(true, 2);
+    at(160);
+    at(190);
+    TEST_ASSERT_EQUAL_UINT8(8, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    at(220);
+    observeAllVolume(8, 2, 4, 1);
+    at(220);
+    TEST_ASSERT_EQUAL_INT(ApplyResult::Succeeded, module.executionSummary().result);
 
     setUp();
     configureProfile();
@@ -640,12 +667,13 @@ void test_slot_modifiers_win_over_profile_without_changing_direct_profile_apply(
     at(100);
     at(100);
 
-    JsonDocument profileStatus;
-    const String profileJson = module.getStatusJson();
-    TEST_ASSERT_FALSE(deserializeJson(profileStatus, profileJson.c_str()));
-    TEST_ASSERT_FALSE(profileStatus["components"]["display"]["desired"].as<bool>());
-    TEST_ASSERT_EQUAL_UINT8(7, profileStatus["components"]["volume"]["desired"]["main"].as<int>());
-    TEST_ASSERT_EQUAL_UINT8(3, profileStatus["components"]["volume"]["desired"]["muted"].as<int>());
+    verifyUserBytes();
+    finishFullApply();
+    TEST_ASSERT_EQUAL_INT(1, ble.setDisplayOnCalls);
+    TEST_ASSERT_FALSE(ble.lastDisplayOnValue);
+    TEST_ASSERT_EQUAL_UINT8(7, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastMuteVolume);
+    TEST_ASSERT_EQUAL_INT(ApplyResult::Succeeded, module.executionSummary().result);
 }
 
 void test_volume_modifier_is_dormant_when_profile_leaves_volume_unchanged() {
@@ -658,11 +686,8 @@ void test_volume_modifier_is_dormant_when_profile_leaves_volume_unchanged() {
     queueAndPreflight();
 
     TEST_ASSERT_TRUE(module.isActive());
-    JsonDocument status;
-    const String json = module.getStatusJson();
-    TEST_ASSERT_FALSE(deserializeJson(status, json.c_str()));
-    TEST_ASSERT_FALSE(status["components"]["volume"]["requested"].as<bool>());
-    TEST_ASSERT_TRUE(status["components"]["mode"]["requested"].as<bool>());
+    TEST_ASSERT_FALSE(componentStatus(ApplyComponent::Volume).requested);
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::Mode).requested);
     TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
 }
 
@@ -675,12 +700,21 @@ void test_slot_volume_modifier_uses_profile_saved_policy() {
     stageSnapshot(makeSnapshot());
     queueAndPreflight();
 
-    JsonDocument status;
-    const String json = module.getStatusJson();
-    TEST_ASSERT_FALSE(deserializeJson(status, json.c_str()));
-    TEST_ASSERT_EQUAL_UINT8(8, status["components"]["volume"]["desired"]["main"].as<int>());
-    TEST_ASSERT_EQUAL_UINT8(2, status["components"]["volume"]["desired"]["muted"].as<int>());
-    TEST_ASSERT_EQUAL_UINT8(4, status["components"]["volume"]["commandAux"].as<int>() & 4);
+    verifyUserBytes();
+    at(160);
+    observeDisplay(false, 1);
+    at(160);
+    at(190);
+    observeDisplay(false, 2);
+    at(190);
+    at(220);
+    TEST_ASSERT_EQUAL_UINT8(8, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    TEST_ASSERT_EQUAL_UINT8(4, ble.lastVolumeAux & 4);
+    at(250);
+    observeAllVolume(8, 2, 8, 2);
+    at(250);
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::Volume).verified);
 }
 
 void test_supported_user_masks_match_every_vendor_boundary() {
@@ -721,7 +755,6 @@ void test_supported_masks_preserve_unknown_bits_and_four_byte_firmware_shape() {
 
     const uint8_t expected[] = {0xFE, 0xCF, 0x5F, 0xAA, 0xA4, 0x5A};
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, ble.lastUserBytes, 6);
-    TEST_ASSERT_TRUE(statusContains("\"supportedMasks\":[255,255,255,255,0,0]"));
 }
 
 void test_41039_masks_only_modeled_byte_four_bits_and_preserves_byte_five() {
@@ -738,7 +771,6 @@ void test_41039_masks_only_modeled_byte_four_bits_and_preserves_byte_five() {
 
     const uint8_t expected[] = {0xFE, 0xFF, 0xFF, 0xFF, 0xA7, 0x5A};
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, ble.lastUserBytes, 6);
-    TEST_ASSERT_TRUE(statusContains("\"supportedMasks\":[255,255,255,255,3,0]"));
 }
 
 void test_alp_laser_override_is_in_effective_bytes_and_verified() {
@@ -755,9 +787,13 @@ void test_alp_laser_override_is_in_effective_bytes_and_verified() {
     at(100);
 
     TEST_ASSERT_EQUAL_HEX8(0xF7, ble.lastUserBytes[0]);
-    TEST_ASSERT_TRUE(statusContains("\"desired\":[255,255,255,255,164,90]"));
-    TEST_ASSERT_TRUE(statusContains("\"effective\":[247,255,255,255,164,90]"));
-    TEST_ASSERT_TRUE(statusContains("\"alpLaserOverrideApplied\":true"));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(before.data(), profiles.loadableProfile.settings.bytes, 6);
+    const uint8_t effective[] = {0xF7, 0xFF, 0xFF, 0xFF, 0xA4, 0x5A};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(effective, ble.lastUserBytes, 6);
+    at(130);
+    observeUserBytes(effective);
+    at(130);
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::UserSettings).verified);
 }
 
 void test_user_readback_mismatch_is_failure_not_applied() {
@@ -774,9 +810,9 @@ void test_user_readback_mismatch_is_failure_not_applied() {
     observeUserBytes(wrong);
     at(130);
 
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
-    TEST_ASSERT_TRUE(statusContains("\"reason\":\"user_bytes_mismatch\""));
-    TEST_ASSERT_FALSE(statusContains("\"profile\":{\"requested\":true,\"beforeAvailable\":true,\"needed\":true,\"sent\":true,\"verified\":true"));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UserBytesMismatch));
+    TEST_ASSERT_FALSE(componentStatus(ApplyComponent::UserSettings).verified);
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
 }
 
@@ -799,8 +835,8 @@ void test_reserved_user_bits_must_round_trip_exactly_after_supported_overlay() {
     observeUserBytes(wrong);
     at(130);
 
-    TEST_ASSERT_TRUE(statusContains("user_bytes_mismatch"));
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UserBytesMismatch));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
 }
 
@@ -815,8 +851,8 @@ void test_stale_user_readback_revision_times_out() {
     at(130);
     at(1630);
 
-    TEST_ASSERT_TRUE(statusContains("user_bytes_timeout"));
-    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"timeout\""));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UserBytesTimeout));
+    TEST_ASSERT_TRUE(hasComponentOutcome(ApplyOutcome::Timeout));
 }
 
 void test_user_response_arriving_between_write_and_read_request_is_not_fresh_evidence() {
@@ -830,7 +866,7 @@ void test_user_response_arriving_between_write_and_read_request_is_not_fresh_evi
     observeUserBytes(ble.lastUserBytes); // delayed response before 0x11
     at(130);
     at(1630);
-    TEST_ASSERT_TRUE(statusContains("user_bytes_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UserBytesTimeout));
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
 }
 
@@ -848,7 +884,7 @@ void test_display_request_echo_and_corrupt_display_cannot_verify() {
     observeDisplay(false, 1, 0xEA, true);
     at(1600);
 
-    TEST_ASSERT_TRUE(statusContains("display_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::DisplayTimeout));
     TEST_ASSERT_EQUAL_UINT32(1, parser.displayOnObservationRevision()); // only the priming packet
 }
 
@@ -863,7 +899,7 @@ void test_wrong_destination_display_cannot_verify() {
     observeDisplay(false, 1, 0xEA, false, 0xD6);
     at(1600);
 
-    TEST_ASSERT_TRUE(statusContains("display_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::DisplayTimeout));
     TEST_ASSERT_EQUAL_UINT32(1, parser.displayOnObservationRevision());
 }
 
@@ -882,7 +918,7 @@ void test_rejected_display_interleaving_cannot_replace_canonical_evidence_value(
     TEST_ASSERT_TRUE(parser.displayOnObservation().value);
     at(1600);
 
-    TEST_ASSERT_TRUE(statusContains("display_mismatch"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::DisplayMismatch));
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
 }
 
@@ -898,7 +934,7 @@ void test_fresh_display_mismatches_remain_pending_then_report_mismatch_at_deadli
     at(100);
     TEST_ASSERT_TRUE(module.isActive());
     at(1600);
-    TEST_ASSERT_TRUE(statusContains("display_mismatch"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::DisplayMismatch));
 }
 
 void test_mode_requires_fresh_canonical_display_evidence_and_reports_mismatch() {
@@ -918,7 +954,7 @@ void test_mode_requires_fresh_canonical_display_evidence_and_reports_mismatch() 
     observeDisplay(true, 2, 0xEA, false, 0xD6);
     TEST_ASSERT_EQUAL_UINT32(primedRevision, parser.modeObservationRevision());
     at(1600);
-    TEST_ASSERT_TRUE(statusContains("mode_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::ModeTimeout));
 
     setUp();
     configureProfile();
@@ -931,8 +967,8 @@ void test_mode_requires_fresh_canonical_display_evidence_and_reports_mismatch() 
     at(100);
     observeDisplay(true, 1); // canonical D8 infDisplayData, wrong mode
     at(1600);
-    TEST_ASSERT_TRUE(statusContains("mode_mismatch"));
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::ModeMismatch));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
 }
 
 void test_temporary_volume_uses_all_volume_readback_and_preserves_saved_pair() {
@@ -950,18 +986,13 @@ void test_temporary_volume_uses_all_volume_readback_and_preserves_saved_pair() {
     at(130); // request 0x3c
     observeAllVolume(7, 3, 4, 1);
     at(130);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(1, ble.requestAllVolumeCalls);
-    JsonDocument status;
-    const String json = module.getStatusJson();
-    TEST_ASSERT_FALSE(deserializeJson(status, json.c_str()));
-    JsonObject volume = status["components"]["volume"];
-    TEST_ASSERT_TRUE(volume["verified"].as<bool>());
-    TEST_ASSERT_TRUE(volume["valuesVerified"].as<bool>());
-    TEST_ASSERT_FALSE(volume["policyReadbackAvailable"].as<bool>());
-    TEST_ASSERT_EQUAL_STRING("sent_unobservable", volume["policyOutcome"].as<const char*>());
-    TEST_ASSERT_EQUAL_STRING("current_values_and_saved_preservation_only",
-                             volume["verificationScope"].as<const char*>());
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::Volume).verified);
+    // The wire carries behavior flags; readback verifies values, not those flags.
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::Volume).sent);
+    TEST_ASSERT_EQUAL_UINT8(4, parser.allVolumeObservation().savedMain);
+    TEST_ASSERT_EQUAL_UINT8(1, parser.allVolumeObservation().savedMuted);
 }
 
 void test_saved_volume_sets_save_aux_and_verifies_both_current_and_saved_pairs() {
@@ -979,8 +1010,10 @@ void test_saved_volume_sets_save_aux_and_verifies_both_current_and_saved_pairs()
     at(130);
     observeAllVolume(7, 3, 7, 3);
     at(130);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
-    TEST_ASSERT_TRUE(statusContains("\"verificationScope\":\"current_and_saved_values_only\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::Volume).verified);
+    TEST_ASSERT_EQUAL_UINT8(7, parser.allVolumeObservation().savedMain);
+    TEST_ASSERT_EQUAL_UINT8(3, parser.allVolumeObservation().savedMuted);
 }
 
 void test_volume_behavior_aux_is_sent_even_when_values_already_match() {
@@ -1003,7 +1036,7 @@ void test_volume_behavior_aux_is_sent_even_when_values_already_match() {
     at(130);
     observeAllVolume(5, 2, 4, 1);
     at(130);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
 }
 
 void test_volume_readback_mismatch_is_not_success() {
@@ -1018,8 +1051,8 @@ void test_volume_readback_mismatch_is_not_success() {
     at(130);
     observeAllVolume(6, 3, 4, 1);
     at(130);
-    TEST_ASSERT_TRUE(statusContains("volume_mismatch"));
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeMismatch));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
 }
 
 void test_wrong_destination_and_corrupt_all_volume_responses_cannot_verify() {
@@ -1035,7 +1068,7 @@ void test_wrong_destination_and_corrupt_all_volume_responses_cannot_verify() {
     observeAllVolume(7, 3, 4, 1, 0xEA, false, 0xD8);
     observeAllVolume(7, 3, 4, 1, 0xEA, true, 0xD6);
     at(1630);
-    TEST_ASSERT_TRUE(statusContains("volume_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeTimeout));
 }
 
 void test_all_volume_response_arriving_before_new_read_request_is_not_fresh_evidence() {
@@ -1050,7 +1083,7 @@ void test_all_volume_response_arriving_before_new_read_request_is_not_fresh_evid
     observeAllVolume(7, 3, 4, 1); // delayed 0x3d before this operation's 0x3c
     at(130);
     at(1630);
-    TEST_ASSERT_TRUE(statusContains("volume_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeTimeout));
 }
 
 void test_missing_display_before_state_fails_whole_plan_without_writes() {
@@ -1063,7 +1096,7 @@ void test_missing_display_before_state_fails_whole_plan_without_writes() {
     snapshot.hasDisplayOn = false;
     stageSnapshot(snapshot, false);
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::MissingLiveSnapshot));
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
 }
 
@@ -1077,7 +1110,7 @@ void test_missing_mode_and_volume_before_observations_each_fail_without_writes()
     missingMode.hasMode = false;
     stageSnapshot(missingMode, false);
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::MissingLiveSnapshot));
     TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
 
     setUp();
@@ -1090,7 +1123,7 @@ void test_missing_mode_and_volume_before_observations_each_fail_without_writes()
     missingVolume.hasCurrentVolume = false;
     stageSnapshot(missingVolume, false);
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::MissingLiveSnapshot));
     TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
 }
 
@@ -1103,7 +1136,7 @@ void test_snapshot_value_must_still_match_latest_canonical_observation_at_prefli
     stageSnapshot(snapshot);
     observeDisplay(false, 1);
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::MissingLiveSnapshot));
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
 }
 
@@ -1113,7 +1146,7 @@ void test_missing_user_before_fails_closed_to_preserve_region_and_unknown_bits()
     snapshot.hasUserBytes = false;
     stageSnapshot(snapshot);
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("user_bytes_before_required"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UserBytesBeforeRequired));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
 }
@@ -1122,7 +1155,7 @@ void test_pre_41037_volume_and_pre_41038_keep_current_send_zero_writes() {
     configureProfile();
     stageSnapshot(makeSnapshot(41036));
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("unsupported_firmware"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UnsupportedFirmware));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
 
@@ -1134,7 +1167,7 @@ void test_pre_41037_volume_and_pre_41038_keep_current_send_zero_writes() {
     profiles.loadableProfile.detector.volumeDisconnect = V1VolumeDisconnectPolicy::KeepCurrent;
     stageSnapshot(makeSnapshot(41037));
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("unsupported_firmware"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UnsupportedFirmware));
     TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
 }
 
@@ -1142,7 +1175,7 @@ void test_unsupported_old_firmware_preflight_sends_nothing() {
     configureProfile();
     stageSnapshot(makeSnapshot(41017));
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("unsupported_firmware"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UnsupportedFirmware));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
 }
@@ -1151,7 +1184,7 @@ void test_unverified_future_major_firmware_blocks_every_write() {
     configureProfile();
     stageSnapshot(makeSnapshot(50000));
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("unsupported_firmware"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UnsupportedFirmware));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
@@ -1177,7 +1210,7 @@ void test_main_display_off_can_keep_on_or_blinking_bluetooth_indicator_from_4103
         TEST_ASSERT_TRUE(ble.lastKeepBluetoothIndicatorOn);
         observeDisplay(false, 1, 0xEA, false, 0xD8, UINT32_MAX, observedState);
         at(100);
-        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+        TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     }
 }
 
@@ -1197,7 +1230,7 @@ void test_legacy_display_off_implicitly_turns_bluetooth_off_but_keep_on_is_gated
     observeDisplay(false, 1, 0xEA, false, 0xD8, UINT32_MAX,
                    V1BluetoothIndicatorState::Off);
     at(100);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
 
     setUp();
     configureProfile();
@@ -1208,7 +1241,7 @@ void test_legacy_display_off_implicitly_turns_bluetooth_off_but_keep_on_is_gated
     gated.bluetoothLedPolicy = V1BluetoothLedPolicy::On;
     stageSnapshot(makeSnapshot(41031));
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("unsupported_bluetooth_led"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UnsupportedBluetoothLed));
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
 }
 
@@ -1222,7 +1255,7 @@ void test_bluetooth_policy_requires_final_main_display_off() {
     detector.bluetoothLedPolicy = V1BluetoothLedPolicy::Off;
     stageSnapshot(makeSnapshot());
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("invalid_policy"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::InvalidPolicy));
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
 }
 
@@ -1254,18 +1287,14 @@ void test_sparse_custom_definitions_write_used_only_commit_last_and_report_calib
     observeSweepDefinition(3, 0, 0);
     at(135);
 
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
-    JsonDocument status;
-    const String json = module.getStatusJson();
-    TEST_ASSERT_FALSE(deserializeJson(status, json.c_str()));
-    JsonObject custom = status["components"]["customFrequencies"];
-    TEST_ASSERT_TRUE(custom["verified"].as<bool>());
-    TEST_ASSERT_EQUAL_STRING("topology_and_live_section_with_calibrated_readback",
-                             custom["verificationScope"].as<const char*>());
-    TEST_ASSERT_EQUAL_UINT32(4, custom["requestedDefinitions"].size());
-    TEST_ASSERT_EQUAL_UINT16(24200, custom["requestedDefinitions"][0]["lowerMHz"].as<uint16_t>());
-    TEST_ASSERT_EQUAL_UINT16(23950, custom["calibratedReadback"][0]["lowerMHz"].as<uint16_t>());
-    TEST_ASSERT_EQUAL_UINT16(33100, custom["calibratedReadback"][2]["lowerMHz"].as<uint16_t>());
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::CustomFrequencies).verified);
+    TEST_ASSERT_EQUAL_UINT16(24200, ble.sweepWriteHistory[0].lower);
+    TEST_ASSERT_EQUAL_UINT16(34500, ble.sweepWriteHistory[1].lower);
+    const auto& calibrated = parser.sweepDefinitionsObservation();
+    TEST_ASSERT_EQUAL_UINT64(0x0F, calibrated.presentMask);
+    TEST_ASSERT_EQUAL_UINT16(23950, calibrated.definitions[0].lowerMHz);
+    TEST_ASSERT_EQUAL_UINT16(33100, calibrated.definitions[2].lowerMHz);
 }
 
 void test_custom_write_not_yet_has_bounded_send_deadline() {
@@ -1284,9 +1313,9 @@ void test_custom_write_not_yet_has_bounded_send_deadline() {
     at(1600);
 
     TEST_ASSERT_FALSE(module.isActive());
-    TEST_ASSERT_TRUE(statusContains("custom_write_failed"));
-    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"timeout\""));
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomWriteFailed));
+    TEST_ASSERT_TRUE(hasComponentOutcome(ApplyOutcome::Timeout));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
     TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
 }
@@ -1317,14 +1346,14 @@ void test_compact_authored_ranges_fill_live_table_and_disable_omitted_slots() {
     observeSweepDefinition(3, 0, 0);
     at(135);
 
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
-    JsonDocument status;
-    const String json = module.getStatusJson();
-    TEST_ASSERT_FALSE(deserializeJson(status, json.c_str()));
-    JsonObject custom = status["components"]["customFrequencies"];
-    TEST_ASSERT_EQUAL_UINT32(2, custom["requestedDefinitions"].size());
-    TEST_ASSERT_EQUAL_UINT32(4, custom["calibratedReadback"].size());
-    TEST_ASSERT_EQUAL_UINT16(0, custom["calibratedReadback"][2]["lowerMHz"].as<uint16_t>());
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::CustomFrequencies).verified);
+    TEST_ASSERT_EQUAL_UINT16(24200, ble.sweepWriteHistory[0].lower);
+    TEST_ASSERT_EQUAL_UINT16(34500, ble.sweepWriteHistory[1].lower);
+    const auto& calibrated = parser.sweepDefinitionsObservation();
+    TEST_ASSERT_EQUAL_UINT64(0x0F, calibrated.presentMask);
+    TEST_ASSERT_EQUAL_UINT16(0, calibrated.definitions[2].lowerMHz);
+    TEST_ASSERT_EQUAL_UINT16(0, calibrated.definitions[3].lowerMHz);
 }
 
 void test_exact_custom_definition_set_is_unchanged_and_sends_no_sweep_packets() {
@@ -1336,7 +1365,7 @@ void test_exact_custom_definition_set_is_unchanged_and_sends_no_sweep_packets() 
     stageSnapshot(snapshot);
     queueAndPreflight();
     TEST_ASSERT_FALSE(module.isActive());
-    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"unchanged\""));
+    TEST_ASSERT_TRUE(hasComponentOutcome(ApplyOutcome::Unchanged));
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
 }
@@ -1352,7 +1381,7 @@ void test_null_sweep_slots_round_trip_but_cannot_substitute_for_required_band_to
     stageSnapshot(snapshot);
     queueAndPreflight();
     TEST_ASSERT_FALSE(module.isActive());
-    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"unchanged\""));
+    TEST_ASSERT_TRUE(hasComponentOutcome(ApplyOutcome::Unchanged));
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 
     setUp();
@@ -1362,7 +1391,7 @@ void test_null_sweep_slots_round_trip_but_cannot_substitute_for_required_band_to
     snapshot.sweepSections = {{{0, 2, 0, 0}, {1, 2, 0, 0}}};
     stageSnapshot(snapshot);
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomConfigurationInvalid));
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
 }
@@ -1379,9 +1408,9 @@ void test_custom_commit_result_and_full_readback_are_both_required() {
     at(105);
     observeSweepWriteResult(1);
     at(105);
-    TEST_ASSERT_TRUE(statusContains("custom_commit_rejected"));
-    TEST_ASSERT_TRUE(statusContains("\"commitResultRaw\":1"));
-    TEST_ASSERT_TRUE(statusContains("\"invalidDefinitionIndex\":0"));
+    TEST_ASSERT_EQUAL_UINT8(1, parser.sweepWriteResultObservation().result);
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::CustomFrequencies).reason ==
+                     ApplyReason::CustomCommitRejected);
     TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
 
     setUp();
@@ -1394,8 +1423,9 @@ void test_custom_commit_result_and_full_readback_are_both_required() {
     at(105);
     observeSweepWriteResult(64);
     at(105);
-    TEST_ASSERT_TRUE(statusContains("\"commitResultRaw\":64"));
-    TEST_ASSERT_TRUE(statusContains("\"invalidDefinitionIndex\":63"));
+    TEST_ASSERT_EQUAL_UINT8(64, parser.sweepWriteResultObservation().result);
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::CustomFrequencies).reason ==
+                     ApplyReason::CustomCommitRejected);
 
     setUp();
     configureCustomOnly(desired);
@@ -1407,7 +1437,7 @@ void test_custom_commit_result_and_full_readback_are_both_required() {
     observeSweepWriteResult(0); // stale before the actual commit packet
     at(105);
     at(1605);
-    TEST_ASSERT_TRUE(statusContains("custom_commit_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomCommitTimeout));
 }
 
 void runQueuedCustomCommitReply(bool duringSend) {
@@ -1429,20 +1459,24 @@ void runQueuedCustomCommitReply(bool duringSend) {
     at(105);
 
     if (!duringSend) {
-        TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomCommitVerify\""));
+        TEST_ASSERT_TRUE(module.isActive());
+        TEST_ASSERT_FALSE(componentStatus(ApplyComponent::CustomFrequencies).verified);
         TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
         at(1605);
-        TEST_ASSERT_TRUE(statusContains("custom_commit_timeout"));
+        TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomCommitTimeout));
         return;
     }
-    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRead\""));
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(componentStatus(ApplyComponent::CustomFrequencies).verified);
+    TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
     at(135);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x80, 0x5E, 0xF1, 0x5E, 0x83}));
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x81, 0, 0, 0, 0}));
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x82, 0x87, 0x2D, 0x86, 0xBF}));
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x83, 0, 0, 0, 0}));
     at(135);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
 }
 
@@ -1480,7 +1514,10 @@ void runQueuedCustomRefreshReply(uint8_t selectedStep, bool duringSend,
     queueAndPreflight();
     verifyUserBytes();
     TEST_ASSERT_EQUAL_HEX8(0xFE, ble.lastUserBytes[1]);
-    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRefreshSections\""));
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(componentStatus(ApplyComponent::CustomFrequencies).verified);
+    TEST_ASSERT_EQUAL_INT(0, ble.requestSweepSectionsCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 
     const std::vector<uint8_t> replies[] = {
         makeV1Packet(PACKET_ID_RESP_SWEEP_SECTIONS,
@@ -1514,12 +1551,20 @@ void runQueuedCustomRefreshReply(uint8_t selectedStep, bool duringSend,
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x82, 0x85, 0x98, 0x85, 0x34}));
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x83, 0, 0, 0, 0}));
     at(220);
-    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomWrite\""));
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(componentStatus(ApplyComponent::CustomFrequencies).verified);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestSweepSectionsCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestMaxSweepIndexCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
     at(250);
     at(255);
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_WRITE_RESULT, {0}));
     at(255);
-    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRead\""));
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(componentStatus(ApplyComponent::CustomFrequencies).verified);
+    TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
     mockMillis = 285;
     protocolQueue.process(); // Queue service precedes callbacks and AutoPush.
     uint32_t readAt = 285;
@@ -1527,7 +1572,9 @@ void runQueuedCustomRefreshReply(uint8_t selectedStep, bool duringSend,
         const uint32_t previousBoundary = ble.sessionSweepDefinitionsIngressBoundary();
         ble.nextRequestAllSweepDefinitionsResult = SendResult::NOT_YET;
         at(readAt);
-        TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRead\""));
+        TEST_ASSERT_TRUE(module.isActive());
+        TEST_ASSERT_FALSE(componentStatus(ApplyComponent::CustomFrequencies).verified);
+        TEST_ASSERT_EQUAL_INT(2, ble.requestAllSweepDefinitionsCalls);
         TEST_ASSERT_EQUAL_UINT32(previousBoundary, ble.sessionSweepDefinitionsIngressBoundary());
         ble.nextRequestAllSweepDefinitionsResult = SendResult::SENT;
         readAt += 5;
@@ -1571,8 +1618,8 @@ void runQueuedCustomRefreshReply(uint8_t selectedStep, bool duringSend,
     if (readTiming == CustomReadReplyTiming::FreshConflict) {
         TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
         at(readAt + 1500);
-        TEST_ASSERT_TRUE(statusContains("custom_readback_timeout"));
-        TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+        TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomReadbackTimeout));
+        TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
         TEST_ASSERT_EQUAL_HEX8(0xFE, ble.lastUserBytes[1]);
         TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
         return;
@@ -1582,7 +1629,7 @@ void runQueuedCustomRefreshReply(uint8_t selectedStep, bool duringSend,
     at(readAt + 60);
     observeUserBytes(ble.lastUserBytes);
     at(readAt + 60);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_HEX8(0xF6, ble.lastUserBytes[1]);
     TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
 }
@@ -1631,7 +1678,7 @@ void test_custom_readback_rejects_lost_used_range_and_cross_section_calibration(
     observeSweepDefinition(2, 34500, 34600);
     observeSweepDefinition(3, 0, 0);
     at(135);
-    TEST_ASSERT_TRUE(statusContains("custom_readback_invalid"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomReadbackInvalid));
 
     setUp();
     configureCustomOnly(desired);
@@ -1649,7 +1696,7 @@ void test_custom_readback_rejects_lost_used_range_and_cross_section_calibration(
     observeSweepDefinition(2, 34500, 34600);
     observeSweepDefinition(3, 0, 0);
     at(135);
-    TEST_ASSERT_TRUE(statusContains("custom_readback_invalid"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomReadbackInvalid));
 }
 
 void test_custom_readback_requires_every_definition_after_request_boundary() {
@@ -1676,12 +1723,12 @@ void test_custom_readback_requires_every_definition_after_request_boundary() {
     observeSweepDefinition(2, 33100, 36900);
     at(135);
     TEST_ASSERT_TRUE(module.isActive());
-    TEST_ASSERT_FALSE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_FALSE(module.executionSummary().result == ApplyResult::Succeeded);
 
     observeSweepDefinition(3, 0, 0);
     at(145);
     TEST_ASSERT_FALSE(module.isActive());
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
 }
 
 void test_custom_readback_accepts_first_definition_ingressed_during_send() {
@@ -1709,7 +1756,7 @@ void test_custom_readback_accepts_first_definition_ingressed_during_send() {
     observeSweepDefinition(3, 0, 0);
     at(135);
 
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_TRUE(ble.consumeVerifyPushMatchEdge());
 }
@@ -1724,7 +1771,7 @@ void test_custom_snapshot_mutation_before_preflight_blocks_every_write() {
     observeSweepDefinition(0, 24200, 24300, UINT32_MAX, false, 0xD6,
                            true); // contradictory newer canonical evidence poisons baseline
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::MissingLiveSnapshot));
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
 }
@@ -1744,7 +1791,7 @@ void test_malformed_canonical_sweep_definition_poison_blocks_every_write() {
                                    ble.noteV1NotificationIngress()));
     TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::MissingLiveSnapshot));
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
 }
@@ -1762,7 +1809,7 @@ void test_poisoned_sweep_max_before_preflight_blocks_every_write() {
                                    ble.noteV1NotificationIngress()));
     TEST_ASSERT_TRUE(parser.sweepMaxObservation().poisoned);
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::MissingLiveSnapshot));
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
 }
@@ -1787,7 +1834,7 @@ void test_vendor_invalid_zero_multibit_user_values_fail_preflight_at_version_bou
         detector.volumePolicy = V1VolumePolicy::Unchanged;
         stageSnapshot(makeSnapshot(test.version));
         queueAndPreflight();
-        TEST_ASSERT_TRUE(statusContains("invalid_user_setting_value"));
+        TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::InvalidUserSettingValue));
         TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     }
 }
@@ -1806,7 +1853,7 @@ void test_euro_bit_change_without_owned_definitions_accepts_detector_factory_res
     at(130);
     observeUserBytes(ble.lastUserBytes);
     at(130);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 }
@@ -1850,7 +1897,7 @@ void test_euro_bit_change_restores_explicit_custom_definitions_after_user_write(
     observeSweepDefinition(3, 0, 0);
     at(285);
 
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_UINT32(7, static_cast<uint32_t>(ble.commandHistory.size()));
     TEST_ASSERT_EQUAL_STRING("user-write", ble.commandHistory[0]);
     TEST_ASSERT_EQUAL_STRING("sweep-sections-read", ble.commandHistory[1]);
@@ -1878,7 +1925,7 @@ void test_usa_to_euro_from_advanced_requires_explicit_non_advanced_mode_before_w
     addSweepSnapshot(snapshot);
     stageSnapshot(snapshot);
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("euro_advanced_mode_invalid"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::EuroAdvancedModeInvalid));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 }
@@ -1893,7 +1940,7 @@ void test_enabling_custom_filtering_without_profile_owned_ranges_is_rejected() {
     detector.volumePolicy = V1VolumePolicy::Unchanged;
     stageSnapshot(makeSnapshot(41039, before));
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomConfigurationInvalid));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
@@ -1934,7 +1981,7 @@ void test_enabling_custom_filtering_syncs_profile_owned_compact_ranges() {
     observeUserBytes(ble.lastUserBytes);
     at(195);
 
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
@@ -1978,7 +2025,7 @@ void test_enabling_custom_recommits_an_exact_complete_table_before_enable() {
     observeUserBytes(ble.lastUserBytes);
     at(195);
 
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
@@ -2006,8 +2053,11 @@ void test_region_change_with_custom_on_uses_verified_disabled_intermediate_then_
     at(130);
     observeUserBytes(ble.lastUserBytes);
     at(130);
-    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRefreshSections\""));
-    TEST_ASSERT_TRUE(statusContains("\"profile\":{\"requested\":true,\"beforeAvailable\":true,\"needed\":true,\"sent\":true,\"verified\":false"));
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(componentStatus(ApplyComponent::CustomFrequencies).verified);
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::UserSettings).requested);
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::UserSettings).sent);
+    TEST_ASSERT_FALSE(componentStatus(ApplyComponent::UserSettings).verified);
     at(160);
     at(190);
     at(220);
@@ -2033,7 +2083,7 @@ void test_region_change_with_custom_on_uses_verified_disabled_intermediate_then_
     observeUserBytes(ble.lastUserBytes);
     at(345);
 
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(2, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_UINT32(8, static_cast<uint32_t>(ble.commandHistory.size()));
     TEST_ASSERT_EQUAL_STRING("user-write", ble.commandHistory[0]);
@@ -2096,7 +2146,7 @@ void test_region_change_k_only_uses_fresh_target_ka_not_source_region_ka() {
     observeUserBytes(ble.lastUserBytes);
     at(345);
 
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_HEX8(0xF6, ble.lastUserBytes[1]);
 }
 
@@ -2129,8 +2179,8 @@ void test_region_partial_ownership_fails_closed_on_incomplete_target_refresh() {
     observeCapturedSweepMax(target.maxSweepIndex);
     at(1720);
 
-    TEST_ASSERT_TRUE(statusContains("custom_readback_timeout"));
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomReadbackTimeout));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
 }
@@ -2157,8 +2207,8 @@ void test_region_refresh_request_failures_never_reach_table_or_final_enable() {
         at(130);
     };
     const auto assertStopped = []() {
-        TEST_ASSERT_TRUE(statusContains("custom_read_failed"));
-        TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+        TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomReadFailed));
+        TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
         TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
         TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
     };
@@ -2207,21 +2257,21 @@ void test_region_refresh_not_yet_retries_each_request_without_failing_apply() {
     ble.nextRequestSweepSectionsResult = SendResult::NOT_YET;
     at(160);
     TEST_ASSERT_TRUE(module.isActive());
-    TEST_ASSERT_FALSE(statusContains("custom_read_failed"));
+    TEST_ASSERT_FALSE(hasComponentReason(ApplyReason::CustomReadFailed));
     ble.nextRequestSweepSectionsResult = SendResult::SENT;
     at(165);
 
     ble.nextRequestMaxSweepIndexResult = SendResult::NOT_YET;
     at(195);
     TEST_ASSERT_TRUE(module.isActive());
-    TEST_ASSERT_FALSE(statusContains("custom_read_failed"));
+    TEST_ASSERT_FALSE(hasComponentReason(ApplyReason::CustomReadFailed));
     ble.nextRequestMaxSweepIndexResult = SendResult::SENT;
     at(200);
 
     ble.nextRequestAllSweepDefinitionsResult = SendResult::NOT_YET;
     at(230);
     TEST_ASSERT_TRUE(module.isActive());
-    TEST_ASSERT_FALSE(statusContains("custom_read_failed"));
+    TEST_ASSERT_FALSE(hasComponentReason(ApplyReason::CustomReadFailed));
     ble.nextRequestAllSweepDefinitionsResult = SendResult::SENT;
     at(235);
 
@@ -2232,7 +2282,7 @@ void test_region_refresh_not_yet_retries_each_request_without_failing_apply() {
     completeTargetRegionSweepRefresh(target, 235);
 
     TEST_ASSERT_TRUE(module.isActive());
-    TEST_ASSERT_FALSE(statusContains("custom_read_failed"));
+    TEST_ASSERT_FALSE(hasComponentReason(ApplyReason::CustomReadFailed));
     TEST_ASSERT_EQUAL_INT(2, ble.requestSweepSectionsCalls);
     TEST_ASSERT_EQUAL_INT(2, ble.requestMaxSweepIndexCalls);
     TEST_ASSERT_EQUAL_INT(2, ble.requestAllSweepDefinitionsCalls);
@@ -2267,8 +2317,8 @@ void test_region_refresh_not_yet_has_bounded_send_deadline() {
     at(1660);
 
     TEST_ASSERT_FALSE(module.isActive());
-    TEST_ASSERT_TRUE(statusContains("custom_readback_timeout"));
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomReadbackTimeout));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
     TEST_ASSERT_EQUAL_INT(2, ble.requestSweepSectionsCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.requestMaxSweepIndexCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
@@ -2290,7 +2340,7 @@ void test_custom_readback_request_not_yet_retries_while_failed_is_terminal() {
     ble.nextRequestAllSweepDefinitionsResult = SendResult::NOT_YET;
     at(135);
     TEST_ASSERT_TRUE(module.isActive());
-    TEST_ASSERT_FALSE(statusContains("custom_read_failed"));
+    TEST_ASSERT_FALSE(hasComponentReason(ApplyReason::CustomReadFailed));
     ble.nextRequestAllSweepDefinitionsResult = SendResult::SENT;
     at(140);
     observeSweepDefinition(0, 23950, 24950);
@@ -2298,7 +2348,7 @@ void test_custom_readback_request_not_yet_retries_while_failed_is_terminal() {
     observeSweepDefinition(2, 33100, 36900);
     observeSweepDefinition(3, 0, 0);
     at(140);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(2, ble.requestAllSweepDefinitionsCalls);
 
     setUp();
@@ -2315,8 +2365,8 @@ void test_custom_readback_request_not_yet_retries_while_failed_is_terminal() {
     at(135);
 
     TEST_ASSERT_FALSE(module.isActive());
-    TEST_ASSERT_TRUE(statusContains("custom_read_failed"));
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomReadFailed));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
     TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
 }
 
@@ -2352,8 +2402,8 @@ void test_region_refresh_poisoned_definition_fails_before_table_or_final_enable(
                            true); // same fresh index, conflicting target evidence
     at(220);
 
-    TEST_ASSERT_TRUE(statusContains("custom_readback_invalid"));
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomReadbackInvalid));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
 }
@@ -2408,15 +2458,15 @@ void test_region_custom_on_disconnects_never_report_success_at_any_transaction_p
     at(100); // intermediate write sent, not verified
     ble.setConnected(false);
     at(130);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
-    TEST_ASSERT_FALSE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
+    TEST_ASSERT_FALSE(module.executionSummary().result == ApplyResult::Succeeded);
 
     setUp();
     prepare();
     verifyIntermediate();
     ble.setConnected(false); // intermediate verified, table not started
     at(160);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 
     setUp();
@@ -2425,7 +2475,7 @@ void test_region_custom_on_disconnects_never_report_success_at_any_transaction_p
     at(160);
     ble.setConnected(false); // sections requested, target refresh incomplete
     at(190);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 
     setUp();
@@ -2435,7 +2485,7 @@ void test_region_custom_on_disconnects_never_report_success_at_any_transaction_p
     at(190);
     ble.setConnected(false); // max requested, target refresh incomplete
     at(220);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 
     setUp();
@@ -2446,7 +2496,7 @@ void test_region_custom_on_disconnects_never_report_success_at_any_transaction_p
     at(220);
     ble.setConnected(false); // definitions requested, no complete target evidence
     at(220);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 
     setUp();
@@ -2463,8 +2513,8 @@ void test_region_custom_on_disconnects_never_report_success_at_any_transaction_p
     at(255); // final sweep and commit sent, result not verified
     ble.setConnected(false);
     at(255);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
-    TEST_ASSERT_FALSE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
+    TEST_ASSERT_FALSE(module.executionSummary().result == ApplyResult::Succeeded);
 
     setUp();
     prepare();
@@ -2472,9 +2522,9 @@ void test_region_custom_on_disconnects_never_report_success_at_any_transaction_p
     verifyCustomTable();
     ble.setConnected(false); // full table verified, final enable not sent
     at(315);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"partial\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Partial);
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
-    TEST_ASSERT_FALSE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_FALSE(module.executionSummary().result == ApplyResult::Succeeded);
 
     setUp();
     prepare();
@@ -2483,9 +2533,9 @@ void test_region_custom_on_disconnects_never_report_success_at_any_transaction_p
     at(315); // final enable sent, readback not verified
     ble.setConnected(false);
     at(345);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"partial\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Partial);
     TEST_ASSERT_EQUAL_INT(2, ble.writeUserBytesCalls);
-    TEST_ASSERT_FALSE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_FALSE(module.executionSummary().result == ApplyResult::Succeeded);
 }
 
 void test_k_only_authorship_preserves_live_ka_when_compiled_table_is_unchanged() {
@@ -2496,8 +2546,8 @@ void test_k_only_authorship_preserves_live_ka_when_compiled_table_is_unchanged()
     addSweepSnapshot(snapshot);
     stageSnapshot(snapshot);
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
-    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"unchanged\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
+    TEST_ASSERT_TRUE(hasComponentOutcome(ApplyOutcome::Unchanged));
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 }
 
@@ -2525,7 +2575,7 @@ void test_k_only_authorship_replaces_k_and_copies_live_ka_without_invention() {
     observeSweepDefinition(2, 34000, 34100);
     observeSweepDefinition(3, 0, 0);
     at(135);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
 }
 
 void test_ka_only_authorship_relocates_around_and_preserves_live_k() {
@@ -2552,7 +2602,7 @@ void test_ka_only_authorship_relocates_around_and_preserves_live_k() {
     observeSweepDefinition(2, 0, 0);
     observeSweepDefinition(3, 0, 0);
     at(135);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
 }
 
 void test_unowned_band_readback_must_equal_the_fresh_live_definition() {
@@ -2574,8 +2624,8 @@ void test_unowned_band_readback_must_equal_the_fresh_live_definition() {
     observeSweepDefinition(3, 0, 0);
     at(135);
 
-    TEST_ASSERT_TRUE(statusContains("custom_readback_invalid"));
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomReadbackInvalid));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
 }
 
 void test_no_authored_ranges_infers_no_owned_bands_and_preserves_live_table() {
@@ -2587,8 +2637,8 @@ void test_no_authored_ranges_infers_no_owned_bands_and_preserves_live_table() {
     queueAndPreflight();
 
     TEST_ASSERT_FALSE(module.isActive());
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
-    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"unchanged\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
+    TEST_ASSERT_TRUE(hasComponentOutcome(ApplyOutcome::Unchanged));
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 }
 
@@ -2602,7 +2652,7 @@ void test_enabling_band_while_custom_is_on_requires_profile_owned_ranges() {
     detector.volumePolicy = V1VolumePolicy::Unchanged;
     stageSnapshot(makeSnapshot(41039, kOnlyBefore));
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::CustomConfigurationInvalid));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
@@ -2622,7 +2672,7 @@ void test_disabling_custom_filtering_does_not_require_or_write_definitions() {
     at(130);
     observeUserBytes(ble.lastUserBytes);
     at(130);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 }
 
@@ -2638,7 +2688,7 @@ void test_unrelated_display_apply_does_not_require_sweeps_when_custom_was_alread
     at(100);
     observeDisplay(false, 1);
     at(100);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
 }
 
 void test_advanced_logic_in_existing_euro_mode_is_rejected_before_writes() {
@@ -2648,7 +2698,7 @@ void test_advanced_logic_in_existing_euro_mode_is_rejected_before_writes() {
     profiles.loadableProfile.detector.mode = 3;
     stageSnapshot(makeSnapshot(41039, euro));
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("euro_advanced_mode_invalid"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::EuroAdvancedModeInvalid));
     TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
 }
 
@@ -2662,7 +2712,7 @@ void test_speed_volume_owner_blocks_whole_plan_before_any_detector_write() {
     TEST_ASSERT_TRUE(quiet.processSpeedVolume(10, speedMute, &fade));
     ble.setVolumeCalls = 0; // discard setup write; preflight itself must send zero
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("volume_owner_busy"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeOwnerBusy));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
@@ -2675,7 +2725,7 @@ void test_active_volume_fade_owner_blocks_whole_plan_before_writes() {
     TEST_ASSERT_TRUE(quiet.sendVolume(QuietOwner::VolumeFade, 4, 2));
     ble.setVolumeCalls = 0;
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("volume_owner_busy"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeOwnerBusy));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
@@ -2690,8 +2740,8 @@ void test_fade_delay_blocks_apply_before_any_detector_write() {
     TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
 
     queueAndPreflight(150);
-    TEST_ASSERT_TRUE(statusContains("volume_owner_busy"));
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeOwnerBusy));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
     at(150);
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
@@ -2716,7 +2766,7 @@ void test_alert_clearing_before_fade_delay_releases_apply_without_restore() {
     at(190); // VolumeRead
     observeAllVolume(7, 3, 4, 1);
     at(190); // VolumeVerify
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_FALSE(quiet.executeVolumeFade(3000, &fade));
     TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
 }
@@ -2730,7 +2780,7 @@ void test_apply_without_fade_baseline_restores_applied_pair_after_later_alert() 
     at(130); // VolumeRead
     observeAllVolume(7, 3, 4, 1);
     at(130); // VolumeVerify
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
 
     observeFadeAlert(true, 150);
@@ -2792,8 +2842,8 @@ void test_volume_owner_race_is_rechecked_immediately_before_volume_write() {
     const int competingWriteCalls = ble.setVolumeCalls;
     at(220);
 
-    TEST_ASSERT_TRUE(statusContains("volume_owner_busy"));
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"partial\""));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeOwnerBusy));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Partial);
     TEST_ASSERT_EQUAL_INT(competingWriteCalls, ble.setVolumeCalls);
 }
 
@@ -2810,7 +2860,7 @@ void test_volume_verification_lease_defers_competing_owner_until_transaction_fin
     at(130);
     observeAllVolume(7, 3, 4, 1);
     at(130);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_TRUE(quiet.executeVolumeFade(140, &fade));
     TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
     TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
@@ -2828,7 +2878,7 @@ void test_session_change_cancels_operation_and_blocks_remaining_components() {
     queueAndPreflight();
     ble.setSessionGeneration(2);
     at(100);
-    TEST_ASSERT_TRUE(statusContains("session_changed"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::SessionChanged));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
 }
 
@@ -2853,8 +2903,8 @@ void test_new_session_snapshot_terminates_old_operation_without_erasing_new_capt
     at(100); // session-2 snapshot admitted
     at(100); // first needed user-byte write
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
-    TEST_ASSERT_FALSE(statusContains("missing_live_snapshot"));
-    TEST_ASSERT_FALSE(statusContains("session_changed"));
+    TEST_ASSERT_FALSE(hasComponentReason(ApplyReason::MissingLiveSnapshot));
+    TEST_ASSERT_FALSE(hasComponentReason(ApplyReason::SessionChanged));
 }
 
 void test_disconnect_after_user_verification_reports_partial_and_blocks_later_writes() {
@@ -2864,8 +2914,8 @@ void test_disconnect_after_user_verification_reports_partial_and_blocks_later_wr
     verifyUserBytes();
     ble.setConnected(false);
     at(160);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"partial\""));
-    TEST_ASSERT_TRUE(statusContains("\"reason\":\"disconnected\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Partial);
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::Disconnected));
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
 }
 
@@ -2879,7 +2929,7 @@ void test_stale_snapshot_and_one_shot_reuse_fail_before_writes() {
     at(6102);
     at(6102);
     at(6102);
-    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::MissingLiveSnapshot));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
 
     mockMillis = 6200;
@@ -2887,7 +2937,7 @@ void test_stale_snapshot_and_one_shot_reuse_fail_before_writes() {
     at(6300);
     at(6300);
     at(6300);
-    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::MissingLiveSnapshot));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
 }
 
@@ -2905,7 +2955,7 @@ void test_queued_before_request_user_evidence_cannot_verify_after_late_processin
     observeUserBytes(ble.lastUserBytes, queuedBeforeRequest); // parsed late
     at(1630);
 
-    TEST_ASSERT_TRUE(statusContains("user_bytes_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UserBytesTimeout));
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
 }
 
@@ -2923,7 +2973,7 @@ void test_queued_before_command_display_and_mode_evidence_cannot_verify() {
     // A direct parser call without BLE ingress provenance is also ineligible.
     observeDisplay(false, 1, 0xEA, false, 0xD8, 0);
     at(1600);
-    TEST_ASSERT_TRUE(statusContains("display_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::DisplayTimeout));
 
     setUp();
     configureProfile();
@@ -2937,7 +2987,7 @@ void test_queued_before_command_display_and_mode_evidence_cannot_verify() {
     at(100);
     observeDisplay(true, 2, 0xEA, false, 0xD8, queuedBeforeModeCommand);
     at(1600);
-    TEST_ASSERT_TRUE(statusContains("mode_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::ModeTimeout));
 }
 
 void test_queued_before_request_volume_evidence_cannot_verify_after_late_processing() {
@@ -2954,7 +3004,7 @@ void test_queued_before_request_volume_evidence_cannot_verify_after_late_process
     observeAllVolume(7, 3, 4, 1, 0xEA, false, 0xD6, queuedBeforeRequest);
     at(1630);
 
-    TEST_ASSERT_TRUE(statusContains("volume_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeTimeout));
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
 }
 
@@ -2972,7 +3022,7 @@ void test_ingress_sequence_wrap_skips_zero_and_accepts_only_the_later_response()
     observeUserBytes(ble.lastUserBytes); // wraps to 1, never zero
     at(130);
 
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_TRUE(ble.consumeVerifyPushMatchEdge());
 }
 
@@ -2989,8 +3039,9 @@ void test_terminal_session_recheck_prevents_success_and_generation_qualifies_edg
     observeUserBytes(ble.lastUserBytes);
     ble.changeSessionOnNextUserBytesCopy = true;
     at(130);
-    TEST_ASSERT_TRUE(statusContains("session_changed"));
-    TEST_ASSERT_FALSE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Partial);
+    TEST_ASSERT_TRUE(componentStatus(ApplyComponent::UserSettings).verified);
+    TEST_ASSERT_FALSE(module.isActive());
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
 
     setUp();
@@ -3025,7 +3076,7 @@ void test_user_reply_ingressed_during_send_verifies_after_queued_parsing() {
     observeUserBytes(ble.lastUserBytes, responseIngressDuringSend);
     at(130);
 
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.requestUserBytesCalls);
     TEST_ASSERT_TRUE(ble.consumeVerifyPushMatchEdge());
@@ -3045,7 +3096,7 @@ void test_volume_reply_ingressed_during_send_verifies_after_queued_parsing() {
     observeAllVolume(7, 3, 4, 1, 0xEA, false, 0xD6, responseIngressDuringSend);
     at(130);
 
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.requestAllVolumeCalls);
     TEST_ASSERT_TRUE(ble.consumeVerifyPushMatchEdge());
@@ -3062,7 +3113,7 @@ void test_unsolicited_display_and_mode_ingressed_during_write_cannot_verify_the_
     ble.setDisplayOnSendHook = injectMatchingDisplayDuringSend;
     at(100);
     at(1600);
-    TEST_ASSERT_TRUE(statusContains("display_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::DisplayTimeout));
 
     setUp();
     configureProfile();
@@ -3075,7 +3126,7 @@ void test_unsolicited_display_and_mode_ingressed_during_write_cannot_verify_the_
     ble.setModeSendHook = injectMatchingModeDuringSend;
     at(100);
     at(1600);
-    TEST_ASSERT_TRUE(statusContains("mode_timeout"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::ModeTimeout));
 }
 
 namespace {
@@ -3153,7 +3204,7 @@ void test_basic_apply_phases_retry_temporary_deferral_and_complete() {
         at(firstAttempt + 5);
         finishBasicSendPhase(phase, firstAttempt + 5);
         TEST_ASSERT_FALSE(module.isActive());
-        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+        TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
         TEST_ASSERT_TRUE(ble.consumeVerifyPushMatchEdge());
     }
 }
@@ -3170,7 +3221,7 @@ void test_basic_apply_phases_bound_persistent_deferral_and_release_ownership() {
         setBasicSendResult(phase, SendResult::NOT_YET);
         at(firstAttempt + 1500);
         TEST_ASSERT_FALSE(module.isActive());
-        TEST_ASSERT_TRUE(statusContains("\"outcome\":\"timeout\""));
+        TEST_ASSERT_TRUE(hasComponentOutcome(ApplyOutcome::Timeout));
         TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
         if (phase == BasicSendPhase::VolumeWrite || phase == BasicSendPhase::VolumeRead) {
             TEST_ASSERT_EQUAL_INT(SendResult::SENT,
@@ -3186,9 +3237,9 @@ void test_basic_apply_phases_do_not_retry_hard_failures() {
         setBasicSendResult(phase, SendResult::FAILED);
         at(firstAttempt);
         TEST_ASSERT_FALSE(module.isActive());
-        TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
-        TEST_ASSERT_TRUE(statusContains("\"outcome\":\"write_failed\"") ||
-                         statusContains("\"outcome\":\"read_failed\""));
+        TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
+        TEST_ASSERT_TRUE(hasComponentOutcome(ApplyOutcome::WriteFailed) ||
+                         hasComponentOutcome(ApplyOutcome::ReadFailed));
         TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
     }
 }
@@ -3210,7 +3261,7 @@ void test_basic_read_retries_resample_ingress_and_accept_in_send_replies() {
         if (phase == BasicSendPhase::UserRead) observeUserBytes(ble.lastUserBytes, responseIngressDuringSend);
         else observeAllVolume(7, 3, 4, 1, 0xEA, false, 0xD6, responseIngressDuringSend);
         at(firstAttempt + 15);
-        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+        TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     }
 }
 
@@ -3233,7 +3284,7 @@ void test_in_flight_basic_apply_waits_for_ack_before_advancing() {
         at(first + 105); // ACK completion, rather than a new write.
         finishBasicSendPhase(phase, first + 105);
         TEST_ASSERT_FALSE(module.isActive());
-        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+        TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     }
 }
 
@@ -3257,7 +3308,7 @@ void test_in_flight_focused_reads_keep_replies_parsed_before_ack() {
         at(first + 105);
         at(first + 105);
         TEST_ASSERT_FALSE(module.isActive());
-        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+        TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     }
 }
 
@@ -3278,7 +3329,7 @@ void test_in_flight_focused_reads_reject_pre_worker_response() {
         if (phase == BasicSendPhase::UserRead) observeUserBytes(ble.lastUserBytes);
         else observeAllVolume(7, 3, 4, 1);
         at(first + 15);
-        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+        TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     }
 }
 
@@ -3310,24 +3361,35 @@ void test_in_flight_custom_commit_and_readback_keep_early_replies() {
     at(105);
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_WRITE_RESULT, {0}));
     at(110);
-    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomWrite\""));
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(componentStatus(ApplyComponent::CustomFrequencies).verified);
+    TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::AutoPush));
+    TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
     ble.writeSweepDefinitionResult = SendResult::SENT;
     at(115);
     at(115);
-    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRead\""));
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(componentStatus(ApplyComponent::CustomFrequencies).verified);
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::AutoPush));
+    TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
+    const int writesBeforeReadback = ble.writeSweepDefinitionCalls;
     ble.nextRequestAllSweepDefinitionsResult = SendResult::IN_FLIGHT;
     at(145);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x80, 0x5E, 0xF1, 0x5E, 0x83}));
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x81, 0, 0, 0, 0}));
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x82, 0x87, 0x2D, 0x86, 0xBF}));
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x83, 0, 0, 0, 0}));
     at(150);
-    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRead\""));
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(componentStatus(ApplyComponent::CustomFrequencies).verified);
+    TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::AutoPush));
+    TEST_ASSERT_EQUAL_INT(writesBeforeReadback, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_FALSE(parser.sweepDefinitionsObservation().poisoned);
     ble.nextRequestAllSweepDefinitionsResult = SendResult::SENT;
     at(155);
     at(155);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
 }
 
 void test_in_flight_region_refresh_keeps_each_early_capture() {
@@ -3367,13 +3429,21 @@ void test_in_flight_region_refresh_keeps_each_early_capture() {
         }
         at(first + 5);
         TEST_ASSERT_TRUE(module.isActive());
+        TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::AutoPush));
         TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
         *results[step] = SendResult::SENT;
         at(first + 10);
+        TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::AutoPush));
     }
     at(250);
-    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomWrite\""));
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(componentStatus(ApplyComponent::CustomFrequencies).verified);
     TEST_ASSERT_FALSE(parser.sweepDefinitionsObservation().poisoned);
+    at(280);
+    TEST_ASSERT_EQUAL_INT(1, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_UINT8(0, ble.lastSweepIndex);
+    TEST_ASSERT_EQUAL_UINT16(24200, ble.lastSweepLower);
+    TEST_ASSERT_FALSE(ble.lastSweepCommit);
 }
 
 void test_later_send_deferral_timeout_preserves_earlier_verified_component() {
@@ -3389,8 +3459,8 @@ void test_later_send_deferral_timeout_preserves_earlier_verified_component() {
     ble.nextVolumeSendResult = SendResult::NOT_YET;
     at(1660);
     TEST_ASSERT_FALSE(module.isActive());
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"partial\""));
-    TEST_ASSERT_TRUE(statusContains("volume_timeout"));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Partial);
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeTimeout));
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_UINT8(0xFE, ble.lastUserBytes[0]);
     TEST_ASSERT_EQUAL_INT(0, ble.requestAllVolumeCalls);
@@ -3408,9 +3478,9 @@ void test_unsent_apply_volume_never_becomes_later_speed_restore_baseline() {
         if (result == SendResult::NOT_YET) {
             ble.nextVolumeSendResult = SendResult::NOT_YET;
             at(1600);
-            TEST_ASSERT_TRUE(statusContains("volume_timeout"));
+            TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeTimeout));
         } else {
-            TEST_ASSERT_TRUE(statusContains("volume_write_failed"));
+            TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeWriteFailed));
         }
         TEST_ASSERT_FALSE(module.isActive());
 
@@ -3447,11 +3517,11 @@ void test_speed_activation_waits_for_deferred_apply_and_uses_its_final_baseline(
             at(135);
             observeAllVolume(7, 3, 4, 1);
             at(135);
-            TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+            TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
         } else {
             ble.nextVolumeSendResult = SendResult::NOT_YET;
             at(1600);
-            TEST_ASSERT_TRUE(statusContains("volume_timeout"));
+            TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeTimeout));
         }
         TEST_ASSERT_FALSE(module.isActive());
         TEST_ASSERT_TRUE(quiet.processSpeedVolume(1700, speedMute, &fade));
@@ -3482,7 +3552,7 @@ void test_speed_activation_cleared_during_apply_readback_leaves_no_restore() {
     at(135);
     observeAllVolume(7, 3, 4, 1);
     at(135);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_FALSE(quiet.processSpeedVolume(140, speedMute, &fade));
     TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls); // One deferral and the Apply send only.
     TEST_ASSERT_EQUAL_UINT8(7, ble.lastVolume);
@@ -3498,7 +3568,7 @@ void test_write_and_read_failures_are_distinct_and_never_applied() {
     ble.writeUserBytesResult = false;
     queueAndPreflight();
     at(100);
-    TEST_ASSERT_TRUE(statusContains("user_bytes_write_failed"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UserBytesWriteFailed));
 
     setUp();
     configureProfile();
@@ -3511,7 +3581,7 @@ void test_write_and_read_failures_are_distinct_and_never_applied() {
     at(100);
     ble.publishVerifiedSettingsApplyEdge(ble.sessionGeneration());
     at(130);
-    TEST_ASSERT_TRUE(statusContains("user_bytes_read_failed"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::UserBytesReadFailed));
     observeUserBytes(ble.lastUserBytes);
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
 }
@@ -3526,7 +3596,7 @@ void test_display_mode_and_volume_transport_failures_are_distinct_and_release_vo
     ble.setDisplayOnSuccess = false;
     queueAndPreflight();
     at(100);
-    TEST_ASSERT_TRUE(statusContains("display_write_failed"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::DisplayWriteFailed));
     TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
 
@@ -3540,7 +3610,7 @@ void test_display_mode_and_volume_transport_failures_are_distinct_and_release_vo
     ble.setModeSuccess = false;
     queueAndPreflight();
     at(100);
-    TEST_ASSERT_TRUE(statusContains("mode_write_failed"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::ModeWriteFailed));
     TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
 
     setUp();
@@ -3553,7 +3623,7 @@ void test_display_mode_and_volume_transport_failures_are_distinct_and_release_vo
     ble.setVolumeSuccess = false;
     queueAndPreflight();
     at(100);
-    TEST_ASSERT_TRUE(statusContains("volume_write_failed"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeWriteFailed));
     ble.setVolumeSuccess = true;
     TEST_ASSERT_EQUAL_INT(SendResult::SENT,
                           quiet.sendVolumeResult(QuietOwner::VolumeFade, 1, 1));
@@ -3569,7 +3639,7 @@ void test_display_mode_and_volume_transport_failures_are_distinct_and_release_vo
     queueAndPreflight();
     at(100);
     at(130);
-    TEST_ASSERT_TRUE(statusContains("volume_read_failed"));
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeReadFailed));
     TEST_ASSERT_EQUAL_INT(SendResult::SENT,
                           quiet.sendVolumeResult(QuietOwner::VolumeFade, 1, 1));
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
@@ -3626,8 +3696,7 @@ void test_box_policy_activates_only_after_verified_apply_and_durable_commit() {
     TEST_ASSERT_EQUAL_INT(1, probe.calls);
     TEST_ASSERT_TRUE(probe.received.bands[2].muteOutside);
     TEST_ASSERT_TRUE(quiet.inTheBoxSettings().bands[2].muteOutside);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
-    TEST_ASSERT_TRUE(statusContains("\"inTheBoxApplied\":true"));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
 }
 
 void test_box_policy_commit_failure_keeps_previous_policy_and_reports_partial() {
@@ -3646,9 +3715,7 @@ void test_box_policy_commit_failure_keeps_previous_policy_and_reports_partial() 
     TEST_ASSERT_EQUAL_INT(1, probe.calls);
     TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(before, quiet.inTheBoxSettings()));
     TEST_ASSERT_TRUE(module.executionSummary().inTheBoxPersistFailed);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"partial\""));
-    TEST_ASSERT_TRUE(statusContains("\"reason\":\"in_the_box_persist_failed\""));
-    TEST_ASSERT_TRUE(statusContains("\"inTheBoxApplied\":false"));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Partial);
 }
 
 void test_box_policy_is_not_committed_after_detector_apply_failure() {
@@ -3731,7 +3798,7 @@ void checkVolumePolicyReceipt(VolumeRejectionTiming timing, V1VolumeDisconnectPo
         TEST_ASSERT_EQUAL_INT(AutoPushModule::PublicResult::Failed, summary.result);
         TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::ComponentOutcome::WriteFailed, volumeResult.outcome);
         TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::ComponentReason::VolumeWriteFailed, volumeResult.reason);
-        TEST_ASSERT_TRUE(statusContains("\"inTheBoxApplied\":false"));
+
         for (unsigned now = 200; now < 3000; now += 100) at(now);
         TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls); // No blind retries after failure.
         // A later explicit Apply owns a new receipt and can succeed normally.
@@ -3747,7 +3814,7 @@ void checkVolumePolicyReceipt(VolumeRejectionTiming timing, V1VolumeDisconnectPo
              static_cast<uint8_t>(policy == V1VolumePolicy::Saved ? detector.mainVolume : 4),
              static_cast<uint8_t>(policy == V1VolumePolicy::Saved ? detector.mutedVolume : 1)}));
         at(3130);
-        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+        TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
         TEST_ASSERT_EQUAL_INT(1, policyActivations);
         TEST_ASSERT_EQUAL_INT(1, ble.publishVerifiedSettingsApplyEdgeCalls);
     } else {
@@ -3790,8 +3857,8 @@ void test_volume_rejection_keeps_earlier_verified_components_but_never_publishes
     at(220);
     deliverProtocolReply(makeV1Packet(0x65, {0x39}));
     at(250);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"partial\""));
-    TEST_ASSERT_TRUE(statusContains("\"inTheBoxApplied\":false"));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Partial);
+
     const auto summary = module.executionSummary();
     TEST_ASSERT_TRUE(summary.components[static_cast<size_t>(V1SettingsOperationStore::Component::UserSettings)].verified);
     TEST_ASSERT_FALSE(summary.components[static_cast<size_t>(V1SettingsOperationStore::Component::Volume)].verified);
@@ -3821,8 +3888,8 @@ void test_new_volume_writer_cannot_verify_an_older_apply_policy() {
     ble.onV1RequestNotProcessed(0x39, ble.noteV1NotificationIngress());
     TEST_ASSERT_FALSE(ble.volumeWriteRejected(original));
     at(130);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
-    TEST_ASSERT_TRUE(statusContains("\"reason\":\"volume_owner_busy\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Failed);
+    TEST_ASSERT_TRUE(hasComponentReason(ApplyReason::VolumeOwnerBusy));
     TEST_ASSERT_EQUAL_INT(0, ble.publishVerifiedSettingsApplyEdgeCalls);
     TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
 }
@@ -3864,7 +3931,7 @@ void test_queue_manual_choice_clear_then_verified_apply_uses_only_the_new_baseli
     at(13130);
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_ALL_VOLUME, {7, 3, 4, 1}));
     at(13130);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(module.executionSummary().result == ApplyResult::Succeeded);
     TEST_ASSERT_EQUAL_INT(1, ble.publishVerifiedSettingsApplyEdgeCalls);
     mockMillis = 14000;
     deliverProtocolReply(live);

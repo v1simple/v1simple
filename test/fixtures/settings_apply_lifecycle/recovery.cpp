@@ -128,7 +128,14 @@ void stageVolumeApply(DriveRuntime &outer) {
     detector.modePolicy = V1ModePolicy::Unchanged;
     stageSnapshot(makeSnapshot());
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("\"step\":\"VolumeWrite\""));
+    TEST_ASSERT_TRUE(module.isActive());
+    const auto pendingVolume = componentStatus(ApplyComponent::Volume);
+    TEST_ASSERT_TRUE(pendingVolume.requested);
+    TEST_ASSERT_FALSE(pendingVolume.sent);
+    TEST_ASSERT_FALSE(pendingVolume.verified);
+    TEST_ASSERT_EQUAL_INT(ApplyOutcome::Pending, pendingVolume.outcome);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::AutoPush));
     TEST_ASSERT_EQUAL_INT(
         V1SettingsOperationStore::StartStatus::Started,
         outer.settingsOperations_

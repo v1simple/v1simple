@@ -31,6 +31,7 @@
     let proxyEnabled = $state(false);
     let obdEnabled = $state(false);
     let proxyName = $state('V1-Proxy');
+    let savedProxyName = 'V1-Proxy';
     let selectedMode = $state('standalone');
     let pendingMode = $state('standalone');
     let proxyNameSaving = $state(false);
@@ -61,7 +62,7 @@
         return pendingMode !== selectedMode;
     }
 
-    async function loadOperatingMode() {
+    async function loadOperatingMode(preserveProxyName = false) {
         modeLoading = true;
         try {
             const [deviceSettings, obdRes] = await Promise.all([
@@ -73,7 +74,8 @@
             }
             const obdSettings = obdRes.data;
             proxyEnabled = !!deviceSettings.proxy_ble;
-            proxyName = deviceSettings.proxy_name || proxyName;
+            savedProxyName = deviceSettings.proxy_name || savedProxyName;
+            if (!preserveProxyName) proxyName = savedProxyName;
             obdEnabled = !!obdSettings.enabled;
             selectedMode = resolveMode(proxyEnabled, obdEnabled);
             pendingMode = selectedMode;
@@ -111,6 +113,20 @@
         if (!res.ok) {
             throw new Error('obd save failed');
         }
+        // Enabling OBD also disables proxy mode in the same firmware mutation.
+        await invalidateDeviceSettings();
+    }
+
+    async function setProxyName(name) {
+        const formData = new FormData();
+        formData.append('proxy_name', name);
+        const res = await fetchWithTimeout('/api/device/settings', {
+            method: 'POST',
+            body: formData
+        });
+        if (!res.ok) throw new Error('proxy name save failed');
+        savedProxyName = name;
+        await invalidateDeviceSettings();
     }
 
     function selectOperatingMode(mode) {
@@ -125,14 +141,16 @@
         const modeToSave = pendingMode;
         modeSaving = true;
         modeMessage = null;
+        let nameSaved = false;
         try {
             if (modeToSave === 'proxy') {
-                // Disable OBD first so the device never spends a save cycle with
-                // both V1 proxy and OBD selected.
-                await setObdEnabled(false);
+                // Each firmware enable mutation also disables the competing mode.
                 await setProxyEnabled(true);
             } else if (modeToSave === 'obd') {
-                await setProxyEnabled(false);
+                if (proxyName && proxyName !== savedProxyName) {
+                    await setProxyName(proxyName);
+                    nameSaved = true;
+                }
                 await setObdEnabled(true);
             } else {
                 await setProxyEnabled(false);
@@ -145,8 +163,15 @@
             await loadOperatingMode();
         } catch (error) {
             console.error('Failed to save operating mode', error);
-            modeMessage = { type: 'error', text: 'Failed to save operating mode.' };
-            await loadOperatingMode();
+            modeMessage = {
+                type: 'error',
+                text: nameSaved
+                    ? 'Proxy name saved, but failed to save operating mode.'
+                    : 'Failed to save operating mode.'
+            };
+            // A lost response may follow a committed write; discard older shared reads.
+            await invalidateDeviceSettings();
+            await loadOperatingMode(true);
         } finally {
             modeSaving = false;
         }
@@ -158,22 +183,14 @@
         proxyNameSaving = true;
         modeMessage = null;
         try {
-            const formData = new FormData();
-            formData.append('proxy_name', proxyName.trim());
-            const res = await fetchWithTimeout('/api/device/settings', {
-                method: 'POST',
-                body: formData
-            });
-            if (!res.ok) {
-                throw new Error('proxy name save failed');
-            }
-            await invalidateDeviceSettings();
+            await setProxyName(proxyName.trim());
             proxyName = proxyName.trim();
             modeMessage = { type: 'success', text: 'Proxy name saved.' };
         } catch (error) {
             console.error('Failed to save proxy name', error);
             modeMessage = { type: 'error', text: 'Failed to save proxy name.' };
-            await loadOperatingMode();
+            await invalidateDeviceSettings();
+            await loadOperatingMode(true);
         } finally {
             proxyNameSaving = false;
         }

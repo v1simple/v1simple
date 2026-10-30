@@ -3,9 +3,7 @@
 #include "../quiet/quiet_coordinator_module.h"
 #include "v1_firmware_compat.h"
 #include "v1_profile_push_policy.h"
-#include "psram_json_document.h"
 
-#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <new>
@@ -22,7 +20,6 @@ enum class AutoPushAdmissionFailurePoint : uint8_t {
     SlotProfile,
     ProfileName,
     ProfileDescription,
-    StatusProfile,
     DefinitionCapacity,
 };
 AutoPushAdmissionFailurePoint g_autoPushAdmissionFailurePointForTest =
@@ -174,15 +171,6 @@ bool AutoPushModule::prepareState(int slotIndex, const AutoPushSlot& slot, bool 
     preparedStatus = OperationStatus{};
     preparedStatus.operationId = nextOperationId;
     preparedStatus.result = Result::QUEUED;
-    preparedStatus.slotIndex = slotIndex;
-    if (!copyAdmissionString(slot.profileName, preparedStatus.profileName
-#ifdef UNIT_TEST
-                             , AutoPushAdmissionFailurePoint::StatusProfile
-#endif
-                             )) {
-        return false;
-    }
-    preparedStatus.profileLoaded = profileLoaded;
     return true;
 }
 
@@ -334,7 +322,6 @@ uint8_t AutoPushModule::modeValueFromObservation(char mode) {
 }
 
 bool AutoPushModule::configurePlan() {
-    status_.profileLoaded = state_.profileLoaded;
     if (state_.profileOwned) {
         if (!state_.profileLoaded) {
             failWholePlan(&status_.userSettings, Outcome::LOAD_FAILED, FailureReason::PROFILE_LOAD_FAILED);
@@ -416,9 +403,6 @@ bool AutoPushModule::configurePlan() {
         state_.volume = slotVolumeOverride ? settings_->getSlotVolume(state_.slotIndex) : detector.mainVolume;
         state_.muteVolume = slotVolumeOverride ? settings_->getSlotMuteVolume(state_.slotIndex) :
                                                  detector.mutedVolume;
-        status_.volumePolicy = detector.volumePolicy;
-        status_.volumeFeedback = detector.volumeFeedback;
-        status_.volumeDisconnect = detector.volumeDisconnect;
         if (detector.volumeFeedback == V1VolumeFeedbackPolicy::Always) state_.volumeAux |= 0x01;
         else if (detector.volumeFeedback == V1VolumeFeedbackPolicy::ChangedOnly) state_.volumeAux |= 0x03;
         if (detector.volumePolicy == V1VolumePolicy::Saved) state_.volumeAux |= 0x04;
@@ -435,7 +419,6 @@ bool AutoPushModule::configurePlan() {
         state_.displayOn = !settings_->getSlotDarkMode(state_.slotIndex);
         state_.desiredMode = static_cast<uint8_t>(state_.slot.mode);
         state_.volumePolicy = status_.volume.requested ? V1VolumePolicy::Temporary : V1VolumePolicy::Unchanged;
-        status_.volumePolicy = state_.volumePolicy;
         state_.volume = volume;
         state_.muteVolume = muted;
         if (state_.profileLoaded) {
@@ -576,7 +559,6 @@ bool AutoPushModule::compileCustomDefinitions(const V1DetectorSnapshot& live) {
     state_.customRequiredMask = live.maxSweepIndex == 63
                                     ? UINT64_MAX
                                     : ((uint64_t{1} << (live.maxSweepIndex + 1u)) - 1u);
-    status_.customFrequencies.beforeAvailable = true;
     status_.customFrequencies.needed = definitionsDiffer;
     if (!definitionsDiffer) {
         status_.customFrequencies.verified = true;
@@ -646,16 +628,11 @@ bool AutoPushModule::preflight() {
             failWholePlan(&status_.userSettings, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_FIRMWARE);
             return false;
         }
-        status_.userSettings.beforeAvailable = true;
         status_.beforeUserBytes = state_.before.userBytes;
         std::array<uint8_t, 6> effectiveDesired = status_.desiredUserBytes;
-        status_.alpLaserOverrideActive = V1ProfilePushPolicy::shouldDisableV1Laser(settings_->get());
         V1ProfilePushPolicy::applyBeforePush(settings_->get(), effectiveDesired.data());
-        status_.alpLaserOverrideApplied = effectiveDesired[0] != status_.desiredUserBytes[0];
-        V1FirmwareCompat::supportedUserByteMasks(state_.firmwareVersion, status_.supportedUserMasks.data());
         V1FirmwareCompat::overlaySupportedUserBytes(status_.beforeUserBytes.data(), effectiveDesired.data(),
                                                     state_.effectiveUserBytes.data(), state_.firmwareVersion);
-        status_.effectiveUserBytes = state_.effectiveUserBytes;
         state_.userWriteBytes = state_.effectiveUserBytes;
         state_.regionChanged =
             ((status_.beforeUserBytes[1] ^ state_.effectiveUserBytes[1]) & 0x01) != 0;
@@ -727,9 +704,7 @@ bool AutoPushModule::preflight() {
             failWholePlan(&status_.display, Outcome::INVALID, FailureReason::INVALID_POLICY);
             return false;
         }
-        status_.display.beforeAvailable = true;
         status_.beforeDisplayOn = state_.before.displayOn;
-        status_.desiredDisplayOn = state_.displayOn;
         status_.beforeBluetoothIndicatorActive =
             state_.before.bluetoothIndicator != V1BluetoothIndicatorState::Off;
         state_.bluetoothIndicatorActive = state_.bluetoothLedPolicy == V1BluetoothLedPolicy::On
@@ -737,7 +712,6 @@ bool AutoPushModule::preflight() {
                                               : (state_.bluetoothLedPolicy == V1BluetoothLedPolicy::Off
                                                      ? false
                                                      : status_.beforeBluetoothIndicatorActive);
-        status_.desiredBluetoothIndicatorActive = state_.bluetoothIndicatorActive;
         if (!state_.displayOn && state_.bluetoothIndicatorActive &&
             !V1FirmwareCompat::capabilities(state_.firmwareVersion).keepBluetoothLedOn) {
             failWholePlan(&status_.display, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_BLUETOOTH_LED);
@@ -781,9 +755,7 @@ bool AutoPushModule::preflight() {
             failWholePlan(&status_.mode, Outcome::INVALID, FailureReason::MISSING_LIVE_SNAPSHOT);
             return false;
         }
-        status_.mode.beforeAvailable = true;
         status_.beforeMode = modeValueFromObservation(state_.before.mode);
-        status_.desiredMode = state_.desiredMode;
         status_.mode.needed = status_.beforeMode != state_.desiredMode;
         if (!status_.mode.needed) {
             status_.mode.verified = true;
@@ -826,14 +798,10 @@ bool AutoPushModule::preflight() {
             failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::MISSING_LIVE_SNAPSHOT);
             return false;
         }
-        status_.volume.beforeAvailable = true;
         status_.beforeMainVolume = state_.before.currentMainVolume;
         status_.beforeMutedVolume = state_.before.currentMutedVolume;
         status_.beforeSavedMainVolume = state_.before.savedMainVolume;
         status_.beforeSavedMutedVolume = state_.before.savedMutedVolume;
-        status_.desiredMainVolume = state_.volume;
-        status_.desiredMutedVolume = state_.muteVolume;
-        status_.volumeCommandAux = state_.volumeAux;
         status_.volume.needed = status_.beforeMainVolume != state_.volume ||
                                 status_.beforeMutedVolume != state_.muteVolume ||
                                 (state_.volumePolicy == V1VolumePolicy::Saved &&
@@ -894,7 +862,6 @@ bool AutoPushModule::preflight() {
             // resets the live table. Compile only from a fresh target-region
             // capture so an unowned band is never restored from the old mode.
             state_.customCompilationDeferred = true;
-            status_.customFrequencies.beforeAvailable = true;
             status_.customFrequencies.needed = true;
             if (!status_.requestedCustomDefinitions.assign(state_.customDefinitions)) {
                 failWholePlan(&status_.customFrequencies, Outcome::INVALID,
@@ -1022,7 +989,6 @@ void AutoPushModule::finishOperation() {
             status_.reason = FailureReason::IN_THE_BOX_PERSIST_FAILED;
         } else {
             quiet_->setInTheBoxSettings(state_.profile.inTheBox, state_.sessionGeneration);
-            status_.inTheBoxApplied = true;
         }
     }
     if (candidateSuccess && status_.reason == FailureReason::NONE) status_.result = Result::SUCCEEDED;
@@ -1508,11 +1474,6 @@ void AutoPushModule::process() {
         const auto& result = parser_->sweepWriteResultObservation();
         if (result.revision != state_.observationRevision &&
             ingressAfter(result.ingressSequence, state_.observationIngressBoundary)) {
-            status_.customCommitResultAvailable = result.available;
-            status_.customCommitResultRaw = result.result;
-            status_.customCommitInvalidDefinitionIndex = result.available && result.result != 0
-                                                             ? static_cast<int16_t>(result.result - 1u)
-                                                             : -1;
             if (!result.available || result.result != 0) {
                 failWholePlan(&status_.customFrequencies, Outcome::MISMATCH,
                               FailureReason::CUSTOM_COMMIT_REJECTED);
@@ -1621,229 +1582,6 @@ void AutoPushModule::process() {
     default:
         return;
     }
-}
-
-bool AutoPushModule::appendStatusJson(JsonObject root) const {
-    const auto stepName = [this]() {
-        switch (state_.step) {
-        case Step::Idle: return "Idle";
-        case Step::WaitReady: return "WaitReady";
-        case Step::LoadProfile: return "LoadProfile";
-        case Step::Preflight: return "Preflight";
-        case Step::UserWrite: return "UserWrite";
-        case Step::UserRead: return "UserRead";
-        case Step::UserVerify: return "UserVerify";
-        case Step::DisplayWrite: return "DisplayWrite";
-        case Step::DisplayVerify: return "DisplayVerify";
-        case Step::ModeWrite: return "ModeWrite";
-        case Step::ModeVerify: return "ModeVerify";
-        case Step::VolumeWrite: return "VolumeWrite";
-        case Step::VolumeRead: return "VolumeRead";
-        case Step::VolumeVerify: return "VolumeVerify";
-        case Step::CustomRefreshSections: return "CustomRefreshSections";
-        case Step::CustomRefreshMax: return "CustomRefreshMax";
-        case Step::CustomRefreshDefinitions: return "CustomRefreshDefinitions";
-        case Step::CustomRefreshVerify: return "CustomRefreshVerify";
-        case Step::CustomWrite: return "CustomWrite";
-        case Step::CustomCommitVerify: return "CustomCommitVerify";
-        case Step::CustomRead: return "CustomRead";
-        case Step::CustomVerify: return "CustomVerify";
-        }
-        return "Idle";
-    };
-    const auto outcomeName = [](Outcome outcome) {
-        switch (outcome) {
-        case Outcome::NOT_REQUESTED: return "not_requested";
-        case Outcome::PENDING: return "pending";
-        case Outcome::UNCHANGED: return "unchanged";
-        case Outcome::SENT: return "sent";
-        case Outcome::VERIFIED: return "verified";
-        case Outcome::UNSUPPORTED: return "unsupported";
-        case Outcome::INVALID: return "invalid";
-        case Outcome::BLOCKED: return "blocked";
-        case Outcome::WRITE_FAILED: return "write_failed";
-        case Outcome::READ_FAILED: return "read_failed";
-        case Outcome::MISMATCH: return "mismatch";
-        case Outcome::TIMEOUT: return "timeout";
-        case Outcome::DISCONNECTED: return "disconnected";
-        case Outcome::SESSION_CHANGED: return "session_changed";
-        case Outcome::LOAD_FAILED: return "load_failed";
-        }
-        return "invalid";
-    };
-    const auto operationResultName = [](Result result) {
-        switch (result) {
-        case Result::NONE: return "none";
-        case Result::QUEUED: return "queued";
-        case Result::IN_PROGRESS: return "in_progress";
-        case Result::SUCCEEDED: return "succeeded";
-        case Result::PARTIAL: return "partial";
-        case Result::FAILED: return "failed";
-        }
-        return "failed";
-    };
-    const auto reasonName = [](FailureReason reason) {
-        switch (reason) {
-        case FailureReason::NONE: return "none";
-        case FailureReason::DISCONNECTED: return "disconnected";
-        case FailureReason::SESSION_CHANGED: return "session_changed";
-        case FailureReason::MISSING_LIVE_SNAPSHOT: return "missing_live_snapshot";
-        case FailureReason::VERSION_UNKNOWN: return "version_unknown";
-        case FailureReason::UNSUPPORTED_FIRMWARE: return "unsupported_firmware";
-        case FailureReason::PROFILE_BUSY: return "profile_busy";
-        case FailureReason::PROFILE_LOAD_FAILED: return "profile_load_failed";
-        case FailureReason::INVALID_PROFILE_SCHEMA: return "invalid_profile_schema";
-        case FailureReason::INVALID_USER_SETTING_VALUE: return "invalid_user_setting_value";
-        case FailureReason::INVALID_POLICY: return "invalid_policy";
-        case FailureReason::INVALID_VOLUME_PAIR: return "invalid_volume_pair";
-        case FailureReason::UNSUPPORTED_SAVED_VOLUME: return "unsupported_saved_volume";
-        case FailureReason::UNSUPPORTED_CUSTOM_FREQUENCIES: return "unsupported_custom_frequencies";
-        case FailureReason::UNSUPPORTED_BLUETOOTH_LED: return "unsupported_bluetooth_led";
-        case FailureReason::CUSTOM_FREQUENCY_PRESERVATION_REQUIRED:
-            return "custom_frequency_preservation_required";
-        case FailureReason::EURO_ADVANCED_MODE_INVALID: return "euro_advanced_mode_invalid";
-        case FailureReason::VOLUME_OWNER_BUSY: return "volume_owner_busy";
-        case FailureReason::USER_BYTES_BEFORE_REQUIRED: return "user_bytes_before_required";
-        case FailureReason::USER_BYTES_WRITE_FAILED: return "user_bytes_write_failed";
-        case FailureReason::USER_BYTES_READ_FAILED: return "user_bytes_read_failed";
-        case FailureReason::USER_BYTES_MISMATCH: return "user_bytes_mismatch";
-        case FailureReason::USER_BYTES_TIMEOUT: return "user_bytes_timeout";
-        case FailureReason::DISPLAY_WRITE_FAILED: return "display_write_failed";
-        case FailureReason::DISPLAY_MISMATCH: return "display_mismatch";
-        case FailureReason::DISPLAY_TIMEOUT: return "display_timeout";
-        case FailureReason::MODE_WRITE_FAILED: return "mode_write_failed";
-        case FailureReason::MODE_MISMATCH: return "mode_mismatch";
-        case FailureReason::MODE_TIMEOUT: return "mode_timeout";
-        case FailureReason::VOLUME_WRITE_FAILED: return "volume_write_failed";
-        case FailureReason::VOLUME_READ_FAILED: return "volume_read_failed";
-        case FailureReason::VOLUME_MISMATCH: return "volume_mismatch";
-        case FailureReason::VOLUME_TIMEOUT: return "volume_timeout";
-        case FailureReason::CUSTOM_CONFIGURATION_INVALID: return "custom_configuration_invalid";
-        case FailureReason::CUSTOM_WRITE_FAILED: return "custom_write_failed";
-        case FailureReason::CUSTOM_COMMIT_REJECTED: return "custom_commit_rejected";
-        case FailureReason::CUSTOM_COMMIT_TIMEOUT: return "custom_commit_timeout";
-        case FailureReason::CUSTOM_READ_FAILED: return "custom_read_failed";
-        case FailureReason::CUSTOM_READBACK_INVALID: return "custom_readback_invalid";
-        case FailureReason::CUSTOM_READBACK_TIMEOUT: return "custom_readback_timeout";
-        case FailureReason::PROXY_OWNS_DETECTOR: return "proxy_owns_detector";
-        case FailureReason::IN_THE_BOX_PERSIST_FAILED: return "in_the_box_persist_failed";
-        case FailureReason::OPERATION_TIMEOUT: return "operation_timeout";
-        }
-        return "invalid_policy";
-    };
-    const auto appendBytes = [](JsonArray values, const std::array<uint8_t, 6>& bytes) {
-        for (uint8_t value : bytes) values.add(value);
-    };
-    const auto appendDefinitions = [](JsonArray values,
-                                      const FixedDefinitionList& definitions) {
-        for (const V1CustomFrequencyDefinition& definition : definitions) {
-            JsonObject item = values.add<JsonObject>();
-            item["index"] = definition.index;
-            item["lowerMHz"] = definition.lowerMHz;
-            item["upperMHz"] = definition.upperMHz;
-        }
-    };
-    const auto appendBase = [&](JsonObject object, const ComponentStatus& component) {
-        object["requested"] = component.requested;
-        object["beforeAvailable"] = component.beforeAvailable;
-        object["needed"] = component.needed;
-        object["sent"] = component.sent;
-        object["verified"] = component.verified;
-        object["applied"] = component.verified; // backward-compatible alias; never merely sent
-        object["outcome"] = outcomeName(component.outcome);
-        object["reason"] = reasonName(component.reason);
-    };
-
-    root["active"] = state_.step != Step::Idle;
-    root["operationId"] = status_.operationId;
-    root["slot"] = status_.slotIndex;
-    root["step"] = stepName();
-    root["result"] = operationResultName(status_.result);
-    root["reason"] = reasonName(status_.reason);
-    root["profileLoaded"] = status_.profileLoaded;
-    root["inTheBoxApplied"] = status_.inTheBoxApplied;
-    root["profileConfigured"] = status_.profileName.length() > 0;
-    root["profileName"] = status_.profileName;
-    JsonObject components = root["components"].to<JsonObject>();
-
-    JsonObject profile = components["profile"].to<JsonObject>();
-    appendBase(profile, status_.userSettings);
-    if (status_.userSettings.beforeAvailable) {
-        appendBytes(profile["before"].to<JsonArray>(), status_.beforeUserBytes);
-    } else profile["before"] = nullptr;
-    appendBytes(profile["desired"].to<JsonArray>(), status_.desiredUserBytes);
-    appendBytes(profile["effective"].to<JsonArray>(), status_.effectiveUserBytes);
-    appendBytes(profile["supportedMasks"].to<JsonArray>(), status_.supportedUserMasks);
-    profile["alpLaserOverrideActive"] = status_.alpLaserOverrideActive;
-    profile["alpLaserOverrideApplied"] = status_.alpLaserOverrideApplied;
-
-    JsonObject display = components["display"].to<JsonObject>();
-    appendBase(display, status_.display);
-    if (status_.display.beforeAvailable) display["before"] = status_.beforeDisplayOn;
-    else display["before"] = nullptr;
-    display["desired"] = status_.desiredDisplayOn;
-    display["bluetoothBeforeActive"] = status_.beforeBluetoothIndicatorActive;
-    display["bluetoothDesiredActive"] = status_.desiredBluetoothIndicatorActive;
-
-    JsonObject mode = components["mode"].to<JsonObject>();
-    appendBase(mode, status_.mode);
-    if (status_.mode.beforeAvailable) mode["before"] = status_.beforeMode;
-    else mode["before"] = nullptr;
-    mode["desired"] = status_.desiredMode;
-
-    JsonObject volume = components["volume"].to<JsonObject>();
-    appendBase(volume, status_.volume);
-    if (status_.volume.beforeAvailable) {
-        JsonObject before = volume["before"].to<JsonObject>();
-        before["main"] = status_.beforeMainVolume;
-        before["muted"] = status_.beforeMutedVolume;
-        before["savedMain"] = status_.beforeSavedMainVolume;
-        before["savedMuted"] = status_.beforeSavedMutedVolume;
-    } else volume["before"] = nullptr;
-    JsonObject desired = volume["desired"].to<JsonObject>();
-    desired["main"] = status_.desiredMainVolume;
-    desired["muted"] = status_.desiredMutedVolume;
-    volume["feedback"] = status_.volumeFeedback == V1VolumeFeedbackPolicy::Always
-                             ? "always"
-                             : (status_.volumeFeedback == V1VolumeFeedbackPolicy::ChangedOnly
-                                    ? "changed_only" : "none");
-    volume["disconnect"] = status_.volumeDisconnect == V1VolumeDisconnectPolicy::KeepCurrent
-                                ? "keep_current" : "restore_saved";
-    volume["commandAux"] = status_.volumeCommandAux;
-    volume["valuesVerified"] = status_.volume.verified;
-    volume["verificationScope"] = status_.volumePolicy == V1VolumePolicy::Saved
-                                       ? "current_and_saved_values_only"
-                                       : "current_values_and_saved_preservation_only";
-    volume["policyReadbackAvailable"] = false;
-    volume["policyOutcome"] = status_.volume.sent ? "sent_unobservable" : "not_sent";
-
-    JsonObject custom = components["customFrequencies"].to<JsonObject>();
-    appendBase(custom, status_.customFrequencies);
-    custom["verificationScope"] = "topology_and_live_section_with_calibrated_readback";
-    if (status_.customCommitResultAvailable) {
-        custom["commitResultRaw"] = status_.customCommitResultRaw;
-    } else {
-        custom["commitResultRaw"] = nullptr;
-    }
-    if (status_.customCommitInvalidDefinitionIndex >= 0) {
-        custom["invalidDefinitionIndex"] = status_.customCommitInvalidDefinitionIndex;
-    } else {
-        custom["invalidDefinitionIndex"] = nullptr;
-    }
-    appendDefinitions(custom["requestedDefinitions"].to<JsonArray>(), status_.requestedCustomDefinitions);
-    appendDefinitions(custom["calibratedReadback"].to<JsonArray>(), status_.effectiveCustomDefinitions);
-    return true;
-}
-
-String AutoPushModule::getStatusJson() const {
-    PsramJson::Document doc;
-    if (!appendStatusJson(doc.to<JsonObject>()) || doc.overflowed()) return String();
-    const size_t expected = measureJson(doc);
-    if (expected == 0 || expected > 16u * 1024u) return String();
-    String json;
-    json.reserve(expected);
-    if (serializeJson(doc, json) != expected || json.length() != expected) return String();
-    return json;
 }
 
 AutoPushModule::ExecutionSummary AutoPushModule::executionSummary() const {

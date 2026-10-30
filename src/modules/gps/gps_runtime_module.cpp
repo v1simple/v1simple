@@ -44,9 +44,6 @@ void GpsRuntimeModule::setEnabled(bool enabled) {
     resetRuntimeState();
     if (enabled_) {
         detectionStartMs_ = millis();
-        if (detectionStartMs_ == 0) {
-            detectionStartMs_ = 1;
-        }
         parserActive_ = true;
     }
 }
@@ -96,7 +93,8 @@ void GpsRuntimeModule::invalidateSpeedSample() {
 }
 
 void GpsRuntimeModule::updateDetectionTimeout(uint32_t nowMs) {
-    if (!enabled_ || moduleDetected_ || detectionTimedOut_ || detectionStartMs_ == 0) {
+    // Enabled state guarantees a start timestamp; zero is valid at rollover.
+    if (!enabled_ || moduleDetected_ || detectionTimedOut_) {
         return;
     }
     if (!elapsedExceeded(nowMs, detectionStartMs_, DETECTION_TIMEOUT_MS)) {

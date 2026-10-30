@@ -145,7 +145,42 @@ static void checkIndependentSpeedExpiry() {
     puts("expired UART RMC stays invalid across a full timer cycle; fresh RMC recovers");
 }
 
+static void checkDetectionStartBoundaries() {
+    const char* rmc = "$GPRMC,123519,A,4807.038,N,01131.000,E,010.0,084.4,230394,003.1,W*6F\r\n";
+    for (uint32_t start : {0u, 1u, UINT32_MAX - 10u}) {
+        Serial1.reset();
+        mockMillis = start;
+        GpsRuntimeModule gps;
+        gps.begin(true);
+        gps.update(start);
+        assert(gps.snapshot(start).parserActive && Serial1.enabled);
+        assert(!gps.snapshot(start).detectionTimedOut);
+        gps.update(start + 60000u);
+        assert(gps.snapshot(start + 60000u).parserActive && Serial1.enabled);
+        gps.update(start + 60001u);
+        assert(gps.snapshot(start + 60001u).detectionTimedOut && !Serial1.enabled);
+
+        // Re-enable at the same boundary, then receive through the production
+        // UART path: detection must recover and cancel the no-module timeout.
+        gps.setEnabled(false);
+        gps.setEnabled(true);
+        gps.update(start);
+        Serial1.receive(rmc);
+        gps.update(start + 1000u);
+        assert(gps.snapshot(start + 1000u).moduleDetected);
+        assert(gps.snapshot(start + 1000u).sampleValid);
+        gps.update(start + 60001u);
+        assert(gps.snapshot(start + 60001u).parserActive && Serial1.enabled);
+        assert(!gps.snapshot(start + 60001u).detectionTimedOut);
+        gps.setEnabled(false);
+        gps.update(start + 60002u);
+        assert(!gps.snapshot(start + 60002u).parserActive && !Serial1.enabled);
+        printf("GPS detection start=%u: full timeout, re-enable and UART recovery pass\n", start);
+    }
+}
+
 int main() {
+    checkDetectionStartBoundaries();
     checkIndependentQualityFreshness();
     checkIndependentSpeedExpiry();
     const char *gga = "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*4D\r\n";

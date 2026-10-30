@@ -186,7 +186,6 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     // clears clip the side arrow by a couple of pixels. A targeted single-arrow
     // repaint can therefore erase neighboring arrow bases without redrawing the
     // neighbor. Redraw the full cluster whenever any arrow state changes.
-    [[maybe_unused]] const int headH = (int)(22 * scale);
     int totalTop = topArrowCenterY - topH / 2 - 2;
     int totalBottom = bottomArrowCenterY + bottomH / 2 + 2;
     FILL_RECT(clearLeft, totalTop, clearWidth, totalBottom - totalTop, PALETTE_BG);

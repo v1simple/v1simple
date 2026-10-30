@@ -533,31 +533,7 @@ SendResult V1BLEClient::writeUserBytesExactResult(const uint8_t* bytes) {
     return sendCommandWithResult(packet, sizeof(packet));
 }
 
-void V1BLEClient::startUserBytesVerification(const uint8_t* expected) {
-    if (!expected) {
-        return;
-    }
-    memcpy(verifyExpected_, expected, sizeof(verifyExpected_));
-    verifyPending_ = true;
-    verifyComplete_ = false;
-    verifyMatch_ = false;
-    verifyPushMatchEdgePending_.store(false, std::memory_order_relaxed);
-}
-
-V1BLEClient::UserBytesVerificationStatus V1BLEClient::userBytesVerificationStatus() const {
-    if (verifyPending_) {
-        return UserBytesVerificationStatus::PENDING;
-    }
-    if (!verifyComplete_) {
-        return UserBytesVerificationStatus::INACTIVE;
-    }
-    return verifyMatch_ ? UserBytesVerificationStatus::MATCH : UserBytesVerificationStatus::MISMATCH;
-}
-
-void V1BLEClient::cancelUserBytesVerification() {
-    verifyPending_ = false;
-    verifyComplete_ = false;
-    verifyMatch_ = false;
+void V1BLEClient::clearVerifiedSettingsApplyEdge() {
     verifyPushMatchEdgePending_.store(false, std::memory_order_release);
 }
 
@@ -574,16 +550,6 @@ void V1BLEClient::onUserBytesReceived(const uint8_t* bytes, uint32_t ingressSequ
         hasSessionUserBytes_ = true;
         ++sessionUserBytesRevision_;
         sessionUserBytesIngressSequence_ = ingressSequence;
-    }
-    if (verifyPending_ && bytes) {
-        memcpy(verifyReceived_, bytes, 6);
-        verifyComplete_ = true;
-        verifyMatch_ = (memcmp(verifyExpected_, verifyReceived_, 6) == 0);
-        verifyPushMatchEdgePending_.store(verifyMatch_, std::memory_order_relaxed);
-        Serial.printf("[VerifyPush] Received user bytes: %02X%02X%02X%02X%02X%02X (match=%s)\n", verifyReceived_[0],
-                      verifyReceived_[1], verifyReceived_[2], verifyReceived_[3], verifyReceived_[4],
-                      verifyReceived_[5], verifyMatch_ ? "YES" : "NO");
-        verifyPending_ = false;
     }
 }
 

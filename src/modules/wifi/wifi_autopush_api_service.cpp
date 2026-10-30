@@ -309,26 +309,6 @@ void handleApiStatusQuery(WebServer& server, const Runtime& runtime,
         WifiApiResponse::sendJsonDocument(server, 200, doc);
         return;
     }
-    if (runtime.appendPushStatusJson) {
-        PsramJson::Document doc;
-        if (!runtime.appendPushStatusJson(doc.to<JsonObject>(), runtime.appendPushStatusJsonCtx) ||
-            doc.overflowed()) {
-            server.send(503, "application/json", "{\"error\":\"Push status memory unavailable\",\"retryable\":true}");
-            return;
-        }
-        const size_t expected = measureJson(doc);
-        if (expected == 0 || expected > 16u * 1024u) {
-            server.send(503, "application/json", "{\"error\":\"Push status unavailable\",\"retryable\":true}");
-            return;
-        }
-        WifiApiResponse::sendJsonDocument(server, 200, doc);
-        return;
-    }
-    String json;
-    if (runtime.loadPushStatusJson && runtime.loadPushStatusJson(json, runtime.loadPushStatusJsonCtx)) {
-        server.send(200, "application/json", json);
-        return;
-    }
     server.send(500, "application/json", "{\"error\":\"Push status not available\"}");
 }
 

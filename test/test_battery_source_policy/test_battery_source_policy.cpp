@@ -14,19 +14,6 @@ void test_unknown_source_keeps_cell_protection_without_claiming_a_supply() {
     TEST_ASSERT_TRUE(battery_math::criticalProtectionRequired(resolveOnBattery(Source::Unknown), 3100));
     TEST_ASSERT_FALSE(battery_math::criticalProtectionRequired(resolveOnBattery(Source::Unknown), 0));
     TEST_ASSERT_FALSE(battery_math::criticalProtectionRequired(resolveOnBattery(Source::Unknown), 3800));
-    TEST_ASSERT_EQUAL(poweroff_policy::Strategy::HARD_LATCH_CUT,
-                      poweroff_policy::selectStrategy(resolveOnBattery(Source::Unknown)));
-}
-
-void test_button_availability_is_independent_of_supply_and_voltage() {
-    for (Source source : {Source::Unknown, Source::Battery, Source::Usb}) {
-        for (bool adc : {false, true}) {
-            for (bool voltage : {false, true}) {
-                TEST_ASSERT_TRUE(powerButtonHandlingEnabled({true, source, adc, voltage}));
-                TEST_ASSERT_FALSE(powerButtonHandlingEnabled({false, source, adc, voltage}));
-            }
-        }
-    }
 }
 
 void test_known_supply_names_and_policy_remain_distinct() {
@@ -51,7 +38,6 @@ void test_unknown_supply_fallback_selects_only_a_released_wake_input() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_unknown_source_keeps_cell_protection_without_claiming_a_supply);
-    RUN_TEST(test_button_availability_is_independent_of_supply_and_voltage);
     RUN_TEST(test_known_supply_names_and_policy_remain_distinct);
     RUN_TEST(test_unknown_supply_fallback_selects_only_a_released_wake_input);
     return UNITY_END();

@@ -179,7 +179,7 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
         countStable) {
         bool throttled = shouldThrottleDirectionChange(ctx.now);
         if (throttled) {
-            updateLastAnnouncedDirection(priority.direction, (uint8_t)ctx.alertCount);
+            updateLastAnnouncedDirection(priority.direction);
             return action;
         }
 
@@ -328,13 +328,13 @@ void VoiceModule::commitAction(const VoiceAction& action, const unsigned long ac
     case VoiceAction::Type::ANNOUNCE_PRIORITY:
         resetDirectionThrottle(acceptedAtMs);
         updateLastAnnounced(action.sourceBand, action.sourcePhoto, action.sourceDirection, action.freq,
-                            action.sourceAlertCount, acceptedAtMs);
+                            acceptedAtMs);
         markPriorityAnnounced(acceptedAtMs);
         markAlertAnnounced(action.sourceBand, action.freq, action.sourcePhoto);
         break;
     case VoiceAction::Type::ANNOUNCE_DIRECTION:
         recordDirectionChange(acceptedAtMs);
-        updateLastAnnouncedDirection(action.sourceDirection, action.sourceAlertCount);
+        updateLastAnnouncedDirection(action.sourceDirection);
         updateLastAnnouncedTime(acceptedAtMs);
         markPriorityAnnounced(acceptedAtMs);
         break;
@@ -571,20 +571,17 @@ bool VoiceModule::hasBogeyCountCooldownPassed(unsigned long now) const {
     return (now - lastVoiceAlertTime_ >= BOGEY_COUNT_COOLDOWN_MS);
 }
 
-void VoiceModule::updateLastAnnounced(Band band, bool isPhoto, Direction dir, uint16_t freq, uint8_t bogeyCount,
-                                      unsigned long now) {
+void VoiceModule::updateLastAnnounced(Band band, bool isPhoto, Direction dir, uint16_t freq, unsigned long now) {
     lastVoiceAlertBand_ = band;
     lastVoiceAlertWasPhoto_ = isPhoto;
     lastVoiceAlertDirection_ = dir;
     lastVoiceAlertFrequency_ = freq;
-    lastVoiceAlertBogeyCount_ = bogeyCount;
     lastVoiceAlertTime_ = now;
     hasAnnouncedOnce_ = true;
 }
 
-void VoiceModule::updateLastAnnouncedDirection(Direction dir, uint8_t bogeyCount) {
+void VoiceModule::updateLastAnnouncedDirection(Direction dir) {
     lastVoiceAlertDirection_ = dir;
-    lastVoiceAlertBogeyCount_ = bogeyCount;
 }
 
 void VoiceModule::updateLastAnnouncedTime(unsigned long now) {
@@ -597,7 +594,6 @@ void VoiceModule::resetLastAnnounced() {
     lastVoiceAlertWasPhoto_ = false;
     lastVoiceAlertDirection_ = DIR_NONE;
     lastVoiceAlertFrequency_ = 0xFFFF;
-    lastVoiceAlertBogeyCount_ = 0;
     lastVoiceAlertTime_ = 0;
     hasAnnouncedOnce_ = false;
     prevAlertCount_ = 0;

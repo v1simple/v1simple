@@ -122,7 +122,8 @@ class LittleFS:
         self.assertEqual(calls[5], ["pio", "system", "info", "--json-output"])
         self.assertTrue(calls[6][1].endswith("littlefs-capacity.py"), calls)
         self.assertEqual(calls[7], ["pio", "run", "-e", "esp32-s3-car-install"])
-        self.assertEqual((self.root / "data/index.html").read_text(), "fixture")
+        self.assertFalse((self.root / "data/index.html").exists())
+        self.assertEqual((self.root / "interface/build/index.html").read_text(), "fixture")
         self.assertFalse((self.root / "data/first-use.html").exists())
         self.assertEqual((self.root / "interface/build/first-use.html").read_text(), "embedded guide fixture")
 

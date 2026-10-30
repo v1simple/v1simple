@@ -224,9 +224,9 @@ void test_device_settings_post_reports_persist_failure() {
     Probe probe;
     probe.persistSuccess = false;
     WebServer server(80);
-    server.setArg("proxy_ble", "false");
-
-    WifiSettingsApiService::handleApiDeviceSettingsSave(server, makeDeviceRuntime(probe));
+    const char body[] = "proxy_ble=false";
+    WifiSettingsApiService::handleApiDeviceSettingsSaveBody(
+        server, makeDeviceRuntime(probe), reinterpret_cast<const uint8_t*>(body), sizeof(body) - 1u);
 
     TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
     TEST_ASSERT_TRUE(contains(server.lastBody, "settings_persist_failed"));

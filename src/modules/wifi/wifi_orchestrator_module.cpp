@@ -1,9 +1,7 @@
 #include "wifi_orchestrator_module.h"
 
-WifiOrchestrator::WifiOrchestrator(WiFiManager& wifiManager, V1BLEClient& bleClient, PacketParser& parser,
-                                   StorageManager& storage, AutoPushModule& autoPushModule)
-    : wifiManager(wifiManager), bleClient(bleClient), parser(parser), storage(storage),
-      autoPushModule(autoPushModule) {}
+WifiOrchestrator::WifiOrchestrator(WiFiManager& wifiManager, V1BLEClient& bleClient, PacketParser& parser)
+    : wifiManager(wifiManager), bleClient(bleClient), parser(parser) {}
 
 void WifiOrchestrator::ensureCallbacksConfigured() {
     if (!callbacksConfigured_) {

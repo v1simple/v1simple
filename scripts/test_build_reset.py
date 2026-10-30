@@ -33,6 +33,7 @@ def run_reset(
     arguments: tuple[str, ...] = ("--reset",),
     reset_available: bool = False,
     inherited_upload_port: str = "",
+    staged_audio: tuple[str, ...] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[list[str]], bool]:
     temp_dir = tempfile.TemporaryDirectory()
     fixture = Path(temp_dir.name)
@@ -42,6 +43,19 @@ def run_reset(
     (fixture / "scripts" / "platformio_ca_bundle.sh").write_text(":\n", encoding="utf-8")
     (fixture / "scripts" / "check_platformio_core_version.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
     (fixture / "scripts" / "prepare_web_build.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    shutil.copy2(ROOT / "scripts/check_audio_asset_manifest.py", fixture / "scripts/check_audio_asset_manifest.py")
+    (fixture / "config").mkdir()
+    (fixture / "config/audio_asset_manifest.json").write_text(
+        json.dumps({"files": ["one.mul", "two.mul"]}), encoding="utf-8")
+    source_audio = fixture / "tools/freq_audio/mulaw"
+    source_audio.mkdir(parents=True)
+    for name in ("one.mul", "two.mul"):
+        (source_audio / name).write_bytes(b"clip")
+    if staged_audio is not None:
+        deployed_audio = fixture / "data/audio"
+        deployed_audio.mkdir(parents=True)
+        for name in staged_audio:
+            (deployed_audio / name).write_bytes(b"clip")
     for relative in (".pio/build", "interface/build", "interface/.svelte-kit", "interface/node_modules"):
         (fixture / relative).mkdir(parents=True)
     (fixture / ".pio/build/sentinel").write_text("stale\n", encoding="utf-8")
@@ -154,13 +168,28 @@ def test_build_failure_happens_before_erase() -> None:
 
 
 def test_skip_web_rejects_missing_filesystem_data() -> None:
-    result, calls, _ = run_reset(
-        confirmation="",
-        arguments=("--skip-web", "--upload-fs"),
-    )
-    assert_true(result.returncode != 0, "missing web files were accepted for uploadfs")
-    assert_true(not calls, f"PlatformIO ran before missing web files were rejected: {calls}")
-    assert_true("data/index.html is missing or empty" in result.stderr, result.stderr)
+    for staged_audio in (None, (), ("one.mul",)):
+        result, calls, _ = run_reset(
+            confirmation="",
+            arguments=("--skip-web", "--upload-fs"),
+            staged_audio=staged_audio,
+        )
+        assert_true(result.returncode != 0, "missing or partial audio was accepted for uploadfs")
+        assert_true(not calls, f"PlatformIO ran before invalid audio was rejected: {calls}")
+        assert_true("Cannot reuse filesystem data" in result.stderr, result.stderr)
+
+
+def test_skip_web_reuses_complete_audio_only_filesystem_data() -> None:
+    for option in ("--upload-fs", "--all"):
+        result, calls, _ = run_reset(
+            confirmation="",
+            arguments=("--skip-web", option),
+            staged_audio=("one.mul", "two.mul"),
+        )
+        assert_true(result.returncode == 0, result.stdout + result.stderr)
+        assert_true(["run", "-e", "waveshare-349", "-t", "uploadfs"] in calls,
+                    f"complete audio-only staging did not reach simulated uploadfs: {calls}")
+        assert_true(not any("erase" in call for call in calls), f"reuse erased data: {calls}")
 
 
 def test_build_reuses_frontend_and_firmware_outputs() -> None:
@@ -261,6 +290,7 @@ def main() -> int:
     test_reset_rejects_missing_confirmation()
     test_build_failure_happens_before_erase()
     test_skip_web_rejects_missing_filesystem_data()
+    test_skip_web_reuses_complete_audio_only_filesystem_data()
     test_build_reuses_frontend_and_firmware_outputs()
     test_option_values_remain_single_arguments()
     test_reset_preserves_port_and_job_arguments()

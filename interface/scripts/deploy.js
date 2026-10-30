@@ -1,4 +1,4 @@
-import { cpSync, rmSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
+import { rmSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -8,7 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const buildDir = join(__dirname, '..', 'build');
 const dataDir = join(__dirname, '..', '..', 'data');
 
-console.log('🚀 Deploying SvelteKit build to LittleFS data folder...');
+console.log('🚀 Staging audio in the LittleFS data folder...');
 
 if (!existsSync(buildDir)) {
     console.error('❌ Build folder not found! Run "npm run build" first.');
@@ -21,67 +21,8 @@ if (existsSync(dataDir)) {
 }
 mkdirSync(dataDir, { recursive: true });
 
-console.log('📁 Copying build files...');
-cpSync(buildDir, dataDir, { recursive: true });
-
-// The guide is a mandatory embedded firmware asset and is also staged for the
-// public installer. Managed HTML never falls back to LittleFS, so this second
-// copy cannot serve the current firmware. Keep legacy web entries unchanged.
-rmSync(join(dataDir, 'first-use.html'), { force: true });
-
-// Keep only compressed runtime assets under /_app when a .gz twin exists.
-// This saves flash while preserving uncompressed HTML entry pages.
-function pruneUncompressedAppAssets(appDir) {
-    if (!existsSync(appDir)) {
-        return { removedFiles: 0, removedBytes: 0 };
-    }
-
-    const stack = [appDir];
-    let removedFiles = 0;
-    let removedBytes = 0;
-    const compressibleExt = /\.(js|css|json)$/;
-    const keepRawFiles = new Set([join(appDir, 'env.js'), join(appDir, 'version.json')]);
-
-    while (stack.length > 0) {
-        const dir = stack.pop();
-        for (const file of readdirSync(dir)) {
-            const filePath = join(dir, file);
-            const stat = statSync(filePath);
-
-            if (stat.isDirectory()) {
-                stack.push(filePath);
-                continue;
-            }
-
-            if (!compressibleExt.test(file) || file.endsWith('.gz')) {
-                continue;
-            }
-
-            if (keepRawFiles.has(filePath)) {
-                continue;
-            }
-
-            const gzPath = `${filePath}.gz`;
-            if (!existsSync(gzPath)) {
-                continue;
-            }
-
-            rmSync(filePath);
-            removedFiles++;
-            removedBytes += stat.size;
-        }
-    }
-
-    return { removedFiles, removedBytes };
-}
-
-const pruned = pruneUncompressedAppAssets(join(dataDir, '_app'));
-if (pruned.removedFiles > 0) {
-    console.log(
-        `🗜️ Pruned ${pruned.removedFiles} uncompressed /_app assets (${(pruned.removedBytes / 1024).toFixed(1)} KB)`
-    );
-}
-
+// The current web UI is embedded in firmware. Stage only filesystem-owned
+// audio; managed pages/assets never fall back to the LittleFS copy.
 const stagedAudio = stageAudioFiles();
 if (stagedAudio.missing.length > 0) {
     console.error(

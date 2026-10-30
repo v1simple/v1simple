@@ -497,7 +497,6 @@ void V1BLEClient::processClientQuiesce() {
 
     // One deadline covers every incomplete teardown, including refused disconnects.
     if (decision.action == ble_quiesce_policy::Action::FATAL_RESTART) {
-        quiesceTimeoutRecoveryCount_.fetch_add(1, std::memory_order_relaxed);
         Serial.printf(
             "[BLE] FATAL quiesce timeout: cancel=%u discovery=%u disconnect=%u connected=%u handle=%u; restarting\n",
             waitingForConnectCancel ? 1u : 0u, waitingForDiscovery ? 1u : 0u, waitingForDisconnect ? 1u : 0u,

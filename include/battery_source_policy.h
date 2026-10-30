@@ -19,15 +19,4 @@ constexpr const char* sourceName(Source source) {
     return source == Source::Battery ? "battery" : (source == Source::Usb ? "usb" : "unknown");
 }
 
-struct ButtonGateInputs {
-    bool managerInitialized = false;
-    Source classification = Source::Unknown; // Observability only; PWR is independent of supply.
-    bool adcHealthy = false;                 // Observability only.
-    bool batteryVoltageValid = false;        // Observability only.
-};
-
-constexpr bool powerButtonHandlingEnabled(const ButtonGateInputs& inputs) {
-    return inputs.managerInitialized;
-}
-
 } // namespace battery_source_policy

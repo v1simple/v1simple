@@ -1,6 +1,6 @@
 #!/bin/bash
 # Complete build script for V1 Simple
-# Builds web interface, deploys to data/, builds firmware, and optionally uploads
+# Builds the embedded web interface, stages audio, builds firmware, and optionally uploads
 
 set -euo pipefail
 
@@ -281,19 +281,21 @@ if [ "$SKIP_WEB" = false ]; then
     npm run build
     echo -e "${GREEN}Web interface built${NC}"
 
-    # Deploy the build we just produced to data/.
-    echo -e "${YELLOW}Deploying to data/ folder...${NC}"
+    # Stage filesystem audio alongside the embedded web build.
+    echo -e "${YELLOW}Staging filesystem assets...${NC}"
     npm run deploy:built
     cd ..
-    echo -e "${GREEN}Web files deployed to data/${NC}"
+    echo -e "${GREEN}Audio assets staged in data/${NC}"
 
     echo ""
 else
     echo -e "${YELLOW}Skipping web interface build${NC}"
-    if [ "$UPLOAD_FS" = true ] && [ ! -s "data/index.html" ]; then
-        echo -e "${RED}Cannot reuse web files: data/index.html is missing or empty.${NC}" >&2
-        echo "   Run without --skip-web to rebuild the web interface." >&2
-        exit 1
+    if [ "$UPLOAD_FS" = true ]; then
+        if [ ! -d "data/audio" ] || ! python3 "$SCRIPT_DIR/scripts/check_audio_asset_manifest.py"; then
+            echo -e "${RED}Cannot reuse filesystem data: data/audio is missing or does not match the audio manifest.${NC}" >&2
+            echo "   Run without --skip-web to rebuild and stage filesystem assets." >&2
+            exit 1
+        fi
     fi
     echo ""
 fi

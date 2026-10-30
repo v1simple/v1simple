@@ -168,16 +168,6 @@ class WiFiManager {
         mergeStatus2Ctx_ = ctx;
     }
 
-    // Callback for push executor status (auto-push)
-    void setPushStatusCallback(String (*fn)(void*), void* ctx) {
-        getPushStatusJson_ = fn;
-        getPushStatusJsonCtx_ = ctx;
-    }
-    void setPushStatusDocumentCallback(bool (*fn)(JsonObject, void*), void* ctx) {
-        appendPushStatusJson_ = fn;
-        getPushStatusJsonCtx_ = ctx;
-    }
-
     // V1 connection state used to defer WiFi client operations.
     void setV1ConnectedCallback(bool (*fn)(void*), void* ctx) {
         isV1Connected_ = fn;
@@ -214,9 +204,6 @@ class WiFiManager {
     // Web activity tracking for the maintenance-session idle deadline
     void markUiActivity();                                  // Call on every HTTP request
     bool isUiActive(unsigned long timeoutMs = 30000) const; // True if request within timeout
-
-    /// Service one tick of the HTTP server for long-running maintenance operations.
-    void pumpHttpServer() { server_.handleClient(); }
 
   private:
     SettingsManager& settings_;
@@ -329,8 +316,6 @@ class WiFiManager {
 
     // Mutation rate limiting. Read-only status polls track UI activity without
     // entering this shared write-admission window.
-    static constexpr unsigned long RATE_LIMIT_WINDOW_MS = SlidingWindowRateLimiter::WINDOW_MS;
-    static constexpr size_t RATE_LIMIT_MAX_REQUESTS = SlidingWindowRateLimiter::MAX_REQUESTS;
     SlidingWindowRateLimiter rateLimiter_;
     bool checkRateLimit(); // Returns true if mutation is allowed, false if rate limited
     bool admitMaintenanceWriteBeforeBody();
@@ -356,9 +341,6 @@ class WiFiManager {
     void* mergeStatusCtx_ = nullptr;
     void (*mergeStatus2_)(JsonObject, void* ctx) = nullptr; // appended by appendStatusCallback
     void* mergeStatus2Ctx_ = nullptr;
-    String (*getPushStatusJson_)(void* ctx) = nullptr;
-    bool (*appendPushStatusJson_)(JsonObject root, void* ctx) = nullptr;
-    void* getPushStatusJsonCtx_ = nullptr;
     bool (*isV1Connected_)(void* ctx) = nullptr; // Returns true when V1 is connected (defer WiFi ops until then)
     void* isV1ConnectedCtx_ = nullptr;
     ObdRuntimeModule* obdRuntime_ = nullptr;

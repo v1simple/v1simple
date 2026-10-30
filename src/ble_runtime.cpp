@@ -64,9 +64,6 @@ void V1BLEClient::applyDeferredRuntimeEvents(SettingsManager& settings) {
             connectBurstStableLoopCount_ = 0;
             proxyClientConnected_ = false;
             proxyDisconnectRequestedByCoordinator_ = false;
-            verifyPending_ = false;
-            verifyComplete_ = false;
-            verifyMatch_ = false;
             verifyPushMatchEdgePending_.store(false, std::memory_order_relaxed);
             // A spontaneous V1 power-off starts a fresh reconnect cycle. A
             // callback caused by our own failure teardown must retain the

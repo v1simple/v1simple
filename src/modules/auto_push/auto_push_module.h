@@ -239,7 +239,6 @@ class AutoPushModule {
         bool retainLoadStep = false;
         bool profileOwned = false;
         bool applySlotModifiers = true;
-        bool isPushNow = false;
         bool updateProfileIndicator = true;
         V1DetectorSnapshot before;
         uint32_t firmwareVersion = 0;
@@ -271,11 +270,11 @@ class AutoPushModule {
     };
 
     QueueResult queuePreparedSlot(int slotIndex, const AutoPushSlot& slot, bool profileLoaded,
-                                  const V1Profile& profile, bool isPushNow, bool activateSlot,
+                                  const V1Profile& profile, bool activateSlot,
                                   bool updateProfileIndicator, bool retainLoadStep = false,
                                   bool applySlotModifiers = true);
     bool prepareState(int slotIndex, const AutoPushSlot& slot, bool profileLoaded,
-                      const V1Profile& profile, bool isPushNow, bool updateProfileIndicator,
+                      const V1Profile& profile, bool updateProfileIndicator,
                       bool retainLoadStep, bool applySlotModifiers, State& preparedState,
                       OperationStatus& preparedStatus) const;
     void commitPreparedState(State&& preparedState, OperationStatus&& preparedStatus);

@@ -1,4 +1,4 @@
-// Shared SD/LittleFS storage for profiles, web assets, and persistence.
+// Shared SD/LittleFS storage for profiles, audio, and persistence.
 
 #pragma once
 #ifndef STORAGE_MANAGER_H
@@ -33,7 +33,6 @@ class StorageManager {
 
     bool isReady() const { return ready_; }
     bool isSDCard() const { return usingSDMMC_; }
-    bool isLittleFSReady() const { return littlefsReady_; }
     String statusText() const;
 
     fs::FS* getFilesystem() const { return fs_; }

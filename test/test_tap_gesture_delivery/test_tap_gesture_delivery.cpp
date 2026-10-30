@@ -87,7 +87,6 @@ void setV1Display(bool laser, bool muted = false, int softMuted = -1) {
     parseV1Packet(0x31, {0x06, 0x06, 0x03, image, image, audio, 0, 0x73});
 }
 
-bool wifiInactive(void*) { return false; }
 void requestMaintenanceBoot(void*) { ++maintenanceBootRequests; }
 
 void processInput(unsigned long nowMs, bool bootPressed = false) {
@@ -130,7 +129,6 @@ void setUp() {
     profileCycleCallbackSlot = -1;
     profileCycleCallbackResult = false;
     TouchUiModule::Callbacks callbacks{};
-    callbacks.isWifiSetupActive = wifiInactive;
     callbacks.requestMaintenanceBoot = requestMaintenanceBoot;
     touchUi.begin(&display, &touch, &settings, callbacks);
     tap.begin(&touch, &settings, &display, &ble, &parser, &autoPush, &persistence, &displayMode, &quiet);

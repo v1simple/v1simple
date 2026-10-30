@@ -1,6 +1,5 @@
 #include "wifi_settings_api_service.h"
 
-#include <algorithm>
 #include <cerrno>
 #include <climits>
 #include <cstring>
@@ -14,10 +13,6 @@
 namespace WifiSettingsApiService {
 
 namespace {
-
-bool argIsTrue(const String& value) {
-    return value == "true" || value == "1";
-}
 
 bool exactBool(const ExactUrlEncodedForm& form, const char* key, bool& value) {
     String raw;
@@ -79,86 +74,6 @@ void handleApiDeviceSettingsGet(WebServer& server, const Runtime& runtime) {
     }
 
     WifiApiResponse::sendJsonDocument(server, 200, doc);
-}
-
-void handleApiDeviceSettingsSave(WebServer& server, const Runtime& runtime) {
-    if (runtime.checkRateLimit && !runtime.checkRateLimit(runtime.ctx))
-        return;
-
-    if (!runtime.getSettings || !runtime.applySettingsUpdate) {
-        sendSettingsUnavailable(server);
-        return;
-    }
-
-    const V1Settings& currentSettings = runtime.getSettings(runtime.ctx);
-    DeviceSettingsUpdate update;
-
-    if (server.hasArg("ap_ssid")) {
-        String apSsid = clampStringLength(server.arg("ap_ssid"), MAX_WIFI_SSID_LEN);
-        String apPass = server.arg("ap_password");
-        if (apPass.length() > MAX_AP_PASSWORD_LEN && apPass != "********") {
-            apPass = apPass.substring(0, MAX_AP_PASSWORD_LEN);
-        }
-
-        // If password is placeholder, keep existing password
-        if (apPass == "********") {
-            apPass = currentSettings.apPassword;
-        }
-
-        if (apSsid.length() == 0 || apPass.length() < 8) {
-            server.send(400, "application/json",
-                        "{\"error\":\"AP SSID required and password must be at least 8 characters\"}");
-            return;
-        }
-
-        update.hasApCredentials = true;
-        update.apSSID = apSsid;
-        update.apPassword = apPass;
-    }
-
-    if (server.hasArg("proxy_ble")) {
-        update.hasProxyBLE = true;
-        update.proxyBLE = argIsTrue(server.arg("proxy_ble"));
-    }
-    if (server.hasArg("proxy_name")) {
-        update.hasProxyName = true;
-        update.proxyName = server.arg("proxy_name");
-    }
-    if (server.hasArg("autoPowerOffMinutes")) {
-        int minutes = server.arg("autoPowerOffMinutes").toInt();
-        minutes = std::max(0, std::min(minutes, 60));
-        update.hasAutoPowerOffMinutes = true;
-        update.autoPowerOffMinutes = static_cast<uint8_t>(minutes);
-    }
-    if (server.hasArg("apTimeoutMinutes")) {
-        int minutes = server.arg("apTimeoutMinutes").toInt();
-        if (minutes != 0) {
-            minutes = std::max(5, std::min(minutes, 60));
-        }
-        update.hasApTimeoutMinutes = true;
-        update.apTimeoutMinutes = static_cast<uint8_t>(minutes);
-    }
-    if (server.hasArg("alpEnabled")) {
-        update.hasAlpEnabled = true;
-        update.alpEnabled = argIsTrue(server.arg("alpEnabled"));
-    }
-    if (server.hasArg("alpAlertPersistSec")) {
-        int sec = server.arg("alpAlertPersistSec").toInt();
-        sec = std::max(0, std::min(sec, 5));
-        update.hasAlpAlertPersistSec = true;
-        update.alpAlertPersistSec = static_cast<uint8_t>(sec);
-    }
-    if (server.hasArg("alpDisableV1LaserOnPush")) {
-        update.hasAlpDisableV1LaserOnPush = true;
-        update.alpDisableV1LaserOnPush = argIsTrue(server.arg("alpDisableV1LaserOnPush"));
-    }
-    const SettingsPersistResult result = runtime.applySettingsUpdate(update, runtime.ctx);
-    if (!result.success) {
-        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
-        return;
-    }
-
-    server.send(200, "application/json", "{\"success\":true}");
 }
 
 void handleApiDeviceSettingsSaveBody(WebServer& server, const Runtime& runtime,

@@ -29,7 +29,6 @@ namespace {
 
 constexpr uint16_t kShutdownReadbackTimeoutMs = 50;
 constexpr uint32_t kPowerButtonReleaseWaitMs = 1500;
-constexpr uint32_t kBootButtonReleaseWaitMs = 250;
 constexpr uint32_t kWakePinPollMs = 10;
 
 class ScopedWireTimeout {
@@ -109,9 +108,9 @@ TwoWire tca9554Wire(1); // Use I2C port 1
 SemaphoreHandle_t tca9554WireMutex = nullptr;
 
 BatteryManager::BatteryManager()
-    : initialized_(false), lastVoltage_(0), buttonPressStart_(0),
+    : initialized_(false), buttonPressStart_(0),
       buttonWasPressed_(false), buttonSeenReleasedSinceBoot_(false), cachedVoltage_(0), cachedPercent_(0),
-      lastUpdateMs_(0), hasVoltageReading_(false), simulatedVoltage_(0) {}
+      lastUpdateMs_(0), hasVoltageReading_(false) {}
 
 bool BatteryManager::begin() {
     if (!tca9554WireMutex) {
@@ -365,8 +364,7 @@ bool BatteryManager::readADCMillivolts(uint16_t& voltage) {
     }
 
     // Apply voltage divider factor (3:1 ratio on the board)
-    lastVoltage_ = voltage_mv * 3;
-    voltage = lastVoltage_;
+    voltage = voltage_mv * 3;
     return true;
 }
 
@@ -375,11 +373,6 @@ bool BatteryManager::isOnBattery() const {
 }
 
 bool BatteryManager::hasBattery() const {
-    // A nonzero simulated voltage represents a battery in diagnostic mode.
-    if (simulatedVoltage_ > 0) {
-        return true;
-    }
-
     // Physical battery detection requires an initialized ADC.
     if (!initialized_ || !adc1_handle) {
         return false;
@@ -398,11 +391,6 @@ void BatteryManager::update() {
         return;
     }
 
-    // Skip normal updates if in simulation mode
-    if (simulatedVoltage_ > 0) {
-        return;
-    }
-
     const uint32_t now = static_cast<uint32_t>(millis());
 
     // Update cached voltage/percentage every 10 seconds
@@ -413,7 +401,7 @@ void BatteryManager::update() {
 }
 
 bool BatteryManager::refreshVoltage() {
-    if (!initialized_ || simulatedVoltage_ > 0) {
+    if (!initialized_) {
         return false;
     }
 
@@ -558,8 +546,7 @@ bool BatteryManager::powerOff() {
 
     char buf[128];
 
-    const poweroff_policy::Strategy strategy = poweroff_policy::selectStrategy(isOnBattery());
-    Serial.printf("[Battery] Power-off strategy: %s\n", poweroff_policy::strategyName(strategy));
+    Serial.println("[Battery] Power-off strategy: hard_latch_cut");
 
     blankPanelBacklightForSleepOrPowerOff();
 
@@ -567,44 +554,6 @@ bool BatteryManager::powerOff() {
         const uint64_t wakeMask = wakeMaskForPlan(wakePlan);
         return enterDeepSleep(wakeMask, wakeMask, outcome);
     };
-
-    if (strategy == poweroff_policy::Strategy::DEEP_SLEEP_EXTERNAL_POWER) {
-        // A TCA9554 latch write cannot remove an attached USB/external rail.
-        // Still isolate the battery path so unplugging USB later cannot leave
-        // the unit drawing from the cell while asleep.
-        const bool batteryLatchDropped = setTCA9554PinWithBudget(TCA9554_PWR_LATCH_PIN, false, pdMS_TO_TICKS(250), 5);
-        bool batteryLatchReadbackSucceeded = false;
-        bool batteryLatchLow = false;
-        if (batteryLatchDropped) {
-            uint8_t readback = 0;
-            const AudioI2cResult readbackResult = readTca9554RegisterWithTimeout(
-                TCA9554_OUTPUT_PORT, readback, pdMS_TO_TICKS(kShutdownReadbackTimeoutMs), kShutdownReadbackTimeoutMs);
-            if (readbackResult == AudioI2cResult::Ok) {
-                batteryLatchReadbackSucceeded = true;
-                batteryLatchLow = (readback & (1 << TCA9554_PWR_LATCH_PIN)) == 0;
-            }
-        }
-        const battery_latch_shutdown_policy::Decision batteryLatchDecision = battery_latch_shutdown_policy::evaluate(
-            {batteryLatchDropped, batteryLatchReadbackSucceeded, batteryLatchLow});
-        const char* batteryLatchOutcome =
-            battery_latch_shutdown_policy::externalOutcomeName(batteryLatchDecision.verification);
-        waitForPinHigh(BOOT_BUTTON_GPIO, kBootButtonReleaseWaitMs);
-        poweroff_policy::WakePlan wakePlan = poweroff_policy::planExternalPowerWake();
-        Serial.printf("[Battery] External power remains; battery latch=%s, wake=%s trigger=active_low\n",
-                      batteryLatchOutcome, poweroff_policy::wakeInputName(wakePlan.input));
-        snprintf(buf, sizeof(buf), "OUTCOME mode=deep_sleep_external_power batteryLatch=%s wake=%s trigger=active_low",
-                 batteryLatchOutcome, poweroff_policy::wakeInputName(wakePlan.input));
-        if (!enterWithWakePlan(wakePlan, buf)) {
-            wakePlan = poweroff_policy::planExternalPowerWake();
-            snprintf(buf, sizeof(buf),
-                     "OUTCOME mode=deep_sleep_external_power retry=1 batteryLatch=%s wake=%s trigger=active_low",
-                     batteryLatchOutcome, poweroff_policy::wakeInputName(wakePlan.input));
-            if (!enterWithWakePlan(wakePlan, buf)) {
-                Serial.println("[Battery] ERROR: external-power sleep aborted; no stable inactive wake input");
-            }
-        }
-        return false; // Successful deep-sleep entry never returns on hardware.
-    }
 
     // Drop the power latch to cut power entirely.  No deep sleep — the 18650
     // is not kept alive for RTC, so battery drain while "off" is zero.
@@ -684,13 +633,7 @@ bool BatteryManager::isPowerButtonPressed() {
 bool BatteryManager::processPowerButton() {
     // PWR is a physical input on either supply. ADC/source uncertainty must
     // not disable it; the released-since-boot guard below owns boot holds.
-    battery_source_policy::ButtonGateInputs gate;
-    gate.managerInitialized = initialized_;
-    gate.classification = powerSource();
-    // adc1_handle is null when ADC initialization fails.
-    gate.adcHealthy = static_cast<bool>(adc1_handle);
-    gate.batteryVoltageValid = cachedVoltage_ >= BATTERY_EMPTY_MV;
-    if (!battery_source_policy::powerButtonHandlingEnabled(gate))
+    if (!initialized_)
         return false;
 
     const bool physicalPinLow = isPowerButtonPressed();

@@ -45,7 +45,7 @@ MaintenanceRuntime::MaintenanceRuntime(WiFiManager& wifi, SettingsManager& setti
       preview_(preview), power_(power), battery_(battery), touch_(touch), ble_(ble), parser_(parser),
       autoPush_(autoPush), obd_(obd),
       speed_(speed), gps_(gps), quiet_(quiet), events_(events), health_(health), state_(state),
-      wifiOrchestrator_(wifi, ble, parser, storage, autoPush) {}
+      wifiOrchestrator_(wifi, ble, parser) {}
 
 void MaintenanceRuntime::logHeapSnapshot(const char* stage) const {
     const uint32_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);

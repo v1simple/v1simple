@@ -75,7 +75,6 @@ public:
         uint16_t upper;
         bool commit;
     };
-    enum class UserBytesVerificationStatus : uint8_t { INACTIVE = 0, PENDING, MATCH, MISMATCH };
     // Call tracking
     int setMuteCalls = 0;
     bool lastMuteValue = false;
@@ -85,8 +84,6 @@ public:
     uint8_t lastVolumeAux = 0;
     int writeUserBytesCalls = 0;
     uint8_t lastUserBytes[6] = {0};
-    int startUserBytesVerificationCalls = 0;
-    uint8_t lastVerifiedUserBytes[6] = {0};
     int requestUserBytesCalls = 0;
     int requestCurrentVolumeCalls = 0;
     int requestAllVolumeCalls = 0;
@@ -176,8 +173,7 @@ public:
     bool allVolumeCaptureArmed = false;
     uint32_t v1NotificationIngressSequenceValue = 0;
     uint32_t verifiedSettingsApplyGenerationValue = 0;
-    UserBytesVerificationStatus verificationStatus = UserBytesVerificationStatus::INACTIVE;
-    int cancelUserBytesVerificationCalls = 0;
+    int clearVerifiedSettingsApplyEdgeCalls = 0;
     int publishVerifiedSettingsApplyEdgeCalls = 0;
     bool verifiedSettingsApplyEdgePending = false;
     mutable bool changeSessionOnNextUserBytesCopy = false;
@@ -202,8 +198,6 @@ public:
         lastVolumeAux = 0;
         writeUserBytesCalls = 0;
         std::memset(lastUserBytes, 0, sizeof(lastUserBytes));
-        startUserBytesVerificationCalls = 0;
-        std::memset(lastVerifiedUserBytes, 0, sizeof(lastVerifiedUserBytes));
         requestUserBytesCalls = 0;
         requestCurrentVolumeCalls = 0;
         requestAllVolumeCalls = 0;
@@ -285,8 +279,7 @@ public:
         sessionUserBytesIngressSequenceValue = 0;
         v1NotificationIngressSequenceValue = 0;
         verifiedSettingsApplyGenerationValue = 0;
-        verificationStatus = UserBytesVerificationStatus::INACTIVE;
-        cancelUserBytesVerificationCalls = 0;
+        clearVerifiedSettingsApplyEdgeCalls = 0;
         publishVerifiedSettingsApplyEdgeCalls = 0;
         verifiedSettingsApplyEdgePending = false;
         changeSessionOnNextUserBytesCopy = false;
@@ -321,7 +314,6 @@ public:
     bool isConnectBurstSettling() const { return connectBurstSettling; }
     void setConnectBurstSettling(bool v) { connectBurstSettling = v; }
     void setBootReady(bool ready) { bootReadyFlag = ready; }
-    bool isBootReady() const { return bootReadyFlag; }
     int getConnectionRssi() const { return connectionRssi; }
     int getProxyClientRssi() const { return proxyRssi; }
     void setConnectionRssi(int rssi) { connectionRssi = rssi; }
@@ -389,14 +381,6 @@ public:
             return recordCommandResult(result);
         }
         return recordCommandResult(writeUserBytes(bytes) ? SendResult::SENT : SendResult::FAILED);
-    }
-
-    void startUserBytesVerification(const uint8_t* bytes) {
-        startUserBytesVerificationCalls++;
-        if (bytes) {
-            std::memcpy(lastVerifiedUserBytes, bytes, sizeof(lastVerifiedUserBytes));
-        }
-        verificationStatus = UserBytesVerificationStatus::PENDING;
     }
 
     void onV1FirmwareVersionReceived(uint32_t version) { firmwareVersion = version; }
@@ -477,11 +461,9 @@ public:
         return recordCommandResult(writeSweepDefinitionResult);
     }
 
-    UserBytesVerificationStatus userBytesVerificationStatus() const { return verificationStatus; }
-    void setUserBytesVerificationStatus(UserBytesVerificationStatus status) { verificationStatus = status; }
-    void cancelUserBytesVerification() {
-        cancelUserBytesVerificationCalls++;
-        verificationStatus = UserBytesVerificationStatus::INACTIVE;
+    void clearVerifiedSettingsApplyEdge() {
+        clearVerifiedSettingsApplyEdgeCalls++;
+        verifiedSettingsApplyEdgePending = false;
     }
     void publishVerifiedSettingsApplyEdge(uint32_t verifiedSessionGeneration) {
         ++publishVerifiedSettingsApplyEdgeCalls;

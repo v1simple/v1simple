@@ -176,7 +176,6 @@ class VoiceModule {
     bool lastVoiceAlertWasPhoto_ = false;
     Direction lastVoiceAlertDirection_ = DIR_NONE;
     uint16_t lastVoiceAlertFrequency_ = 0xFFFF;
-    uint8_t lastVoiceAlertBogeyCount_ = 0;
     unsigned long lastVoiceAlertTime_ = 0;
     // Timestamp 0 is valid; track the first announcement separately from cooldown.
     bool hasAnnouncedOnce_ = false;
@@ -188,9 +187,8 @@ class VoiceModule {
     bool hasDirectionChanged(Direction dir) const;
     bool hasCooldownPassed(unsigned long now) const;
     bool hasBogeyCountCooldownPassed(unsigned long now) const;
-    void updateLastAnnounced(Band band, bool isPhoto, Direction dir, uint16_t freq, uint8_t bogeyCount,
-                             unsigned long now);
-    void updateLastAnnouncedDirection(Direction dir, uint8_t bogeyCount);
+    void updateLastAnnounced(Band band, bool isPhoto, Direction dir, uint16_t freq, unsigned long now);
+    void updateLastAnnouncedDirection(Direction dir);
     void updateLastAnnouncedTime(unsigned long now);
     void resetLastAnnounced();
 

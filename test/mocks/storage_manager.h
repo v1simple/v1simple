@@ -39,7 +39,6 @@ public:
 
     bool isReady() const { return ready_; }
     bool isSDCard() const { return usingSdCard_; }
-    bool isLittleFSReady() const { return littlefsReady_; }
     String statusText() const { return ready_ ? (usingSdCard_ ? "SD" : "FS") : "offline"; }
 
     fs::FS* getFilesystem() const { return filesystem_; }

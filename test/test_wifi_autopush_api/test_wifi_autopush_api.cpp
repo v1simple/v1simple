@@ -55,10 +55,6 @@ WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
         snapshot.slots[0].priorityArrowOnly = true;
     };
     runtime.loadSlotsSnapshotCtx = &fake;
-    runtime.loadPushStatusJson = [](String& json, void*) {
-        json = "{\"result\":\"partial\",\"reason\":\"profile_verify_mismatch\"}";
-        return true;
-    };
     runtime.applySlotUpdate = [](const WifiAutoPushApiService::SlotUpdateRequest& request, void* ctx) {
         auto* state = static_cast<FakeRuntime*>(ctx);
         state->update = request;
@@ -175,11 +171,17 @@ void test_status_api_preserves_terminal_result() {
     WebServer server(80);
     FakeRuntime fake;
 
-    WifiAutoPushApiService::handleApiStatus(server, makeRuntime(fake));
+    fake.operation.available = true;
+    fake.operation.valid = true;
+    fake.operation.operationId = 42;
+    fake.operation.kind = V1SettingsOperationStore::Kind::ApplyProfile;
+    fake.operation.state = V1SettingsOperationStore::State::Partial;
+    fake.operation.reason = V1SettingsOperationStore::Reason::ApplyPartial;
+    WifiAutoPushApiService::handleApiStatus(server, makeOperationRuntime(fake));
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
-    TEST_ASSERT_TRUE(contains(server.lastBody, "\"result\":\"partial\""));
-    TEST_ASSERT_TRUE(contains(server.lastBody, "profile_verify_mismatch"));
+    TEST_ASSERT_TRUE(contains(server.lastBody, "\"state\":\"partial\""));
+    TEST_ASSERT_TRUE(contains(server.lastBody, "apply_partial"));
 }
 
 void test_operation_status_requires_exact_canonical_identity_and_rejects_stale_status() {

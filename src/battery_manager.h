@@ -46,7 +46,7 @@ class BatteryManager {
     void update();
 
     // Attempts one physical ADC read without waiting for a battery. False means
-    // no fresh reading (uninitialized/failed ADC or diagnostic simulation).
+    // no fresh reading (uninitialized/failed ADC).
     bool refreshVoltage();
 
     // True when at least one successful physical ADC acquisition occurred
@@ -70,9 +70,7 @@ class BatteryManager {
 
     // Execute the final hardware-only shutdown tail after prep completes.
     // Unknown supply uses a verified latch cut, then sleep if the rail stays
-    // alive. A future qualified external/USB source
-    // isolates the battery latch and enters BOOT/GPIO0-wake deep sleep because
-    // firmware cannot remove the external rail. A battery fallback waits for
+    // alive. The fallback waits for
     // PWR/GPIO16 release and uses BOOT if PWR remains asserted. A successful
     // portable cut/sleep never returns; false means the shutdown tail aborted
     // and the CPU is still awake.
@@ -93,7 +91,6 @@ class BatteryManager {
 
   private:
     bool initialized_;
-    uint16_t lastVoltage_;
     uint32_t buttonPressStart_;
     bool buttonWasPressed_;
     // True once the button has been seen HIGH (released) since boot.
@@ -105,8 +102,6 @@ class BatteryManager {
     uint8_t cachedPercent_;
     uint32_t lastUpdateMs_;
     bool hasVoltageReading_;
-
-    uint16_t simulatedVoltage_;
 
     bool initADC();
     bool initTCA9554();

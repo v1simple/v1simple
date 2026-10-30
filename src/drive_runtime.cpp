@@ -232,16 +232,10 @@ void DriveRuntime::initializeTouchAndUi() {
     autoPush_.begin(&settings_, &profiles_, &ble_, &parser_, &display_, &quiet_);
 
     TouchUiModule::Callbacks touchCallbacks{};
-    touchCallbacks.isWifiSetupActive = [](void*) { return false; };
-    touchCallbacks.stopWifiSetup = [](void*) {};
     touchCallbacks.requestMaintenanceBoot = [](void* context) {
         static_cast<DriveRuntime*>(context)->requestMaintenanceBootRestart();
     };
     touchCallbacks.requestMaintenanceBootCtx = this;
-    touchCallbacks.drawWifiIndicator = [](void* context) {
-        static_cast<DriveRuntime*>(context)->display_.drawWiFiIndicator();
-    };
-    touchCallbacks.drawWifiIndicatorCtx = this;
     touchCallbacks.restoreDisplay = [](void* context) {
         auto& self = *static_cast<DriveRuntime*>(context);
         if (!self.state_.bootSplashHoldActive) {

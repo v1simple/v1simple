@@ -127,7 +127,7 @@ void AutoPushModule::setPreApplySnapshot(const V1DetectorSnapshot& snapshot) {
 }
 
 bool AutoPushModule::prepareState(int slotIndex, const AutoPushSlot& slot, bool profileLoaded,
-                                  const V1Profile& profile, bool isPushNow,
+                                  const V1Profile& profile,
                                   bool updateProfileIndicator, bool retainLoadStep,
                                   bool applySlotModifiers,
                                   State& preparedState,
@@ -161,7 +161,6 @@ bool AutoPushModule::prepareState(int slotIndex, const AutoPushSlot& slot, bool 
     preparedState.retainLoadStep = retainLoadStep;
     preparedState.profileOwned =
         settings_->get().autoPushProfileSchemaVersion == V1_PROFILE_SCHEMA_VERSION;
-    preparedState.isPushNow = isPushNow;
     preparedState.updateProfileIndicator = updateProfileIndicator;
     preparedState.before = preApplySnapshot_;
     // A connect-time observation can authorize only one operation. Later
@@ -189,10 +188,9 @@ bool AutoPushModule::prepareState(int slotIndex, const AutoPushSlot& slot, bool 
 
 void AutoPushModule::commitPreparedState(State&& preparedState,
                                          OperationStatus&& preparedStatus) {
-    // This executor owns its observation revisions directly. Clear any legacy
-    // component-level verifier/edge only once admission is fully staged and
-    // any requested slot activation is durable.
-    if (bleClient_) bleClient_->cancelUserBytesVerification();
+    // Retire the previous Apply release only once this operation is fully
+    // staged and any requested slot activation is durable.
+    if (bleClient_) bleClient_->clearVerifiedSettingsApplyEdge();
     state_ = std::move(preparedState);
     status_ = std::move(preparedStatus);
     preApplySnapshot_ = V1DetectorSnapshot{};
@@ -203,7 +201,7 @@ void AutoPushModule::commitPreparedState(State&& preparedState,
 
 AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, const AutoPushSlot& slot,
                                                               bool profileLoaded, const V1Profile& profile,
-                                                              bool isPushNow, bool activateSlot,
+                                                              bool activateSlot,
                                                               bool updateProfileIndicator,
                                                               bool retainLoadStep,
                                                               bool applySlotModifiers) {
@@ -239,7 +237,7 @@ AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, con
     std::unique_ptr<PreparedOperation> prepared(
         new (std::nothrow) PreparedOperation());
     if (!prepared) return QueueResult::STAGING_UNAVAILABLE;
-    if (!prepareState(clampedIndex, slot, profileLoaded, profile, isPushNow,
+    if (!prepareState(clampedIndex, slot, profileLoaded, profile,
                       updateProfileIndicator, retainLoadStep, applySlotModifiers, prepared->state,
                       prepared->status)) {
         return QueueResult::STAGING_UNAVAILABLE;
@@ -268,7 +266,7 @@ AutoPushModule::QueueResult AutoPushModule::queueSlotPush(int slotIndex, bool ac
         if (!loaded.success()) return QueueResult::PROFILE_LOAD_FAILED;
         profileLoaded = true;
     }
-    return queuePreparedSlot(clampedIndex, slot, profileLoaded, profile, false,
+    return queuePreparedSlot(clampedIndex, slot, profileLoaded, profile,
                              activateSlot, updateProfileIndicator, true);
 }
 
@@ -301,7 +299,7 @@ AutoPushModule::QueueResult AutoPushModule::queuePushNow(const PushNowRequest& r
     const ProfileOperationResult loaded = profiles_->loadProfileResult(slot.profileName, profile, 0);
     if (loaded.status == ProfileStorageStatus::Busy) return QueueResult::PROFILE_BUSY;
     if (!loaded.success()) return QueueResult::PROFILE_LOAD_FAILED;
-    return queuePreparedSlot(clampedIndex, slot, true, profile, true, request.activateSlot, true,
+    return queuePreparedSlot(clampedIndex, slot, true, profile, request.activateSlot, true,
                              false, !request.hasProfileOverride);
 }
 
@@ -1032,7 +1030,7 @@ void AutoPushModule::finishOperation() {
         status_.result = Result::FAILED;
     else status_.result = anyVerified ? Result::PARTIAL : Result::FAILED;
     if (bleClient_) {
-        bleClient_->cancelUserBytesVerification();
+        bleClient_->clearVerifiedSettingsApplyEdge();
         if (status_.result == Result::SUCCEEDED) {
             bleClient_->publishVerifiedSettingsApplyEdge(state_.sessionGeneration);
         }

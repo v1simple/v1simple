@@ -16,8 +16,6 @@
 #include "modules/health/health_journal.h"
 #include "esp_wifi.h"
 
-// Optional AP auto-timeout (milliseconds). Set to 0 to keep always-on behavior.
-static constexpr unsigned long WIFI_AP_AUTO_TIMEOUT_MS = 0; // e.g., 10 * 60 * 1000 for 10 minutes
 static constexpr unsigned long WIFI_AP_INACTIVITY_GRACE_MS =
     60 * 1000; // Require no UI activity/clients for this long before stopping
 

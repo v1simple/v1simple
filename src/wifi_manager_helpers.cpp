@@ -165,15 +165,8 @@ bool serveLittleFSFileHelper(WebServer& server_, const char* path, const char* c
             File file = LittleFS.open(gzPath.c_str(), "r");
             if (file) {
                 size_t fileSize = file.size();
-                String etag = makeImmutableAssetEtag(path, fileSize, true);
-                if (immutableCache && server_.header("If-None-Match") == etag) {
-                    sendStaticCacheHeaders(server_, false, true, etag);
-                    server_.send(304, contentType, "");
-                    file.close();
-                    return true;
-                }
                 const bool streamOk =
-                    streamOpenFile(server_, file, path, contentType, fileSize, true, immutableCache, etag);
+                    streamOpenFile(server_, file, path, contentType, fileSize, true, false, String());
                 file.close();
                 if (!streamOk) {
                     server_.send(500, "text/plain", "Stream error");
@@ -189,14 +182,7 @@ bool serveLittleFSFileHelper(WebServer& server_, const char* path, const char* c
         return false;
     }
     size_t fileSize = file.size();
-    String etag = makeImmutableAssetEtag(path, fileSize, false);
-    if (immutableCache && server_.header("If-None-Match") == etag) {
-        sendStaticCacheHeaders(server_, false, true, etag);
-        server_.send(304, contentType, "");
-        file.close();
-        return true;
-    }
-    const bool streamOk = streamOpenFile(server_, file, path, contentType, fileSize, false, immutableCache, etag);
+    const bool streamOk = streamOpenFile(server_, file, path, contentType, fileSize, false, false, String());
     file.close();
     if (!streamOk) {
         server_.send(500, "text/plain", "Stream error");

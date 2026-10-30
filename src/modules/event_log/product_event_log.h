@@ -45,7 +45,6 @@ class ProductEventLog {
 
 #ifdef UNIT_TEST
     bool enqueueForTest(const ProductEvent& event) { return enqueue(event); }
-    size_t queuedForTest() const { return queue_ ? uxQueueMessagesWaiting(queue_) : 0; }
     bool drainOneForTest();
     bool takeGapForTest(ProductEvent& event) { return takeGap(event); }
     void runWriterForTest() { writerLoop(); }
@@ -59,8 +58,6 @@ class ProductEventLog {
         (void)writerState_.compare_exchange_strong(state, WriterState::STOP_REQUESTED,
                                                    std::memory_order_acq_rel);
     }
-    size_t retainedBytesForTest() const { return retainedBytes_; }
-    size_t activeBytesForTest() const { return activeBytes_; }
     void resetForTest() {
         accepting_.store(false, std::memory_order_relaxed);
         enabled_.store(false, std::memory_order_relaxed);

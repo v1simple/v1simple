@@ -16,19 +16,12 @@ struct ConnectionStateDispatchContext {
     uint32_t maxProcessGapMs = 0;
 };
 
-struct ConnectionStateDispatchDecision {
-    ConnectionStateCadenceDecision cadence{};
-    uint32_t elapsedSinceLastProcessMs = 0;
-    bool watchdogForced = false;
-    bool ranConnectionStateProcess = false;
-};
-
 // Executes the connection-state cadence gate and applies starvation watchdog safety.
 class ConnectionStateDispatchModule {
   public:
     void begin(ConnectionStateCadenceModule& cadence, ConnectionStateModule& connectionState);
     void reset();
-    ConnectionStateDispatchDecision process(const ConnectionStateDispatchContext& ctx);
+    void process(const ConnectionStateDispatchContext& ctx);
 
   private:
     ConnectionStateCadenceModule* cadence_ = nullptr;

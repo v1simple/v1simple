@@ -66,7 +66,6 @@ void DisplayFrequencyDigitAtlas::release() {
     storeCount_ = 0;
     hitCount_ = 0;
     missCount_ = 0;
-    blendLutBuildCount_ = 0;
     validCellCount_ = 0;
     ready_ = false;
     blendLutValid_ = false;
@@ -376,7 +375,6 @@ const uint16_t* DisplayFrequencyDigitAtlas::blendLutFor(uint16_t fg, uint16_t bg
     blendLutFg_ = fg;
     blendLutBg_ = bg;
     blendLutValid_ = true;
-    ++blendLutBuildCount_;
     return blendLut_;
 }
 

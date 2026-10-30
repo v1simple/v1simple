@@ -35,20 +35,6 @@ constexpr Decision evaluate(const Input& input) {
     };
 }
 
-constexpr const char* externalOutcomeName(Verification verification) {
-    switch (verification) {
-    case Verification::WRITE_FAILED:
-        return "WRITE_FAILED";
-    case Verification::READBACK_FAILED:
-        return "READBACK_FAILED";
-    case Verification::LATCH_LOW:
-        return "LOW";
-    case Verification::LATCH_HIGH:
-        return "HIGH_STUCK";
-    }
-    return "READBACK_FAILED";
-}
-
 constexpr const char* batteryFallbackReason(Verification verification) {
     switch (verification) {
     case Verification::WRITE_FAILED:

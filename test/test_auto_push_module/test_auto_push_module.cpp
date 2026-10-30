@@ -558,10 +558,10 @@ void test_queue_secures_maximum_v3_profile_before_activation_and_preserves_legac
 void test_full_apply_requires_fresh_canonical_readbacks_for_every_component() {
     configureProfile();
     stageSnapshot(makeSnapshot());
-    ble.startUserBytesVerification(ble.sessionUserBytes);
+    ble.publishVerifiedSettingsApplyEdge(ble.sessionGeneration());
     queueAndPreflight();
     verifyUserBytes();
-    TEST_ASSERT_GREATER_OR_EQUAL_INT(1, ble.cancelUserBytesVerificationCalls);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(1, ble.clearVerifiedSettingsApplyEdgeCalls);
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
     finishFullApply();
 
@@ -3509,7 +3509,7 @@ void test_write_and_read_failures_are_distinct_and_never_applied() {
     ble.requestUserBytesSuccess = false;
     queueAndPreflight();
     at(100);
-    ble.startUserBytesVerification(ble.lastUserBytes);
+    ble.publishVerifiedSettingsApplyEdge(ble.sessionGeneration());
     at(130);
     TEST_ASSERT_TRUE(statusContains("user_bytes_read_failed"));
     observeUserBytes(ble.lastUserBytes);

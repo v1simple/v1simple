@@ -90,8 +90,6 @@ struct OperationStartRequest {
 struct Runtime {
     void (*loadSlotsSnapshot)(SlotsSnapshot& snapshot, void* ctx) = nullptr;
     void* loadSlotsSnapshotCtx = nullptr;
-    bool (*loadPushStatusJson)(String& json, void* ctx) = nullptr;
-    void* loadPushStatusJsonCtx = nullptr;
     bool (*applySlotUpdate)(const SlotUpdateRequest& request, void* ctx) = nullptr;
     void* applySlotUpdateCtx = nullptr;
     int (*getActiveSlot)(void* ctx) = nullptr;
@@ -102,8 +100,6 @@ struct Runtime {
     void* applyActivationCtx = nullptr;
     ProfileAssignmentStatus (*validateProfileAssignment)(const String& canonicalProfile, void* ctx) = nullptr;
     void* validateProfileAssignmentCtx = nullptr;
-    bool (*appendPushStatusJson)(JsonObject root, void* ctx) = nullptr;
-    void* appendPushStatusJsonCtx = nullptr;
     bool (*loadSlotsSnapshotResult)(SlotsSnapshot& snapshot, void* ctx) = nullptr;
     void* loadSlotsSnapshotResultCtx = nullptr;
     V1SettingsOperationStore::StartResult (*startOperation)(const OperationStartRequest& request,

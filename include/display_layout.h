@@ -101,29 +101,9 @@ constexpr DisplayRect kTopCounterRect{
     static_cast<int16_t>(TOP_COUNTER_FIELD_X), static_cast<int16_t>(TOP_COUNTER_FIELD_Y),
     static_cast<int16_t>(TOP_COUNTER_FIELD_W), static_cast<int16_t>(TOP_COUNTER_FIELD_H)};
 
-// The visual manifest exports these same helpers. AssertRect helpers describe
-// verification probes; other rectangles describe drawing and clearing bounds.
+// Rectangles describe drawing and clearing bounds.
 
 constexpr int BAND_CELL_COUNT = 4;
-
-inline DisplayRect bandCellAssertRect(int index) {
-    // FreeSansBold24pt7b glyph probes. These intentionally exclude the broader
-    // per-cell clear windows because L overlaps the GPS badge and X overlaps
-    // card slot 0. Keep these font-derived boxes paired with the renderer's
-    // fixed x=82 and y=55+43*i anchors. Ku is a display-only K-cell label
-    // shifted left of this K probe so its extra letter stays clear of card 0.
-    const int clamped = (index < 0) ? 0 : ((index >= BAND_CELL_COUNT) ? (BAND_CELL_COUNT - 1) : index);
-    switch (clamped) {
-    case 0:
-        return DisplayRect{82, 5, 23, 34};
-    case 1:
-        return DisplayRect{82, 48, 56, 35};
-    case 2:
-        return DisplayRect{82, 91, 30, 35};
-    default:
-        return DisplayRect{82, 134, 30, 34};
-    }
-}
 
 constexpr int MAIN_SIGNAL_BAR_COUNT = 6;
 
@@ -230,23 +210,6 @@ inline DisplayRect cardMeterBarRect(int slot, int index) {
     };
 }
 
-inline DisplayRect cardMeterAssertRect(int slot, int index) {
-    // Inactive bars are outlines, so the shared top edge is the only probe
-    // covered by the expected role for both active and inactive states.
-    DisplayRect rect = cardMeterBarRect(slot, index);
-    rect.h = 1;
-    return rect;
-}
-
-inline DisplayRect frequencyTextRect() {
-    return DisplayRect{
-        static_cast<int16_t>(FREQUENCY_OFR_LEFT_MARGIN),
-        static_cast<int16_t>(FREQUENCY_MUTE_ICON_BOTTOM),
-        static_cast<int16_t>(frequencyOfrMaxWidth()),
-        static_cast<int16_t>(CONTENT_BOTTOM_Y - FREQUENCY_MUTE_ICON_BOTTOM),
-    };
-}
-
 inline DisplayRect directionArrowClusterRect(bool raisedLayout) {
     const int cxBase = SCREEN_WIDTH - 70 - 6;
     const int cy = raisedLayout ? 94 : 104;
@@ -285,25 +248,6 @@ inline DisplayRect directionArrowClusterRect(bool raisedLayout) {
     };
 }
 
-inline DisplayRect directionArrowAssertRect(int directionMask, bool raisedLayout) {
-    const int cx = SCREEN_WIDTH - 70 - 6;
-    const int cy = raisedLayout ? 94 : 104;
-    constexpr float scale = 0.98f;
-    const int topH = static_cast<int>(70 * scale);
-    const int sideBarH = static_cast<int>(22 * scale);
-    const int gap = static_cast<int>(15 * scale);
-    const int topArrowCenterY = cy - sideBarH / 2 - gap - topH / 2;
-    const int bottomH = static_cast<int>(30 * scale);
-    const int bottomArrowCenterY = cy + sideBarH / 2 + gap + bottomH / 2;
-    if (directionMask == 0x01) {
-        return DisplayRect{static_cast<int16_t>(cx - 10), static_cast<int16_t>(topArrowCenterY + 16), 20, 10};
-    }
-    if (directionMask == 0x02) {
-        return DisplayRect{static_cast<int16_t>(cx - 28), static_cast<int16_t>(cy - 6), 56, 12};
-    }
-    return DisplayRect{static_cast<int16_t>(cx - 10), static_cast<int16_t>(bottomArrowCenterY - 9), 20, 8};
-}
-
 inline DisplayRect volumeMainRect() {
     return DisplayRect{8, 75, 34, 16};
 }
@@ -327,12 +271,6 @@ inline DisplayRect profileRect() {
     constexpr int kCx = SCREEN_WIDTH - 70 - 6;
     constexpr int kClearW = 130;
     return DisplayRect{static_cast<int16_t>(kCx - kClearW / 2), 152, kClearW, 20};
-}
-
-inline DisplayRect profileMaxTextRect() {
-    // Profile names permit 20 built-in-font characters centered at x=564;
-    // clipping to the framebuffer yields the worst-case on-screen text span.
-    return DisplayRect{444, 152, 196, 20};
 }
 
 inline DisplayRect alpBadgeRect() {
@@ -385,12 +323,6 @@ inline DisplayRect muteBadgeRect() {
     return DisplayRect{225, 5, 110, 26};
 }
 
-inline DisplayRect muteBadgeAssertRect() {
-    // Interior fill probe used by the verifier; excludes rounded corners and
-    // most of the overlaid MUTED text.
-    return DisplayRect{232, 8, 12, 20};
-}
-
 inline DisplayRect batteryPercentRect() {
     return DisplayRect{590, 0, 48, 30};
 }
@@ -400,7 +332,3 @@ inline DisplayRect batteryIconRect() {
 }
 
 } // namespace DisplayLayout
-
-inline int getEffectiveScreenHeight() {
-    return DisplayLayout::PRIMARY_ZONE_HEIGHT;
-}

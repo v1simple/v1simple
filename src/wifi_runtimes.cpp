@@ -58,15 +58,6 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             }
         },
         this,
-        [](String& json, void* ctx) {
-            auto* mgr = static_cast<WiFiManager*>(ctx);
-            if (!mgr->getPushStatusJson_) {
-                return false;
-            }
-            json = mgr->getPushStatusJson_(mgr->getPushStatusJsonCtx_);
-            return true;
-        },
-        this,
         [](const WifiAutoPushApiService::SlotUpdateRequest& request, void* ctx) {
             AutoPushSlotUpdate update;
             update.slot = request.slot;
@@ -135,12 +126,6 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
                 return WifiAutoPushApiService::ProfileAssignmentStatus::IoError;
             }
             return WifiAutoPushApiService::ProfileAssignmentStatus::IoError;
-        },
-        this,
-        [](JsonObject root, void* ctx) {
-            auto* mgr = static_cast<WiFiManager*>(ctx);
-            if (!mgr->appendPushStatusJson_) return false;
-            return mgr->appendPushStatusJson_(root, mgr->getPushStatusJsonCtx_);
         },
         this,
         [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void* ctx) {

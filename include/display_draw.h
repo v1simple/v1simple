@@ -30,9 +30,6 @@ inline uint16_t dimColor(uint16_t c, uint8_t scalePercent = 60) {
 #define DRAW_ROUND_RECT(x, y, w, h, r, color)                                                                          \
     TFT_CALL(drawRoundRect)(TX(x, y), TY(x, y), TW(w, h), TH(w, h), (r), (color))
 #define FILL_CIRCLE(x, y, r, color) TFT_CALL(fillCircle)(TX(x, y), TY(x, y), (r), (color))
-#define DRAW_CIRCLE(x, y, r, color) TFT_CALL(drawCircle)(TX(x, y), TY(x, y), (r), (color))
 #define FILL_TRIANGLE(x0, y0, x1, y1, x2, y2, color)                                                                   \
     TFT_CALL(fillTriangle)(TX(x0, y0), TY(x0, y0), TX(x1, y1), TY(x1, y1), TX(x2, y2), TY(x2, y2), (color))
 #define DRAW_LINE(x0, y0, x1, y1, color) TFT_CALL(drawLine)(TX(x0, y0), TY(x0, y0), TX(x1, y1), TY(x1, y1), (color))
-#define DRAW_PIXEL(x, y, color) TFT_CALL(drawPixel)(TX(x, y), TY(x, y), (color))
-#define FILL_SCREEN(color) TFT_CALL(fillScreen)(color)

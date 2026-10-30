@@ -4089,9 +4089,10 @@ void test_device_settings_http_rejects_actual_nvs_failure_and_rolls_back_reboot_
             update, SettingsPersistMode::ImmediateNvsDeferredBackup);
     };
     WebServer server(80);
-    server.setArg("proxy_ble", "false");
+    const char body[] = "proxy_ble=false";
     mock_preferences::set_fail_writes_for_key(kNvsProxyBle);
-    WifiSettingsApiService::handleApiDeviceSettingsSave(server, runtime);
+    WifiSettingsApiService::handleApiDeviceSettingsSaveBody(
+        server, runtime, reinterpret_cast<const uint8_t*>(body), sizeof(body) - 1u);
     mock_preferences::set_fail_writes_for_key(nullptr);
 
     TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
@@ -6595,8 +6596,9 @@ void assert_actual_http_save_backup_order(bool oldWriterLate) {
         return static_cast<SettingsManager*>(ctx)->applyDeviceSettingsUpdate(update, SettingsPersistMode::Immediate);
     };
     WebServer deviceSave(80);
-    deviceSave.setArg("autoPowerOffMinutes", "9");
-    WifiSettingsApiService::handleApiDeviceSettingsSave(deviceSave, deviceRuntime);
+    const char body[] = "autoPowerOffMinutes=9";
+    WifiSettingsApiService::handleApiDeviceSettingsSaveBody(
+        deviceSave, deviceRuntime, reinterpret_cast<const uint8_t*>(body), sizeof(body) - 1u);
     TEST_ASSERT_EQUAL_INT(200, deviceSave.lastStatusCode);
     if (oldWriterLate) {
         const bool accepted = runDeferredSettingsBackupWriterOnceForTest(storage);

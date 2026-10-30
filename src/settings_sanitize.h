@@ -125,34 +125,8 @@ inline String clampStringLength(const String& value, size_t maxLen) {
     return value.substring(0, maxLen);
 }
 
-inline String sanitizeApSsidValue(const String& raw) {
-    String value = clampStringLength(raw, MAX_WIFI_SSID_LEN);
-    if (value.length() == 0) {
-        return "V1-Simple";
-    }
-    return value;
-}
-
 inline String sanitizeWifiClientSsidValue(const String& raw) {
     return clampStringLength(raw, MAX_WIFI_SSID_LEN);
-}
-
-inline String sanitizeWifiClientPasswordValue(const String& raw) {
-    return clampStringLength(raw, MAX_WIFI_PASSWORD_LEN);
-}
-
-inline String sanitizeWifiStaSlotLabelValue(const String& raw) {
-    String value = clampStringLength(raw, MAX_WIFI_STA_LABEL_LEN);
-    value.trim();
-    return value;
-}
-
-inline String sanitizeProxyNameValue(const String& raw) {
-    String value = clampStringLength(raw, MAX_PROXY_NAME_LEN);
-    if (value.length() == 0) {
-        return "V1-Proxy";
-    }
-    return value;
 }
 
 inline String sanitizeSlotNameValue(const String& raw) {

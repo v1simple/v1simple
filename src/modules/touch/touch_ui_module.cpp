@@ -64,15 +64,7 @@ bool TouchUiModule::process(unsigned long nowMs, bool bootPressed) {
             display_->refreshObdIndicator(nowMs);
             display_->flushRegion(kObdBadgeFlushX, kObdBadgeFlushY, kObdBadgeFlushW, kObdBadgeFlushH);
         } else if (pressDuration >= MAINTENANCE_BOOT_LONG_PRESS_MS) {
-            const bool wifiSetupActive =
-                callbacks_.isWifiSetupActive && callbacks_.isWifiSetupActive(callbacks_.isWifiSetupActiveCtx);
-            if (wifiSetupActive) {
-                if (callbacks_.stopWifiSetup)
-                    callbacks_.stopWifiSetup(callbacks_.stopWifiSetupCtx);
-                if (callbacks_.drawWifiIndicator)
-                    callbacks_.drawWifiIndicator(callbacks_.drawWifiIndicatorCtx);
-                display_->flush();
-            } else if (callbacks_.requestMaintenanceBoot) {
+            if (callbacks_.requestMaintenanceBoot) {
                 if (brightnessAdjustMode_) {
                     exitAdjustModeAndSave();
                 }

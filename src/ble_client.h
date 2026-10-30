@@ -42,37 +42,6 @@ enum class BLEState {
     QUIESCING
 };
 
-inline const char* bleStateToString(BLEState state) {
-    switch (state) {
-    case BLEState::DISCONNECTED:
-        return "DISCONNECTED";
-    case BLEState::SCANNING:
-        return "SCANNING";
-    case BLEState::SCAN_STOPPING:
-        return "SCAN_STOPPING";
-    case BLEState::CONNECTING:
-        return "CONNECTING";
-    case BLEState::CONNECTING_WAIT:
-        return "CONNECTING_WAIT";
-    case BLEState::DISCOVERING:
-        return "DISCOVERING";
-    case BLEState::SUBSCRIBING:
-        return "SUBSCRIBING";
-    case BLEState::SUBSCRIBE_YIELD:
-        return "SUBSCRIBE_YIELD";
-    case BLEState::CONNECTED:
-        return "CONNECTED";
-    case BLEState::QUIESCING:
-        return "QUIESCING";
-    default:
-        return "UNKNOWN";
-    }
-}
-
-inline uint8_t bleStateToCode(BLEState state) {
-    return static_cast<uint8_t>(state);
-}
-
 // Atomic linearization gate shared by main-loop connection publication and
 // NimBLE callback teardown. A successful claim is ordered before a later close;
 // a close that wins first makes publication fail for that session generation.
@@ -185,6 +154,8 @@ class V1BLEClient {
     // Connection-cycle release is an operation-level signal: publish it only
     // after the complete settings Apply transaction has been verified.
     void publishVerifiedSettingsApplyEdge(uint32_t verifiedSessionGeneration);
+    // Retire a pending operation-level release before another Apply owns it.
+    void clearVerifiedSettingsApplyEdge();
 
     // Stamp at callback entry; sample immediately before a settings send.
     // Replies entering during send remain fresh; earlier queued frames do not.
@@ -307,13 +278,6 @@ class V1BLEClient {
     bool writeUserBytesExact(const uint8_t* bytes);
     SendResult writeUserBytesExactResult(const uint8_t* bytes);
 
-    enum class UserBytesVerificationStatus : uint8_t { INACTIVE = 0, PENDING, MATCH, MISMATCH };
-
-    void startUserBytesVerification(const uint8_t* expected);
-
-    UserBytesVerificationStatus userBytesVerificationStatus() const;
-    void cancelUserBytesVerification();
-
     void onUserBytesReceived(const uint8_t* bytes, uint32_t ingressSequence = 0);
     void onAllVolumeReceived(uint32_t ingressSequence) {
         if (sessionAllVolumeCaptureArmed_ && ingressSequence != 0 &&
@@ -412,14 +376,7 @@ class V1BLEClient {
     bool isScanning();
 
     BLEState getBLEState() const { return bleState_; }
-    uint8_t getBLEStateCode() const { return bleStateToCode(bleState_); }
     bool isConnectInProgress() const { return connectInProgress_; }
-    bool isAsyncConnectPending() const { return asyncConnectPending_.load(std::memory_order_relaxed); }
-    bool hasPendingDisconnectCleanup() const { return pendingDisconnectCleanup_.load(std::memory_order_relaxed); }
-    uint32_t quiesceTimeoutRecoveryCount() const {
-        return quiesceTimeoutRecoveryCount_.load(std::memory_order_relaxed);
-    }
-    uint8_t getSubscribeStepCode() const { return static_cast<uint8_t>(subscribeStep_); }
     NimBLEAddress getConnectedAddress() const;
 
     // Forward data to proxy clients (queues data for async send)
@@ -432,7 +389,6 @@ class V1BLEClient {
 
     // Boot readiness gate - blocks BLE scan/connect state machine until setup is ready
     void setBootReady(bool ready);
-    bool isBootReady() const { return bootReadyFlag_; }
 
   private:
     BleVolumeWriteReceipt volumeWriteReceipt_;
@@ -686,7 +642,6 @@ class V1BLEClient {
     std::atomic<bool> disconnectCallbackPending_{false};
     std::atomic<uint16_t> activeConnectionHandle_{0xFFFF};
     std::atomic<uint16_t> quiescingConnectionHandle_{0xFFFF};
-    std::atomic<uint32_t> quiesceTimeoutRecoveryCount_{0};
     bool quiesceAwaitingConnectCancel_ = false;
     bool hardResetPending_ = false;
     uint32_t quiesceStartedMs_ = 0;
@@ -855,11 +810,6 @@ class V1BLEClient {
     bool proxyKeepConnectionAllowed_ = false;
     ObdBleArbitrationRequest obdBleArbitrationRequest_ = ObdBleArbitrationRequest::NONE;
 
-    bool verifyPending_ = false;
-    uint8_t verifyExpected_[6] = {0};
-    uint8_t verifyReceived_[6] = {0};
-    bool verifyComplete_ = false;
-    bool verifyMatch_ = false;
     std::atomic<bool> verifyPushMatchEdgePending_{false};
     std::atomic<uint32_t> verifiedSettingsApplyGeneration_{0};
     std::atomic<uint32_t> v1NotificationIngressSequence_{0};

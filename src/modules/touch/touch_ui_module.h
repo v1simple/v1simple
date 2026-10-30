@@ -14,14 +14,8 @@ class TouchUiModule {
     TouchUiModule() = default;
 
     struct Callbacks {
-        bool (*isWifiSetupActive)(void* ctx) = nullptr;
-        void* isWifiSetupActiveCtx = nullptr;
-        void (*stopWifiSetup)(void* ctx) = nullptr; // stop AP/setup mode if unexpectedly active
-        void* stopWifiSetupCtx = nullptr;
         void (*requestMaintenanceBoot)(void* ctx) = nullptr; // persist flag + reboot
         void* requestMaintenanceBootCtx = nullptr;
-        void (*drawWifiIndicator)(void* ctx) = nullptr;
-        void* drawWifiIndicatorCtx = nullptr;
         void (*restoreDisplay)(void* ctx) = nullptr; // refresh display with current state
         void* restoreDisplayCtx = nullptr;
         ObdRuntimeStatus (*readObdStatus)(uint32_t nowMs, void* ctx) = nullptr;

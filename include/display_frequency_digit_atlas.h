@@ -30,7 +30,6 @@ class DisplayFrequencyDigitAtlas {
     uint32_t storeCount() const { return storeCount_; }
     uint32_t hitCount() const { return hitCount_; }
     uint32_t missCount() const { return missCount_; }
-    uint32_t blendLutBuildCount() const { return blendLutBuildCount_; }
 
     static bool isNumericFrequencyText(const char* text);
 
@@ -77,7 +76,6 @@ class DisplayFrequencyDigitAtlas {
     uint32_t storeCount_ = 0;
     uint32_t hitCount_ = 0;
     uint32_t missCount_ = 0;
-    uint32_t blendLutBuildCount_ = 0;
     bool ready_ = false;
     bool blendLutValid_ = false;
 };

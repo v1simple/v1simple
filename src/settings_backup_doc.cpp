@@ -949,11 +949,6 @@ bool applyBackupWifiClientHealingAtomically(const JsonDocument& doc, V1Settings&
     return true;
 }
 
-// Profile entries processed between watchdog feeds inside the profile restore
-// loop.  Every entry costs a filesystem write, so feeding per batch bounds the
-// gap between feeds without putting a feed on the per-field path.
-static constexpr int kProfileRestoreWatchdogFeedInterval = 4;
-
 namespace {
 
 bool jsonKeyEquals(JsonString actual, const char* expected) {
@@ -2758,7 +2753,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
                                                                SettingsBackupScope scope) {
     SettingsBackupApplyResult result;
     if (!ensureSettingsLoaded()) return result;
-    // Fed at restore phase boundaries only — see SettingsRestoreWatchdog.
+    // Feed at restore phase boundaries and after completed profile transactions.
     auto feedWatchdog = [&watchdog]() {
         if (watchdog.feed) {
             watchdog.feed(watchdog.ctx);
@@ -2908,17 +2903,16 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         }
     }
 
-    int profilesProcessed = 0;
     for (const V1Profile& profile : incomingProfiles) {
-        if (++profilesProcessed % kProfileRestoreWatchdogFeedInterval == 0) {
-            feedWatchdog();
-        }
         const ProfileSaveResult saveResult = profiles_->saveProfile(profile);
         if (!saveResult.success) {
             Serial.println("[Settings] ERROR: Profile restore failed; rolling back document");
             rollback();
             return result;
         }
+        // A mirrored save is a complete storage transaction. Give the next
+        // profile a fresh window without masking a stall within one save.
+        feedWatchdog();
     }
 
 #ifdef UNIT_TEST

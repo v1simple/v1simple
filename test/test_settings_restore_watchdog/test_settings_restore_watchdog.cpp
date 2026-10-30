@@ -175,10 +175,9 @@ void test_field_only_restore_feeds_once_per_phase_and_not_per_field() {
     }
 }
 
-// The phase that actually outruns the watchdog: one filesystem write per
-// profile.  Feeds must land INSIDE the loop, batched, with the last two feeds
-// bracketing the NVS rewrite.
-void test_profile_restore_feeds_inside_loop_every_batch() {
+// Mirrored profile saves can collectively outrun the watchdog. Feed after
+// each completed transaction; the last two feeds bracket the NVS rewrite.
+void test_profile_restore_feeds_after_each_completed_transaction() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(&fs));
@@ -200,27 +199,28 @@ void test_profile_restore_feeds_inside_loop_every_batch() {
     TEST_ASSERT_TRUE(result.success);
     TEST_ASSERT_EQUAL_INT(9, result.profilesRestored);
 
-    // 4 phase feeds + 2 in-loop batch feeds (entries 4 and 8 of 9).
-    TEST_ASSERT_EQUAL_UINT32(6u, static_cast<uint32_t>(recorder.count()));
+    // 4 phase feeds plus 9 completed profile transactions.
+    TEST_ASSERT_EQUAL_UINT32(13u, static_cast<uint32_t>(recorder.count()));
 
-    // Placement: two feeds before any profile is written, two mid-loop with
-    // partial progress on disk, two after the loop with everything written.
+    // Every in-loop feed sees another successfully stored profile. A feed
+    // before a transaction alone must not substitute for observed progress.
     TEST_ASSERT_EQUAL_UINT32(0u, static_cast<uint32_t>(recorder.profilesOnDiskAtFeed[0]));
     TEST_ASSERT_EQUAL_UINT32(0u, static_cast<uint32_t>(recorder.profilesOnDiskAtFeed[1]));
-    TEST_ASSERT_EQUAL_UINT32(3u, static_cast<uint32_t>(recorder.profilesOnDiskAtFeed[2]));
-    TEST_ASSERT_EQUAL_UINT32(7u, static_cast<uint32_t>(recorder.profilesOnDiskAtFeed[3]));
-    TEST_ASSERT_EQUAL_UINT32(9u, static_cast<uint32_t>(recorder.profilesOnDiskAtFeed[4]));
-    TEST_ASSERT_EQUAL_UINT32(9u, static_cast<uint32_t>(recorder.profilesOnDiskAtFeed[5]));
+    for (size_t index = 0; index < 9; ++index) {
+        TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(index + 1),
+                                 static_cast<uint32_t>(recorder.profilesOnDiskAtFeed[index + 2]));
+    }
+    TEST_ASSERT_EQUAL_UINT32(9u, static_cast<uint32_t>(recorder.profilesOnDiskAtFeed[11]));
+    TEST_ASSERT_EQUAL_UINT32(9u, static_cast<uint32_t>(recorder.profilesOnDiskAtFeed[12]));
 }
 
-// Feed cadence tracks the batched profile count, so a bigger backup gets more
-// feeds rather than one fixed feed that a long loop can outrun.
-void test_feed_count_grows_with_profile_count_in_batches() {
+// Small backups need transaction feeds too; there is no minimum batch size.
+void test_feed_count_tracks_completed_profile_transactions() {
     struct Case {
         int profiles;
         uint32_t expectedFeeds;
     };
-    const Case cases[] = {{0, 4u}, {3, 4u}, {4, 5u}, {8, 6u}, {10, 6u}};
+    const Case cases[] = {{0, 4u}, {3, 7u}, {4, 8u}, {8, 12u}, {10, 14u}};
 
     for (const Case& testCase : cases) {
         resetRuntimeState();
@@ -319,7 +319,7 @@ void test_pre_persist_feed_runs_before_the_nvs_rewrite() {
     TEST_ASSERT_TRUE(result.success);
 
     // Final two feeds bracket the persist step: both see the full profile set.
-    TEST_ASSERT_EQUAL_UINT32(4u, static_cast<uint32_t>(recorder.count()));
+    TEST_ASSERT_EQUAL_UINT32(5u, static_cast<uint32_t>(recorder.count()));
     TEST_ASSERT_EQUAL_UINT32(1u,
                              static_cast<uint32_t>(recorder.profilesOnDiskAtFeed[recorder.count() - 2]));
     TEST_ASSERT_EQUAL_UINT32(1u,
@@ -329,8 +329,8 @@ void test_pre_persist_feed_runs_before_the_nvs_rewrite() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_field_only_restore_feeds_once_per_phase_and_not_per_field);
-    RUN_TEST(test_profile_restore_feeds_inside_loop_every_batch);
-    RUN_TEST(test_feed_count_grows_with_profile_count_in_batches);
+    RUN_TEST(test_profile_restore_feeds_after_each_completed_transaction);
+    RUN_TEST(test_feed_count_tracks_completed_profile_transactions);
     RUN_TEST(test_invalid_profile_entries_reject_before_phase_feeds);
     RUN_TEST(test_absent_watchdog_is_a_no_op_and_restore_still_succeeds);
     RUN_TEST(test_pre_persist_feed_runs_before_the_nvs_rewrite);

@@ -4034,6 +4034,70 @@ void test_restore_persist_failure_rolls_back_settings_profiles_and_reboot_state(
     TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot0_default.profileName.c_str());
 }
 
+namespace {
+struct RestoreWatchdogProbe {
+    unsigned long lastFeedMs = 0;
+    unsigned int commitRenames = 0;
+    bool expired = false;
+};
+
+RestoreWatchdogProbe* activeRestoreWatchdogProbe = nullptr;
+
+void advanceMirroredProfileCommitTime(const char*, const char* destination) {
+    if (!std::strstr(destination, ".json.savecommitted")) return;
+    auto& probe = *activeRestoreWatchdogProbe;
+    // Each successful primary/mirror commit contributes modeled storage time.
+    // One two-store profile save fits the watchdog window; three do not.
+    mockMillis += 1000;
+    ++probe.commitRenames;
+    probe.expired |= mockMillis - probe.lastFeedMs >= 5000;
+}
+}  // namespace
+
+void test_restore_feeds_watchdog_between_mirrored_profile_transactions() {
+    const auto sdRoot = g_tempRoot / "sd";
+    const auto littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    for (const char* name : {"City", "Highway", "Quiet"}) {
+        TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile(name)).success);
+    }
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(manager.buildHttpBackupDocument(backup, 2000));
+    backup["brightness"] = 77;
+    for (JsonObject profile : backup["profiles"].as<JsonArray>()) {
+        profile["description"] = "restored";
+    }
+
+    RestoreWatchdogProbe probe{mockMillis};
+    activeRestoreWatchdogProbe = &probe;
+    fs::g_mock_fs_rename_state.afterRename = advanceMirroredProfileCommitTime;
+    const auto restored = manager.applyBackupDocument(backup, true, SettingsRestoreWatchdog{
+        [](void* ctx) { static_cast<RestoreWatchdogProbe*>(ctx)->lastFeedMs = mockMillis; }, &probe});
+    fs::g_mock_fs_rename_state.afterRename = nullptr;
+    activeRestoreWatchdogProbe = nullptr;
+
+    TEST_ASSERT_TRUE(restored.success);
+    TEST_ASSERT_EQUAL_INT(3, restored.profilesRestored);
+    TEST_ASSERT_EQUAL_UINT(6, probe.commitRenames);
+    TEST_ASSERT_FALSE_MESSAGE(probe.expired, "Progressing profile saves exceeded the watchdog window");
+    for (const char* name : {"City", "Highway", "Quiet"}) {
+        V1Profile profile;
+        TEST_ASSERT_TRUE(profiles.loadProfile(name, profile));
+        TEST_ASSERT_EQUAL_STRING("restored", profile.description.c_str());
+    }
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(77, rebooted.get().brightness);
+}
+
 void test_priority_http_uses_one_actual_settings_transaction_and_rolls_back_on_failure() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -8437,6 +8501,7 @@ int main() {
     RUN_TEST(test_restore_crc_mismatch_rejects_before_any_mutation);
     RUN_TEST(test_restore_dangling_assignment_rejects_before_any_mutation);
     RUN_TEST(test_restore_persist_failure_rolls_back_settings_profiles_and_reboot_state);
+    RUN_TEST(test_restore_feeds_watchdog_between_mirrored_profile_transactions);
     RUN_TEST(test_priority_http_uses_one_actual_settings_transaction_and_rolls_back_on_failure);
     RUN_TEST(test_device_settings_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state);
     RUN_TEST(test_audio_and_quiet_http_reject_actual_nvs_failures_and_roll_back_ram);

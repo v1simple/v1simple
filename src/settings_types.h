@@ -557,9 +557,11 @@ enum class SettingsBackupScope : uint8_t {
 /// Optional task-watchdog feed for applyBackupDocument().
 ///
 /// A full restore rewrites the WiFi credential NVS namespace, re-saves every
-/// profile in the backup (one filesystem write each) and then performs the A/B
-/// settings NVS rewrite.  On a slow SD card that run can exceed the task
-/// watchdog window and panic mid-restore.  esp_task_wdt_reset() is ESP-IDF only,
+/// profile in the backup (including its internal-storage mirror) and then
+/// performs the A/B settings NVS rewrite. Feed at phase boundaries and after
+/// each completed profile transaction so their combined storage work cannot
+/// exhaust one watchdog window. A stalled individual save still times out.
+/// esp_task_wdt_reset() is ESP-IDF only,
 /// so the feed is injected as a plain function pointer: settings_backup_doc.cpp
 /// stays host-compilable and native tests can count the feeds and pin where they
 /// happen.  Default-constructed (feed == nullptr) means "never feed", which is

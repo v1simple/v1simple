@@ -9,6 +9,7 @@
         ondownloadBackup,
         restoreFile = null,
         restoring = false,
+        restoreDisabled = false,
         mutationBusy = false,
         onfileSelect,
         onrestoreBackup
@@ -176,7 +177,7 @@
             <button
                 class="btn btn-sm btn-warning"
                 onclick={onrestoreBackup}
-                disabled={!restoreFile || restoring}
+                disabled={!restoreFile || restoring || restoreDisabled}
             >
                 {#if restoring}
                     <span class="loading loading-sm loading-spinner"></span>

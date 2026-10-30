@@ -36,6 +36,8 @@
 
     let loading = $state(true);
     let settingsLoaded = $state(false);
+    let settingsRunId = 0;
+    let restoreReadbackRequired = false;
     let saving = $state(false);
     let message = $state(null);
     let restoreFile = $state(null);
@@ -118,6 +120,7 @@
 
         return () => {
             componentMounted = false;
+            settingsRunId += 1;
             wifiScan = disposeWifiScan(wifiScan);
             wifiEditor = closeWifiEditorState(wifiEditor, { force: true }).state;
             wifiTestRunId += 1;
@@ -162,17 +165,35 @@
     }
 
     async function fetchSettings({ force = false } = {}) {
-        if (!settingsLoaded) loading = true;
+        if (!componentMounted) return false;
+        const runId = ++settingsRunId;
+        const isCurrent = () => componentMounted && runId === settingsRunId;
+        if (!settingsLoaded && !restoring) loading = true;
         try {
             const data = force ? await invalidateDeviceSettings() : await refreshDeviceSettings();
+            if (!isCurrent()) return false;
             if (!data) throw new Error('settings request failed');
+            // A partial reply must not make pre-restore values saveable again.
+            if (restoreReadbackRequired && (
+                typeof data.ap_ssid !== 'string' || typeof data.ap_password !== 'string' ||
+                !Number.isFinite(data.autoPowerOffMinutes) || !Number.isFinite(data.apTimeoutMinutes)
+            )) throw new Error('incomplete restore readback');
             settings = { ...settings, ...data };
             settingsLoaded = true;
+            restoreReadbackRequired = false;
             clearMessageText('Failed to load settings');
+            clearMessageText('Could not reload settings after restore. Retry settings before saving.');
+            return true;
         } catch (e) {
-            message = { type: 'error', text: 'Failed to load settings' };
+            if (isCurrent()) message = {
+                type: 'error',
+                text: restoreReadbackRequired
+                    ? 'Could not reload settings after restore. Retry settings before saving.'
+                    : 'Failed to load settings'
+            };
+            return false;
         } finally {
-            loading = false;
+            if (isCurrent()) loading = false;
         }
     }
 
@@ -818,7 +839,7 @@
     }
 
     async function saveSettings() {
-        if (!settingsLoaded || saving) return;
+        if (!settingsLoaded || saving || restoring) return;
 
         saving = true;
         message = null;
@@ -911,6 +932,7 @@
     }
 
     async function restoreBackup() {
+        if (!componentMounted || restoring || saving) return;
         if (!restoreFile) {
             message = { type: 'error', text: 'Please select a backup file first' };
             return;
@@ -942,6 +964,11 @@
             }
 
             restoreSubmitted = true;
+            // Submission can commit even if its response is lost. Retire every
+            // older form read until a complete post-request readback succeeds.
+            settingsRunId += 1;
+            settingsLoaded = false;
+            restoreReadbackRequired = true;
             invalidateSavedWifiNetworks();
             const res = await fetchWithTimeout(
                 '/api/settings/restore',
@@ -960,19 +987,30 @@
             if (!componentMounted) return;
             const data = res.data;
             if (res.ok && data.success) {
-                message = { type: 'success', text: 'Settings restored and reloaded.' };
+                // Supersede earlier operation feedback, but wait for readback
+                // before reporting that the restored settings are ready.
+                message = null;
                 restoreFile = null;
                 restoreSucceeded = true;
             } else {
                 message = { type: 'error', text: data.error || 'Failed to restore backup' };
             }
         } catch (e) {
-            if (componentMounted) message = { type: 'error', text: 'Failed to read backup file' };
+            if (componentMounted) message = {
+                type: 'error',
+                text: restoreSubmitted
+                    ? 'Restore response was lost or unreadable. Check the current settings before continuing.'
+                    : 'Failed to read backup file'
+            };
         } finally {
-            if (restoreSubmitted) {
-                const refreshes = [refreshWifiAfterMutation()];
-                if (restoreSucceeded) refreshes.push(fetchSettings({ force: true }));
-                await Promise.all(refreshes);
+            if (restoreSubmitted && componentMounted) {
+                const [settingsReloaded] = await Promise.all([
+                    fetchSettings({ force: true }),
+                    refreshWifiAfterMutation()
+                ]);
+                if (componentMounted && restoreSucceeded && settingsReloaded && message === null) {
+                    message = { type: 'success', text: 'Settings restored and reloaded.' };
+                }
             }
             restoring = false;
         }
@@ -989,13 +1027,13 @@
             <span class="loading loading-lg loading-spinner"></span>
         </div>
     {:else}
-        {#if !settingsLoaded}
+        {#if !settingsLoaded && !restoring}
             <button class="btn btn-outline" onclick={() => fetchSettings({ force: true })}>
                 Retry settings
             </button>
         {/if}
 
-        <fieldset class="surface-card" disabled={saving || !settingsLoaded}>
+        <fieldset class="surface-card" disabled={saving || restoring || !settingsLoaded}>
             <div class="card-body">
                 <CardSectionHead
                     title="Access Point (AP)"
@@ -1372,14 +1410,14 @@
             </div>
         {/if}
 
-        <fieldset disabled={saving || !settingsLoaded}>
+        <fieldset disabled={saving || restoring || !settingsLoaded}>
             <SettingsAutoPowerOffCard {settings} />
         </fieldset>
 
         <button
             class="btn btn-block btn-primary"
             onclick={saveSettings}
-            disabled={saving || !settingsLoaded}
+            disabled={saving || restoring || !settingsLoaded}
         >
             {#if saving}
                 <span class="loading loading-sm loading-spinner"></span>
@@ -1395,6 +1433,7 @@
             ondownloadBackup={downloadBackup}
             {restoreFile}
             {restoring}
+            restoreDisabled={saving}
             onfileSelect={handleFileSelect}
             onrestoreBackup={restoreBackup}
         />

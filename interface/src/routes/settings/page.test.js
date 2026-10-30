@@ -86,7 +86,8 @@ function installDefaultFetch(
             {
                 method: 'GET',
                 match: '/api/device/settings',
-                respond: jsonResponse({ ap_ssid: 'V1' })
+                respond: jsonResponse({ ap_ssid: 'V1', ap_password: '',
+                    autoPowerOffMinutes: 0, apTimeoutMinutes: 0 })
             },
             { method: 'GET', match: '/api/wifi/networks', respond: jsonResponse({ slots }) },
             {
@@ -1007,7 +1008,9 @@ describe('settings route page', () => {
                     ? 'Failed to save WiFi network'
                     : operation === 'delete' ? 'Failed to delete WiFi network'
                     : operation === 'disconnect' ? 'Failed to disconnect'
-                    : outcome === 'transport error' ? 'Failed to read backup file' : 'Failed to restore backup';
+                    : outcome === 'transport error'
+                        ? 'Restore response was lost or unreadable. Check the current settings before continuing.'
+                        : 'Failed to restore backup';
                 expect(screen.getByText(failureText)).toBeInTheDocument();
                 if (operation === 'manual save') {
                     expect(screen.getByLabelText('SSID')).toHaveValue('ReplacementWifi');
@@ -1280,8 +1283,8 @@ describe('settings route page', () => {
                 await waitFor(() => expect(statusReads).toBe(3));
                 await waitFor(() => expect(networkReads).toBe(3));
                 await waitFor(() => expect(toggle).not.toBeChecked());
+                await screen.findByText('Settings restored and reloaded.');
                 expect(screen.queryByText('WiFi client enabled')).not.toBeInTheDocument();
-                expect(screen.getByText('Settings restored and reloaded.')).toBeInTheDocument();
             } finally { unmount(); }
         }
     );
@@ -2440,6 +2443,7 @@ describe('settings route page', () => {
                 const save = screen.getByRole('button', { name: /save settings/i });
                 const controls = [name, password, powerOff, save];
                 await screen.findByText('Garage');
+                await selectRestoreFile(JSON.stringify({ _type: 'v1simple_backup', _version: 1 }));
 
                 await fireEvent.input(name, { target: { value: 'SavedName' } });
                 await fireEvent.input(password, { target: { value: 'SavedPassword' } });
@@ -2463,6 +2467,7 @@ describe('settings route page', () => {
                 }
 
                 for (const control of controls) expect(control).toBeDisabled();
+                expect(screen.getByRole('button', { name: /restore from backup/i })).toBeDisabled();
                 // Native interactions honor disabled fieldsets; fireEvent.input does not.
                 name.focus();
                 expect(name).not.toHaveFocus();
@@ -2608,5 +2613,185 @@ describe('settings route page', () => {
         );
 
         unmount();
+    });
+
+    it.each(['lost response', 'malformed response', 'rejected request'])(
+        'reconciles settings after a restore %s before the next Save',
+        async (outcome) => {
+            let backend = {
+                ap_ssid: 'OldAP', ap_password: '********',
+                autoPowerOffMinutes: 5, apTimeoutMinutes: 15
+            };
+            let settingsReads = 0;
+            let saved = null;
+            const committed = outcome !== 'rejected request';
+            const fetchMock = installDefaultFetch([
+                { method: 'GET', match: '/api/device/settings', respond: () => {
+                    settingsReads += 1;
+                    return jsonResponse({ ...backend });
+                } },
+                { method: 'POST', match: '/api/settings/restore', respond: () => {
+                    if (!committed) return jsonResponse({ error: 'Backup rejected' }, 400);
+                    backend = { ...backend, ap_ssid: 'RestoredAP', autoPowerOffMinutes: 30 };
+                    if (outcome === 'lost response') throw new Error('response lost after commit');
+                    return { ok: true, json: async () => { throw new SyntaxError('incomplete response'); } };
+                } },
+                { method: 'POST', match: '/api/device/settings', respond: ({ init }) => {
+                    saved = Object.fromEntries(init.body);
+                    backend = { ...backend, ap_ssid: saved.ap_ssid,
+                        autoPowerOffMinutes: Number(saved.autoPowerOffMinutes) };
+                    return jsonResponse({ success: true });
+                } }
+            ]);
+            vi.stubGlobal('confirm', vi.fn(() => true));
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText('Garage');
+                expect(screen.getByLabelText('AP Name')).toHaveValue('OldAP');
+                const file = await selectRestoreFile(JSON.stringify({
+                    _type: 'v1simple_backup', _version: 1,
+                    apSSID: 'RestoredAP', autoPowerOffMinutes: 30
+                }));
+                const fileRead = vi.spyOn(file, 'text');
+                await fireEvent.click(screen.getByRole('button', { name: /restore from backup/i }));
+                await waitFor(() => expect(settingsReads).toBe(2));
+                await waitFor(() => expect(screen.getByRole('button', { name: /save settings/i })).toBeEnabled());
+
+                const expectedName = committed ? 'RestoredAP' : 'OldAP';
+                const expectedPowerOff = committed ? 30 : 5;
+                expect(fileRead).toHaveBeenCalledOnce();
+                expect(screen.getByLabelText('AP Name')).toHaveValue(expectedName);
+                expect(screen.getByLabelText(/minutes after disconnect/i)).toHaveValue(expectedPowerOff);
+                expect(screen.queryByText('Failed to read backup file')).not.toBeInTheDocument();
+                expect(screen.queryByText('Settings restored and reloaded.')).not.toBeInTheDocument();
+                if (!committed) expect(screen.getByText('Backup rejected')).toBeInTheDocument();
+
+                await fireEvent.click(screen.getByRole('button', { name: /save settings/i }));
+                await waitFor(() => expect(saved).not.toBeNull());
+                expect(saved).toEqual({ ap_ssid: expectedName, ap_password: '********',
+                    autoPowerOffMinutes: String(expectedPowerOff), apTimeoutMinutes: '15' });
+                expect(backend.ap_ssid).toBe(expectedName);
+                expect(backend.autoPowerOffMinutes).toBe(expectedPowerOff);
+                expect(fetchMock.mock.calls.filter(([url, init]) =>
+                    url === '/api/settings/restore' && init?.method === 'POST')).toHaveLength(1);
+            } finally { unmount(); }
+        }
+    );
+
+    it.each(['HTTP failure', 'incomplete response'])(
+        'keeps stale settings unavailable after restore readback %s until Retry succeeds',
+        async (failure) => {
+            let settingsReads = 0;
+            let backend = { ap_ssid: 'OldAP', ap_password: '********', autoPowerOffMinutes: 5, apTimeoutMinutes: 15 };
+            const fetchMock = installDefaultFetch([
+                { method: 'GET', match: '/api/device/settings', respond: () => {
+                    settingsReads += 1;
+                    if (settingsReads !== 2) return jsonResponse({ ...backend });
+                    return failure === 'HTTP failure'
+                        ? jsonResponse({ error: 'readback unavailable' }, 500)
+                        : jsonResponse({ ap_ssid: backend.ap_ssid });
+                } },
+                { method: 'POST', match: '/api/settings/restore', respond: () => {
+                    backend = { ...backend, ap_ssid: 'RestoredAP', autoPowerOffMinutes: 30 };
+                    throw new Error('response lost after commit');
+                } }
+            ]);
+            vi.stubGlobal('confirm', vi.fn(() => true));
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText('Garage');
+                await startRestore(JSON.stringify({ _type: 'v1simple_backup', _version: 1,
+                    apSSID: 'RestoredAP', autoPowerOffMinutes: 30 }));
+                const retry = await screen.findByRole('button', { name: /retry settings/i });
+                expect(settingsReads).toBe(2);
+                const save = screen.getByRole('button', { name: /save settings/i });
+                expect(save).toBeDisabled();
+                expect(screen.getByLabelText('AP Name')).toBeDisabled();
+                expect(screen.getByLabelText('AP Password')).toBeDisabled();
+                expect(screen.getByLabelText(/minutes after disconnect/i)).toBeDisabled();
+                await fireEvent.click(save);
+                expect(fetchMock.mock.calls.some(([url, init]) =>
+                    url === '/api/device/settings' && init?.method === 'POST')).toBe(false);
+                expect(backend.ap_ssid).toBe('RestoredAP');
+                expect(backend.autoPowerOffMinutes).toBe(30);
+
+                await fireEvent.click(retry);
+                await screen.findByDisplayValue('RestoredAP');
+                expect(screen.getByLabelText(/minutes after disconnect/i)).toHaveValue(30);
+                expect(screen.getByRole('button', { name: /save settings/i })).toBeEnabled();
+                await fireEvent.click(screen.getByRole('button', { name: /save settings/i }));
+                await waitFor(() => expect(fetchMock.mock.calls.filter(([url, init]) =>
+                    url === '/api/device/settings' && init?.method === 'POST')).toHaveLength(1));
+                const [, init] = fetchMock.mock.calls.find(([url, init]) =>
+                    url === '/api/device/settings' && init?.method === 'POST');
+                expect(Object.fromEntries(init.body)).toEqual({ ap_ssid: 'RestoredAP', ap_password: '********',
+                    autoPowerOffMinutes: '30', apTimeoutMinutes: '15' });
+            } finally { unmount(); }
+        }
+    );
+
+    it('locks stale settings through the restore request and authoritative readback', async () => {
+        const restoreResponse = createDeferred();
+        const settingsResponse = createDeferred();
+        let reads = 0;
+        const fetchMock = installDefaultFetch([
+            { method: 'GET', match: '/api/device/settings', respond: () => {
+                reads += 1;
+                return reads === 1
+                    ? jsonResponse({ ap_ssid: 'OldAP', ap_password: '********',
+                        autoPowerOffMinutes: 5, apTimeoutMinutes: 15 })
+                    : settingsResponse.promise;
+            } },
+            { method: 'POST', match: '/api/settings/restore', respond: () => restoreResponse.promise }
+        ]);
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        const current = { ap_ssid: 'RestoredAP', ap_password: '********',
+            autoPowerOffMinutes: 30, apTimeoutMinutes: 15 };
+        try {
+            await screen.findByText('Garage');
+            const controls = [screen.getByLabelText('AP Name'), screen.getByLabelText('AP Password'),
+                screen.getByLabelText(/minutes after disconnect/i),
+                screen.getByRole('button', { name: /save settings/i })];
+            await startRestore(JSON.stringify({ _type: 'v1simple_backup', _version: 1,
+                apSSID: 'RestoredAP', autoPowerOffMinutes: 30 }));
+            await waitFor(() => expect(fetchMock.mock.calls.some(([url]) =>
+                url === '/api/settings/restore')).toBe(true));
+            for (const control of controls) expect(control).toBeDisabled();
+            await fireEvent.click(controls.at(-1));
+            expect(fetchMock.mock.calls.some(([url, init]) =>
+                url === '/api/device/settings' && init?.method === 'POST')).toBe(false);
+
+            restoreResponse.resolve(jsonResponse({ success: true }));
+            await waitFor(() => expect(reads).toBe(2));
+            for (const control of controls) expect(control).toBeDisabled();
+            expect(screen.queryByText('Settings restored and reloaded.')).not.toBeInTheDocument();
+            settingsResponse.resolve(jsonResponse(current));
+            await screen.findByText('Settings restored and reloaded.');
+            await waitFor(() => expect(screen.getByRole('button', { name: /save settings/i })).toBeEnabled());
+            expect(screen.getByLabelText('AP Name')).toHaveValue('RestoredAP');
+            expect(screen.getByLabelText(/minutes after disconnect/i)).toHaveValue(30);
+        } finally {
+            restoreResponse.resolve(jsonResponse({ success: true }));
+            settingsResponse.resolve(jsonResponse(current));
+            unmount();
+        }
+    });
+
+    it('reports a local backup read failure without invalidating current settings', async () => {
+        const fetchMock = installDefaultFetch();
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText('Garage');
+            const file = await selectRestoreFile('unreadable');
+            vi.spyOn(file, 'text').mockRejectedValue(new Error('file unavailable'));
+            await fireEvent.click(screen.getByRole('button', { name: /restore from backup/i }));
+            await screen.findByText('Failed to read backup file');
+            await waitFor(() => expect(screen.getByRole('button', { name: /save settings/i })).toBeEnabled());
+            expect(screen.getByLabelText('AP Name')).toHaveValue('V1');
+            expect(fetchMock.mock.calls.filter(([url]) => url === '/api/device/settings')).toHaveLength(1);
+            expect(fetchMock.mock.calls.some(([url]) => url === '/api/settings/restore')).toBe(false);
+        } finally { unmount(); }
     });
 });

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise first-build ordering with real deployment code and isolated tool stubs."""
+"""Exercise application/filesystem build routing with isolated tool stubs."""
 
 from __future__ import annotations
 
@@ -63,10 +63,10 @@ elif sys.argv[1:3] == ['pkg', 'install']:
     if os.environ.get('FIXTURE_PACKAGE_FAILURE'): raise SystemExit(42)
     core = Path({str(self.root / "core")!r})
     builder = core / 'platforms/espressif32/builder/main.py'
-    builder.parent.mkdir(parents=True)
+    builder.parent.mkdir(parents=True, exist_ok=True)
     builder.write_text('env["FS_BLOCK"] = int("0x1000", 16)')
     sdk = core / 'packages/framework-arduinoespressif32-libs/esp32s3/qio_opi/include/sdkconfig.h'
-    sdk.parent.mkdir(parents=True)
+    sdk.parent.mkdir(parents=True, exist_ok=True)
     sdk.write_text('#define CONFIG_LITTLEFS_OBJ_NAME_LEN 64')
 elif sys.argv[1:2] != ['run']:
     raise SystemExit('unexpected PIO action')
@@ -98,6 +98,7 @@ class LittleFS:
         self.environment = os.environ.copy()
         self.environment.pop("PYTHONPATH", None)
         self.environment.pop("PYTHONHOME", None)
+        self.environment.pop("PLATFORMIO_UPLOAD_PORT", None)
         self.environment.update(PATH=f"{self.root / 'bin'}{os.pathsep}{self.environment['PATH']}", PIO_CMD=str(self.pio))
 
     @staticmethod
@@ -111,8 +112,29 @@ class LittleFS:
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
         return result, calls
 
-    def test_fresh_build_prepares_packages_before_real_deployment(self) -> None:
-        result, calls = self.run_build("--env", "esp32-s3-car-install")
+    def test_application_build_and_update_skip_filesystem_preparation(self) -> None:
+        for arguments in ((), ("--upload",)):
+            for version in ("", "0.18.0"):
+                with self.subTest(arguments=arguments, littlefs_version=version):
+                    self.environment["FIXTURE_LITTLEFS_VERSION"] = version
+                    sentinel = self.root / "data/audio/existing.mul"
+                    sentinel.parent.mkdir(parents=True, exist_ok=True)
+                    sentinel.write_bytes(b"existing staged audio")
+                    result, calls = self.run_build(*arguments)
+                    self.log.unlink()
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    expected = [
+                        ["npm", "run", "build"],
+                        ["pio", "run", "-e", "waveshare-349"],
+                        ["pio", "run", "-e", "waveshare-349", "-t", "size"],
+                    ]
+                    if arguments:
+                        expected.append(["pio", "run", "-e", "waveshare-349", "-t", "upload"])
+                    self.assertEqual(calls, expected)
+                    self.assertEqual(sentinel.read_bytes(), b"existing staged audio")
+
+    def test_fresh_filesystem_build_prepares_packages_before_real_deployment(self) -> None:
+        result, calls = self.run_build("--upload-fs", "--env", "esp32-s3-car-install")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("reserve preserved", result.stdout)
         self.assertEqual(calls[0], ["pio", "system", "info", "--json-output"])
@@ -122,25 +144,26 @@ class LittleFS:
         self.assertEqual(calls[5], ["pio", "system", "info", "--json-output"])
         self.assertTrue(calls[6][1].endswith("littlefs-capacity.py"), calls)
         self.assertEqual(calls[7], ["pio", "run", "-e", "esp32-s3-car-install"])
+        self.assertEqual(calls[-1], ["pio", "run", "-e", "esp32-s3-car-install", "-t", "uploadfs"])
         self.assertFalse((self.root / "data/index.html").exists())
         self.assertEqual((self.root / "interface/build/index.html").read_text(), "fixture")
         self.assertFalse((self.root / "data/first-use.html").exists())
         self.assertEqual((self.root / "interface/build/first-use.html").read_text(), "embedded guide fixture")
 
-    def test_missing_or_wrong_littlefs_fails_before_frontend_or_packages(self) -> None:
+    def test_missing_or_wrong_littlefs_blocks_filesystem_build_before_frontend_or_packages(self) -> None:
         for version in ("", "0.17.0"):
             with self.subTest(version=version):
                 self.environment["FIXTURE_LITTLEFS_VERSION"] = version
-                result, calls = self.run_build()
+                result, calls = self.run_build("--upload-fs")
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(shlex.quote(str(self.python)), result.stderr)
                 self.assertIn("-m pip install littlefs-python==0.18.0", result.stderr)
                 self.assertEqual(len(calls), 2)
                 self.log.unlink()
 
-    def test_project_package_failure_blocks_deployment(self) -> None:
+    def test_project_package_failure_blocks_filesystem_deployment(self) -> None:
         self.environment["FIXTURE_PACKAGE_FAILURE"] = "1"
-        result, calls = self.run_build()
+        result, calls = self.run_build("--upload-fs")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls[-1], ["pio", "pkg", "install", "-e", "waveshare-349"])
         self.assertFalse(any(call[0] == "npm" for call in calls))

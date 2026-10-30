@@ -5,11 +5,11 @@ Run the commands below from the repository root.
 
 ## Build from source
 
-Install pioarduino Core 6.2.0 and LittleFS Python support in the same Python
-environment, plus a Node.js version accepted by `interface/package.json`:
+Install pioarduino Core 6.2.0, plus a Node.js version accepted by
+`interface/package.json`:
 
 ```sh
-python3 -m pip install 'pioarduino==6.2.0' 'littlefs-python==0.18.0'
+python3 -m pip install 'pioarduino==6.2.0'
 ```
 
 From the repository root:
@@ -20,15 +20,24 @@ From the repository root:
 ./build.sh --all    # build, flash LittleFS and firmware, then monitor serial
 ```
 
-Before building the interface, `build.sh` checks LittleFS support in the Python
-interpreter reported by the selected PlatformIO executable, then prepares that
-environment's platform and framework packages with `pio pkg install`. The first
-build needs network access for project and npm dependencies. If using an existing
-PlatformIO installation, set `PIO_CMD` to its executable; a missing LittleFS
+Ordinary builds and `--upload` build the embedded web interface and firmware
+without changing `data/` or running the separate audio staging and capacity
+checks. PlatformIO manages its normal toolchain dependencies, including its
+internal LittleFS support. The first build needs network access for project and
+npm dependencies. If using an existing PlatformIO installation, set `PIO_CMD` to
+its executable.
+
+Without `--skip-web`, filesystem operations (`--upload-fs`, `--all`, and `--reset`) also require
+`littlefs-python==0.18.0` in the Python interpreter reported by the selected
+PlatformIO executable. Before staging audio, `build.sh` checks that version and
+prepares the platform and framework packages with `pio pkg install`. A missing
 dependency reports the installation command for that exact Python interpreter.
+These operations retain audio completeness and filesystem capacity checks.
 
 `--skip-web` and direct `pio run` reuse only an unchanged, verified frontend
 build. If it is missing or stale, run `npm run build` in `interface/` first.
+For filesystem uploads, `--skip-web` also checks that existing audio staging
+matches the complete audio manifest before reusing it.
 
 `--all` overwrites internal LittleFS data. Confirm SD-backed storage before
 relying on saved profiles.

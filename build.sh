@@ -154,8 +154,8 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -c, --clean        Clean build (remove .pio/build/)"
             echo "  --reset            Factory reset: clean build, erase onboard flash, upload all, monitor"
-            echo "  -f, --upload-fs    Upload filesystem after build"
-            echo "  -u, --upload       Upload firmware after build"
+            echo "  -f, --upload-fs    Stage audio and upload filesystem after build"
+            echo "  -u, --upload       Upload firmware with embedded web UI; preserve stored data"
             echo "  -m, --monitor      Open serial monitor after upload"
             echo "  -a, --all          Upload filesystem, firmware, and monitor"
             echo "  -s, --skip-web     Skip web interface build"
@@ -166,12 +166,12 @@ while [[ $# -gt 0 ]]; do
             echo "  -h, --help         Show this help"
             echo ""
             echo "Examples:"
-            echo "  $0                 # Build everything (no upload)"
+            echo "  $0                 # Build web interface and firmware (no upload)"
             echo "  $0 --reset         # With SD removed: erase, rebuild, upload everything, and monitor"
             echo "  $0 --clean --all   # Clean build and upload everything"
             echo "  $0 --clean --all --jobs 1  # Force single-threaded PlatformIO run"
             echo "  $0 -u -m           # Build firmware, upload, and monitor"
-            echo "  $0 -f              # Build and upload filesystem only"
+            echo "  $0 -f              # Build, then upload filesystem"
             echo "  $0 -s -u           # Skip web build, just build and upload firmware"
             echo "  $0 --all --env waveshare-349    # Explicit env
   $0 --car --clean --all         # Car-install build + upload"
@@ -265,8 +265,10 @@ fi
 
 # Web interface
 if [ "$SKIP_WEB" = false ]; then
-    echo -e "${YELLOW}Preparing web deployment dependencies...${NC}"
-    python3 "$SCRIPT_DIR/scripts/prepare_web_build.py" --pio "$PIO_CMD" --env "$PIO_ENV"
+    if [ "$UPLOAD_FS" = true ]; then
+        echo -e "${YELLOW}Preparing filesystem deployment dependencies...${NC}"
+        python3 "$SCRIPT_DIR/scripts/prepare_web_build.py" --pio "$PIO_CMD" --env "$PIO_ENV"
+    fi
     echo -e "${YELLOW}Building web interface...${NC}"
 
     # Check if node_modules exists
@@ -281,11 +283,13 @@ if [ "$SKIP_WEB" = false ]; then
     npm run build
     echo -e "${GREEN}Web interface built${NC}"
 
-    # Stage filesystem audio alongside the embedded web build.
-    echo -e "${YELLOW}Staging filesystem assets...${NC}"
-    npm run deploy:built
+    # Application-only builds embed the web UI without changing audio staging.
+    if [ "$UPLOAD_FS" = true ]; then
+        echo -e "${YELLOW}Staging filesystem assets...${NC}"
+        npm run deploy:built
+        echo -e "${GREEN}Audio assets staged in data/${NC}"
+    fi
     cd ..
-    echo -e "${GREEN}Audio assets staged in data/${NC}"
 
     echo ""
 else

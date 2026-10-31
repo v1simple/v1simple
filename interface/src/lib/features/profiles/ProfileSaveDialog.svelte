@@ -1,4 +1,5 @@
 <script>
+    import { nativeDialog } from '#lib/utils/nativeDialog.js';
     let {
         open = false,
         saveName = $bindable(''),
@@ -11,7 +12,8 @@
 </script>
 
 {#if open}
-    <div class="modal modal-open">
+    <dialog use:nativeDialog class="modal" aria-label="Save Profile"
+        oncancel={(event) => { event.preventDefault(); oncancel(); }}>
         <div class="surface-modal modal-box">
             <h3 class="text-lg font-bold">Save Profile</h3>
             <div class="space-y-4 py-4">
@@ -49,5 +51,5 @@
                 </button>
             </div>
         </div>
-    </div>
+    </dialog>
 {/if}

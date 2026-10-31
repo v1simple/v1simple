@@ -2160,6 +2160,45 @@ describe('settings route page', () => {
         expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(1);
     });
 
+    it('uses native saved-network cancellation without abandoning a pending save', async () => {
+        const pending = createDeferred();
+        const fetchMock = installDefaultFetch([{
+            method: 'POST', match: '/api/wifi/networks', respond: () => pending.promise
+        }]);
+        const view = render(Page);
+        await openManualEditor();
+        const dialog = screen.getByRole('dialog', { name: 'Add Saved Network' });
+        expect(dialog).toHaveAttribute('open');
+        await fireEvent.input(screen.getByLabelText('SSID'), { target: { value: 'Draft network' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+        expect(await fireEvent(dialog, new Event('cancel', { cancelable: true }))).toBe(false);
+        expect(dialog).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+        expect(screen.getByLabelText('SSID')).toHaveValue('Draft network');
+        pending.resolve(jsonResponse({ error: 'Save failed' }, 500));
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled());
+        await fireEvent(dialog, new Event('cancel', { cancelable: true }));
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+        expect(jsonBodies(fetchMock, '/api/wifi/networks')).toHaveLength(1);
+        view.unmount();
+    });
+
+    it('cancels the native WiFi loading dialog without reopening when the chunk arrives', async () => {
+        const deferred = createDeferred();
+        vi.spyOn(settingsLazyComponents, 'loadSettingsWifiModal').mockReturnValue(deferred.promise);
+        installDefaultFetch();
+        const view = render(Page);
+        await fireEvent.click((await screen.findAllByRole('button', { name: /pick from scan/i }))[0]);
+        const dialog = screen.getByRole('dialog', { name: 'Loading WiFi picker' });
+        expect(dialog).toHaveAttribute('open');
+        await fireEvent(dialog, new Event('cancel', { cancelable: true }));
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+        deferred.resolve(await import('#lib/features/settings/SettingsWifiModal.svelte'));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+        view.unmount();
+    });
+
     it('lazy-loads the WiFi scan modal on first open and reuses it after closing', async () => {
         const deferred = createDeferred();
         const wifiModalLoader = vi
@@ -2175,9 +2214,13 @@ describe('settings route page', () => {
 
         expect(wifiModalLoader).toHaveBeenCalledTimes(1);
         await screen.findByText('Loading WiFi modal...');
+        const loadingDialog = screen.getByRole('dialog', { name: 'Loading WiFi picker' });
+        expect(loadingDialog).toHaveAttribute('open');
 
         deferred.resolve(await import('#lib/features/settings/SettingsWifiModal.svelte'));
         await screen.findByText('Pick WiFi Network to Save');
+        expect(loadingDialog).not.toBeInTheDocument();
+        expect(screen.getByRole('dialog', { name: 'Pick WiFi Network to Save' })).toHaveAttribute('open');
         await fireEvent.click(screen.getByRole('button', { name: /^Close$/i }));
         await waitFor(() => {
             expect(screen.queryByText('Pick WiFi Network to Save')).toBeNull();

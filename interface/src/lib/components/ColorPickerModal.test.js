@@ -53,12 +53,13 @@ describe('ColorPickerModal', () => {
         expect(oncancel).toHaveBeenCalledTimes(1);
     });
 
-    it('closes from the keyboard-accessible backdrop', async () => {
+    it('closes from the backdrop without adding a blank tab stop', async () => {
         const oncancel = vi.fn();
         renderOpen({ oncancel });
 
         const backdrop = screen.getByRole('button', { name: /close color picker/i });
-        await fireEvent.keyDown(backdrop, { key: 'Enter' });
+        expect(backdrop).toHaveAttribute('tabindex', '-1');
+        await fireEvent.click(backdrop);
         expect(oncancel).toHaveBeenCalledTimes(1);
     });
 });

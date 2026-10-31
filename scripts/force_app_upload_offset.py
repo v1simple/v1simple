@@ -1,11 +1,11 @@
-"""Keep PlatformIO uploads aligned with the custom flash map.
+"""Keep PlatformIO uploads and factory images aligned with the custom flash map.
 
 The production partition table places the factory app at 0x20000 and extends NVS
 through 0x10fff. PlatformIO's ESP32 defaults write the app at 0x10000 and also
 add Arduino's boot_app0 image at 0xe000; both overlap this project's NVS/app
-layout. This script runs before and after the platform builder, and also patches
-the resolved upload command immediately before upload, so uploads match
-partitions_v1.csv.
+layout. This script runs before and after the platform builder, and repairs late
+offset resets immediately before binary generation and upload so both outputs
+match partitions_v1.csv.
 """
 
 import re
@@ -41,7 +41,7 @@ def patch_upload_command(command):
 
 
 def force_flash_layout(build_env):
-    """Update all known upload-layout locations in a PlatformIO SCons env."""
+    """Align upload commands and automatic factory-image inputs with our layout."""
     board = build_env.BoardConfig()
     board.update("upload.offset_address", APP_OFFSET)
     build_env.Replace(ESP32_APP_OFFSET=APP_OFFSET)
@@ -49,6 +49,12 @@ def force_flash_layout(build_env):
     integration_data = build_env.get("INTEGRATION_EXTRA_DATA", {}) or {}
     integration_data.update({"application_offset": APP_OFFSET})
     build_env.Replace(INTEGRATION_EXTRA_DATA=integration_data)
+
+    extra_images = build_env.get("FLASH_EXTRA_IMAGES", []) or []
+    build_env.Replace(FLASH_EXTRA_IMAGES=[
+        image for image in extra_images
+        if not str(image[1]).endswith("boot_app0.bin")
+    ])
 
     flags = build_env.get("UPLOADERFLAGS", []) or []
     if flags:
@@ -63,6 +69,11 @@ def force_flash_layout(build_env):
         patched = patch_upload_command(upload_cmd)
         if patched != upload_cmd:
             build_env.Replace(UPLOADCMD=patched)
+
+
+def force_before_binary(target, source, env):
+    """Repair the platform's late factory-app offset reset before its merge."""
+    force_flash_layout(env)
 
 
 def force_before_upload(target, source, env):
@@ -81,6 +92,13 @@ def force_before_upload(target, source, env):
 
 
 force_flash_layout(env)
+
+# checkprogsize runs before ElfToBin and resets factory apps to 0x10000 in the
+# pinned platform. Its merge is an ElfToBin post-action, so repair that boundary
+# using a pre-action rather than changing the platform's internal action list.
+if not env.get("APP_BINARY_OFFSET_PREACTION_REGISTERED"):
+    env.Replace(APP_BINARY_OFFSET_PREACTION_REGISTERED=True)
+    env.AddPreAction("$BUILD_DIR/${PROGNAME}.bin", force_before_binary)
 
 if any(target in ("upload", "erase_upload") for target in COMMAND_LINE_TARGETS):
     print(f"[UploadOffset] app image offset forced to {APP_OFFSET}; boot_app0 skipped")

@@ -1,4 +1,5 @@
 <script>
+    import { nativeDialog } from '#lib/utils/nativeDialog.js';
     import StatusAlert from '#lib/components/StatusAlert.svelte';
 
     let {
@@ -16,6 +17,16 @@
         onconnectToNetwork,
         oncloseWifiModal
     } = $props();
+
+    let dialog = $state();
+
+    // Selection replaces the focused network button; keep focus in the new view.
+    $effect(() => {
+        const showingPassword = !wifiScanning && selectedNetwork;
+        if (dialog?.open) {
+            dialog.querySelector(showingPassword ? 'input, button:not(:disabled)' : 'button:not(:disabled)')?.focus();
+        }
+    });
 
     function handlePasswordKeydown(event) {
         if (event.key !== 'Enter' || wifiConnecting || (selectedNetwork?.secure && !wifiPassword)) {
@@ -35,14 +46,11 @@
         oncloseWifiModal();
     }
 
-    function handleBackdropClick() {
-        if (wifiConnecting) return;
-        oncloseWifiModal();
-    }
 </script>
 
 {#if open}
-    <div class="modal modal-open">
+    <dialog bind:this={dialog} use:nativeDialog class="modal" aria-label={title}
+        oncancel={(event) => { event.preventDefault(); handleClose(); }}>
         <div class="surface-modal modal-box max-w-md">
             <h3 class="text-lg font-bold">{title}</h3>
 
@@ -130,10 +138,12 @@
                 <button class="btn" onclick={handleClose} disabled={wifiConnecting}>Close</button>
             </div>
         </div>
-        <div
+        <button
             class="modal-backdrop bg-black/50"
-            role="presentation"
-            onclick={handleBackdropClick}
-        ></div>
-    </div>
+            tabindex="-1"
+            aria-label="Close WiFi picker"
+            onclick={handleClose}
+            disabled={wifiConnecting}
+        ></button>
+    </dialog>
 {/if}

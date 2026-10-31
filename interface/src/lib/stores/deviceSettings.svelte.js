@@ -1,49 +1,14 @@
-import { writable } from 'svelte/store';
-
-import { createPoll, fetchWithTimeout } from '#lib/utils/poll.js';
-
-const DEVICE_SETTINGS_POLL_INTERVAL_MS = 15000;
-
-function createDefaultDeviceSettings() {
-    return {};
-}
-
-const deviceSettings = writable(createDefaultDeviceSettings());
-const deviceSettingsError = writable(null);
-const deviceSettingsLoading = writable(true);
+import { fetchWithTimeout } from '#lib/utils/poll.js';
 
 let settingsFetchPromise = null;
 let settingsInvalidatedDuringFetch = false;
 let settingsConsumerCount = 0;
 let stateVersion = 0;
-let settingsPoll = null;
 
 function resetDeviceSettingsState() {
     stateVersion += 1;
-    deviceSettings.set(createDefaultDeviceSettings());
-    deviceSettingsError.set(null);
-    deviceSettingsLoading.set(true);
     settingsFetchPromise = null;
     settingsInvalidatedDuringFetch = false;
-}
-
-function stopSettingsPoll() {
-    if (settingsPoll) {
-        settingsPoll.stop();
-        settingsPoll = null;
-    }
-}
-
-function syncSettingsPoll() {
-    if (settingsConsumerCount <= 0) {
-        stopSettingsPoll();
-        return;
-    }
-
-    if (!settingsPoll) {
-        settingsPoll = createPoll(refreshDeviceSettings, DEVICE_SETTINGS_POLL_INTERVAL_MS);
-    }
-    settingsPoll.start();
 }
 
 async function fetchDeviceSettingsOnce(fetchVersion) {
@@ -51,15 +16,7 @@ async function fetchDeviceSettingsOnce(fetchVersion) {
         ok: response.ok,
         data: response.ok ? await response.json() : null
     }));
-    if (fetchVersion !== stateVersion || settingsConsumerCount <= 0) return undefined;
-
-    if (!res.ok) {
-        deviceSettingsError.set('API error');
-        return undefined;
-    }
-
-    deviceSettings.set(res.data);
-    deviceSettingsError.set(null);
+    if (!res.ok || fetchVersion !== stateVersion || settingsConsumerCount <= 0) return undefined;
     return res.data;
 }
 
@@ -83,15 +40,9 @@ export function refreshDeviceSettings() {
                 settingsConsumerCount > 0
             );
             return latest;
-        } catch (error) {
-            if (fetchVersion === stateVersion && settingsConsumerCount > 0) {
-                deviceSettingsError.set('Connection lost');
-            }
+        } catch {
             return undefined;
         } finally {
-            if (fetchVersion === stateVersion && settingsConsumerCount > 0) {
-                deviceSettingsLoading.set(false);
-            }
             if (settingsFetchPromise === fetchPromise) {
                 settingsFetchPromise = null;
             }
@@ -112,7 +63,6 @@ export function invalidateDeviceSettings() {
 
 export function retainDeviceSettings() {
     settingsConsumerCount += 1;
-    syncSettingsPoll();
     void refreshDeviceSettings();
     return releaseDeviceSettings;
 }
@@ -121,8 +71,6 @@ function releaseDeviceSettings() {
     if (settingsConsumerCount > 0) {
         settingsConsumerCount -= 1;
     }
-
-    syncSettingsPoll();
 
     if (settingsConsumerCount === 0) {
         resetDeviceSettingsState();

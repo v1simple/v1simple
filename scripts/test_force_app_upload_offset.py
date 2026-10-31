@@ -116,6 +116,11 @@ class FakeSConsEnvironment(dict):
             UPLOADCMD=(
                 "$UPLOADER $UPLOADERFLAGS $ESP32_APP_OFFSET $SOURCE"
             ),
+            FLASH_EXTRA_IMAGES=[
+                self.BOOTLOADER_PAIR,
+                self.PARTITIONS_PAIR,
+                self.BOOT_APP0_PAIR,
+            ],
         )
         self.board = FakeBoardConfig()
 
@@ -186,6 +191,18 @@ class ForceAppUploadOffsetTests(unittest.TestCase):
         self.assertIn("0x20000 firmware.bin", patched)
         self.assertNotIn("boot_app0.bin", patched)
         self.assertNotIn("0x10000", patched)
+
+    def test_factory_merge_inputs_preserve_nvs_after_late_offset_reset(self) -> None:
+        build_env = FakeSConsEnvironment()
+        # The platform's partition-size check resets factory apps to this
+        # default before ElfToBin and its automatic factory-image merge.
+        build_env["ESP32_APP_OFFSET"] = "0x10000"
+        self.symbols["force_flash_layout"](build_env)
+        self.assertEqual(build_env["ESP32_APP_OFFSET"], "0x20000")
+        self.assertEqual(build_env["FLASH_EXTRA_IMAGES"], [
+            FakeSConsEnvironment.BOOTLOADER_PAIR,
+            FakeSConsEnvironment.PARTITIONS_PAIR,
+        ])
 
     def test_pre_upload_hook_retains_symbolic_layout_and_marker(self) -> None:
         force_before_upload = self.symbols["force_before_upload"]

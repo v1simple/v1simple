@@ -1,5 +1,6 @@
 <script>
     import { onMount } from 'svelte';
+    import { nativeDialog } from '#lib/utils/nativeDialog.js';
     import { createPoll, fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
     import {
         invalidateDeviceSettings,
@@ -1285,19 +1286,22 @@
                     oncloseWifiModal={closeWifiModal}
                 />
             {:else if wifiModalLoading}
-                <div class="modal modal-open">
+                <dialog use:nativeDialog class="modal" aria-label="Loading WiFi picker"
+                    oncancel={(event) => { event.preventDefault(); closeWifiModal(); }}>
                     <div class="surface-modal modal-box max-w-md">
                         <div class="state-loading stack">
                             <span class="loading loading-md loading-spinner"></span>
                             <p class="copy-muted">Loading WiFi modal...</p>
                         </div>
                     </div>
-                </div>
+                </dialog>
             {/if}
         {/if}
 
         {#if wifiEditor.open}
-            <div class="modal modal-open">
+            <dialog use:nativeDialog class="modal"
+                aria-label={wifiEditor.mode === 'edit' ? 'Edit Saved Network' : 'Add Saved Network'}
+                oncancel={(event) => { event.preventDefault(); closeWifiEditor(); }}>
                 <div class="surface-modal modal-box max-w-md">
                     <h3 class="text-lg font-bold">
                         {wifiEditor.mode === 'edit' ? 'Edit Saved Network' : 'Add Saved Network'}
@@ -1402,12 +1406,14 @@
                         </button>
                     </div>
                 </div>
-                <div
+                <button
                     class="modal-backdrop bg-black/50"
-                    role="presentation"
+                    tabindex="-1"
+                    aria-label="Close saved network editor"
                     onclick={closeWifiEditor}
-                ></div>
-            </div>
+                    disabled={wifiNetworkActionInFlight}
+                ></button>
+            </dialog>
         {/if}
 
         <fieldset disabled={saving || restoring || !settingsLoaded}>

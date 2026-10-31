@@ -1,4 +1,5 @@
 <script>
+    import { nativeDialog } from '#lib/utils/nativeDialog.js';
     import { COLOR_PICKER_PRESETS, rgbComponentsToHex } from '#lib/utils/colors.js';
 
     let {
@@ -13,7 +14,8 @@
 </script>
 
 {#if open}
-    <div class="modal modal-open">
+    <dialog use:nativeDialog class="modal" aria-label={label}
+        oncancel={(event) => { event.preventDefault(); oncancel(); }}>
         <div class="surface-modal modal-box">
             <h3 class="mb-4 text-lg font-bold">{label}</h3>
 
@@ -96,18 +98,11 @@
                 <button class="btn btn-primary" onclick={onapply}>Apply</button>
             </div>
         </div>
-        <div
+        <button
             class="modal-backdrop"
             onclick={oncancel}
-            onkeydown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    oncancel();
-                }
-            }}
-            role="button"
-            tabindex="0"
+            tabindex="-1"
             aria-label="Close color picker"
-        ></div>
-    </div>
+        ></button>
+    </dialog>
 {/if}

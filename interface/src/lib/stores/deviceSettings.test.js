@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { refreshDeviceSettings, retainDeviceSettings } from './deviceSettings.svelte.js';
+import {
+    invalidateDeviceSettings,
+    refreshDeviceSettings,
+    retainDeviceSettings
+} from './deviceSettings.svelte.js';
 
 // Exercise Response.json() itself while headers have arrived but the body has not.
 function pendingJson(signal) {
@@ -34,7 +38,31 @@ describe('device settings store', () => {
         vi.unstubAllGlobals();
     });
 
-    it('times out a stalled body and lets the next poll refresh shared settings', async () => {
+    it('stays idle after loading until settings are explicitly refreshed or invalidated', async () => {
+        vi.useFakeTimers();
+        let revision = 0;
+        const fetchMock = vi.fn(async () => new Response(JSON.stringify({ revision: ++revision })));
+        vi.stubGlobal('fetch', fetchMock);
+        const release = retainDeviceSettings();
+        try {
+            expect(await refreshDeviceSettings()).toEqual({ revision: 1 });
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(60000);
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+
+            expect(await refreshDeviceSettings()).toEqual({ revision: 2 });
+            expect(await invalidateDeviceSettings()).toEqual({ revision: 3 });
+            expect(fetchMock).toHaveBeenCalledTimes(3);
+        } finally {
+            release();
+        }
+        expect(await refreshDeviceSettings()).toBeUndefined();
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('times out a stalled body and lets an explicit retry refresh shared settings', async () => {
         vi.useFakeTimers();
         const bodies = [];
         const signals = [];
@@ -62,8 +90,9 @@ describe('device settings store', () => {
             expect(await first).toBeUndefined();
 
             await vi.advanceTimersByTimeAsync(10000);
-            expect(fetchMock).toHaveBeenCalledTimes(2);
+            expect(fetchMock).toHaveBeenCalledTimes(1);
             const next = refreshDeviceSettings();
+            expect(fetchMock).toHaveBeenCalledTimes(2);
             expect(next).not.toBe(first);
             bodies[1].finish({ ap_ssid: 'Recovered' });
             expect(await next).toEqual({ ap_ssid: 'Recovered' });
@@ -73,6 +102,37 @@ describe('device settings store', () => {
             for (const body of bodies) body.fail();
             await first;
         }
+    });
+
+    it('coalesces invalidations during a pending read and returns a fresh result', async () => {
+        vi.useFakeTimers();
+        const bodies = [];
+        vi.stubGlobal('fetch', vi.fn(async (_url, { signal }) => {
+            const body = pendingJson(signal);
+            bodies.push(body);
+            return body.response;
+        }));
+        const release = retainDeviceSettings();
+        const pending = refreshDeviceSettings();
+        try {
+            expect(invalidateDeviceSettings()).toBe(pending);
+            expect(invalidateDeviceSettings()).toBe(pending);
+            expect(fetch).toHaveBeenCalledTimes(1);
+
+            bodies[0].finish({ ap_ssid: 'Before save' });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fetch).toHaveBeenCalledTimes(2);
+            expect(refreshDeviceSettings()).toBe(pending);
+
+            bodies[1].finish({ ap_ssid: 'After save' });
+            expect(await pending).toEqual({ ap_ssid: 'After save' });
+            expect(fetch).toHaveBeenCalledTimes(2);
+        } finally {
+            release();
+            for (const body of bodies) body.fail();
+            await pending;
+        }
+        expect(vi.getTimerCount()).toBe(0);
     });
 
     it('accepts a delayed body before the deadline and releases its timer', async () => {

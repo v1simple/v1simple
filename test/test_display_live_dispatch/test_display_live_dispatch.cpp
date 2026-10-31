@@ -212,7 +212,6 @@ void showLive(const AlertData& primary, const AlertData* secondary, uint8_t main
     frame.primaryState = stateFor(primary, secondary ? '2' : '1', mainBars);
     if (secondary) {
         frame.cardCount = 1;
-        frame.cards[0].kind = RenderFrameCard::Kind::V1;
         frame.cards[0].v1Alert = *secondary;
     }
     display.renderFrame(frame);
@@ -282,7 +281,6 @@ void assertPriorityArrowPresentation(bool priorityOnly, Direction transmittedArr
     frame.primaryState.arrows = transmittedArrows;
     frame.primaryState.priorityArrow = priorityArrow;
     frame.cardCount = 1;
-    frame.cards[0].kind = RenderFrameCard::Kind::V1;
     frame.cards[0].v1Alert = AlertData::create(BAND_X, DIR_REAR, 0, 2, 10525, true, false);
     display.renderFrame(frame);
 
@@ -527,9 +525,7 @@ void test_k_primary_keeps_k_label_with_ka_and_ku_cards() {
     frame.primaryState.activeBands = static_cast<uint8_t>(BAND_K | BAND_KA);
     frame.primaryState.hasKuAlert = true;
     frame.cardCount = 2;
-    frame.cards[0].kind = RenderFrameCard::Kind::V1;
     frame.cards[0].v1Alert = AlertData::create(BAND_KA, DIR_SIDE, 5, 0, 34700, true, false);
-    frame.cards[1].kind = RenderFrameCard::Kind::V1;
     frame.cards[1].v1Alert = AlertData::create(BAND_KU, DIR_REAR, 6, 0, 13450, true, false);
 
     display.renderFrame(frame);
@@ -549,9 +545,7 @@ void test_ka_primary_keeps_ka_and_k_labels_with_secondary_ku_card() {
     frame.primaryState.activeBands = static_cast<uint8_t>(BAND_KA | BAND_K);
     frame.primaryState.hasKuAlert = true;
     frame.cardCount = 2;
-    frame.cards[0].kind = RenderFrameCard::Kind::V1;
     frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 4, 0, 24150, true, false);
-    frame.cards[1].kind = RenderFrameCard::Kind::V1;
     frame.cards[1].v1Alert = AlertData::create(BAND_KU, DIR_REAR, 6, 0, 13450, true, false);
 
     display.renderFrame(frame);
@@ -572,9 +566,7 @@ void test_ku_primary_relabels_shared_k_cell_with_k_and_ka_cards() {
     frame.primaryState.activeBands = static_cast<uint8_t>(BAND_K | BAND_KA);
     frame.primaryState.hasKuAlert = true;
     frame.cardCount = 2;
-    frame.cards[0].kind = RenderFrameCard::Kind::V1;
     frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 4, 0, 24150, true, false);
-    frame.cards[1].kind = RenderFrameCard::Kind::V1;
     frame.cards[1].v1Alert = AlertData::create(BAND_KA, DIR_REAR, 5, 0, 34700, true, false);
 
     display.renderFrame(frame);
@@ -594,7 +586,6 @@ void test_secondary_photo_stays_in_its_card_without_recoloring_ka_primary() {
     frame.primaryState.activeBands = static_cast<uint8_t>(BAND_KA | BAND_K);
     frame.primaryState.hasPhotoAlert = true;
     frame.cardCount = 1;
-    frame.cards[0].kind = RenderFrameCard::Kind::V1;
     frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 6, 0, 24125, true, false);
     frame.cards[0].v1Alert.photoType = 1;
 
@@ -624,7 +615,6 @@ void test_secondary_photo_does_not_reclassify_ordinary_k_priority_from_shared_p_
     frame.primaryState.activeBands = BAND_K;
     frame.primaryState.hasPhotoAlert = true;
     frame.cardCount = 1;
-    frame.cards[0].kind = RenderFrameCard::Kind::V1;
     frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 6, 0, 24125, true, false);
     frame.cards[0].v1Alert.photoType = 1;
 
@@ -655,9 +645,7 @@ void test_photo_priority_owns_primary_color_while_ordinary_alerts_stay_in_cards(
     frame.primaryState.activeBands = static_cast<uint8_t>(BAND_K | BAND_KA);
     frame.primaryState.hasPhotoAlert = true;
     frame.cardCount = 2;
-    frame.cards[0].kind = RenderFrameCard::Kind::V1;
     frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 4, 0, 24150, true, false);
-    frame.cards[1].kind = RenderFrameCard::Kind::V1;
     frame.cards[1].v1Alert = AlertData::create(BAND_KA, DIR_REAR, 5, 0, 34700, true, false);
 
     display.renderFrame(frame);

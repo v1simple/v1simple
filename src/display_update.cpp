@@ -108,9 +108,6 @@ int buildV1AlertArrayFromCards(const RenderFrame& frame, std::array<AlertData, R
     int alertCount = 0;
     for (int index = 0; index < frame.cardCount; ++index) {
         const RenderFrameCard& card = frame.cards[index];
-        if (card.kind != RenderFrameCard::Kind::V1) {
-            continue;
-        }
         if (alertCount >= static_cast<int>(alerts.size())) {
             break;
         }
@@ -147,9 +144,6 @@ void V1Display::renderFrame(const RenderFrame& frame) {
         liveAlerts[liveCount++] = frame.v1Priority;
         for (int index = 0; index < frame.cardCount; ++index) {
             const RenderFrameCard& card = frame.cards[index];
-            if (card.kind != RenderFrameCard::Kind::V1) {
-                continue;
-            }
             if (liveCount >= static_cast<int>(liveAlerts.size())) {
                 break;
             }

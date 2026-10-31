@@ -27,11 +27,7 @@ enum class RenderFramePrimaryKind : uint8_t {
 };
 
 struct RenderFrameCard {
-    enum class Kind : uint8_t { V1, ALP };
-
-    Kind kind = Kind::V1;
     AlertData v1Alert{};
-    AlpLaserEvent alpEvent{};
 };
 
 struct RenderFrame {

@@ -87,9 +87,6 @@ FrameV1Alerts buildFrameV1Alerts(const RenderFrame& frame) {
 
     for (int index = 0; index < frame.cardCount; ++index) {
         const RenderFrameCard& card = frame.cards[index];
-        if (card.kind != RenderFrameCard::Kind::V1) {
-            continue;
-        }
         if (result.alertCount >= static_cast<int>(result.alerts.size())) {
             break;
         }

@@ -1008,7 +1008,6 @@ void test_handle_parsed_keeps_v1_cards_when_alp_is_primary() {
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(1, display.lastRenderFrame.cardCount);
-    TEST_ASSERT_EQUAL(RenderFrameCard::Kind::V1, display.lastRenderFrame.cards[0].kind);
     TEST_ASSERT_TRUE(display.lastRenderFrame.cards[0].v1Alert.isValid);
     TEST_ASSERT_EQUAL(BAND_K, display.lastRenderFrame.cards[0].v1Alert.band);
     TEST_ASSERT_EQUAL(24210, display.lastRenderFrame.cards[0].v1Alert.frequency);

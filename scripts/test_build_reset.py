@@ -141,7 +141,6 @@ def test_reset_contract() -> None:
         calls
         == [
             ["run", "-e", "waveshare-349"],
-            ["run", "-e", "waveshare-349", "-t", "size"],
             ["run", "-e", "waveshare-349", "-t", "buildfs"],
             ["run", "-e", "waveshare-349", "-t", "erase"],
             ["run", "-e", "waveshare-349", "-t", "upload"],
@@ -210,7 +209,6 @@ def test_option_values_remain_single_arguments() -> None:
         monitor_args = ["-e", value] if option == "--env" else ["-e", "waveshare-349", "--port", value]
         assert_true(calls == [
             ["run", *build_args, "-j", "2"],
-            ["run", *build_args, "-j", "2", "-t", "size"],
             ["device", "monitor", *monitor_args],
         ], f"option value became separate PlatformIO arguments: {calls}")
 
@@ -225,7 +223,6 @@ def test_reset_preserves_port_and_job_arguments() -> None:
     base = ["run", "-e", "waveshare-349", "--upload-port", port]
     assert_true(calls == [
         [*base, "-j", "2"],
-        [*base, "-j", "2", "-t", "size"],
         [*base, "-j", "2", "-t", "buildfs"],
         [*base, "-t", "erase"],
         [*base, "-j", "2", "-t", "upload"],
@@ -276,7 +273,7 @@ def test_supplemental_reset_uses_only_a_concrete_upload_target() -> None:
         base = ["run", "-e", "waveshare-349"]
         if explicit:
             base += ["--upload-port", explicit]
-        expected_calls = [base, [*base, "-t", "size"], [*base, "-t", "upload"],
+        expected_calls = [base, [*base, "-t", "upload"],
                           ["upload-target", explicit or inherited or "auto"]]
         if expected:
             expected_calls.append(["reset", expected])

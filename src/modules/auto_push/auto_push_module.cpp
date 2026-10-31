@@ -481,7 +481,6 @@ bool AutoPushModule::compileCustomDefinitions(const V1DetectorSnapshot& live) {
     if (lowestSection == UINT8_MAX || usableSectionCount < 2) return invalid();
 
     const FixedDefinitionList authored = state_.customDefinitions;
-    if (!status_.requestedCustomDefinitions.assign(authored)) return invalid();
     state_.customPreservedMask = 0;
     uint8_t ownedBands = 0;
     for (size_t index = 0; index < authored.size(); ++index) {
@@ -563,11 +562,9 @@ bool AutoPushModule::compileCustomDefinitions(const V1DetectorSnapshot& live) {
     if (!definitionsDiffer) {
         status_.customFrequencies.verified = true;
         status_.customFrequencies.outcome = Outcome::UNCHANGED;
-        status_.effectiveCustomDefinitions.assign(prepared);
     } else {
         status_.customFrequencies.verified = false;
         status_.customFrequencies.outcome = Outcome::PENDING;
-        status_.effectiveCustomDefinitions.clear();
     }
     return true;
 }
@@ -863,11 +860,6 @@ bool AutoPushModule::preflight() {
             // capture so an unowned band is never restored from the old mode.
             state_.customCompilationDeferred = true;
             status_.customFrequencies.needed = true;
-            if (!status_.requestedCustomDefinitions.assign(state_.customDefinitions)) {
-                failWholePlan(&status_.customFrequencies, Outcome::INVALID,
-                              FailureReason::CUSTOM_CONFIGURATION_INVALID);
-                return false;
-            }
         } else if (!compileCustomDefinitions(state_.before)) {
             return false;
         }
@@ -886,7 +878,6 @@ bool AutoPushModule::preflight() {
             status_.customFrequencies.needed = true;
             status_.customFrequencies.verified = false;
             status_.customFrequencies.outcome = Outcome::PENDING;
-            status_.effectiveCustomDefinitions.clear();
             state_.finalUserWriteAfterCustom = true;
             if (state_.regionChanged) {
                 state_.intermediateCustomDisabledWrite = true;
@@ -1400,7 +1391,6 @@ void AutoPushModule::process() {
                 status_.customFrequencies.needed = true;
                 status_.customFrequencies.verified = false;
                 status_.customFrequencies.outcome = Outcome::PENDING;
-                status_.effectiveCustomDefinitions.clear();
             }
             if (status_.customFrequencies.needed &&
                 !status_.customFrequencies.verified) {
@@ -1523,7 +1513,6 @@ void AutoPushModule::process() {
         if (!definitions.poisoned &&
             definitions.presentMask == state_.customRequiredMask &&
             everyDefinitionAfterBoundary) {
-            status_.effectiveCustomDefinitions.clear();
             bool valid = true;
             for (uint8_t index = 0; index <= state_.before.maxSweepIndex; ++index) {
                 const auto& observed = definitions.definitions[index];
@@ -1544,10 +1533,6 @@ void AutoPushModule::process() {
                                  sweepDefinitionLiveSection(effective, state_.before) !=
                                      sweepDefinitionLiveSection(requested, state_.before))) ||
                     (effective.lowerMHz == 0) != (effective.upperMHz == 0)) {
-                    valid = false;
-                    break;
-                }
-                if (!status_.effectiveCustomDefinitions.push_back(effective)) {
                     valid = false;
                     break;
                 }

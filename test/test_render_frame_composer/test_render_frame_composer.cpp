@@ -61,8 +61,7 @@ RenderFrame compose(const V1Snapshot& v1, const AlpSnapshot& alp) {
 
 bool frameHasLaserCard(const RenderFrame& frame) {
     for (int i = 0; i < frame.cardCount; ++i) {
-        if (frame.cards[i].kind == RenderFrameCard::Kind::V1 &&
-            frame.cards[i].v1Alert.band == BAND_LASER) {
+        if (frame.cards[i].v1Alert.band == BAND_LASER) {
             return true;
         }
     }

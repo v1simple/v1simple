@@ -49,10 +49,7 @@ void appendV1Card(RenderFrame& frame, const AlertData& alert) {
         return;
     }
 
-    RenderFrameCard& card = frame.cards[frame.cardCount++];
-    card = RenderFrameCard{};
-    card.kind = RenderFrameCard::Kind::V1;
-    card.v1Alert = alert;
+    frame.cards[frame.cardCount++].v1Alert = alert;
 }
 
 AlertData firstRenderableFilteredAlert(const V1Snapshot& v1, bool suppressLaser) {

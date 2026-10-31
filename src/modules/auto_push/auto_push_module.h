@@ -193,8 +193,6 @@ class AutoPushModule {
         uint8_t beforeSavedMainVolume = 0;
         uint8_t beforeSavedMutedVolume = 0;
         bool beforeBluetoothIndicatorActive = false;
-        FixedDefinitionList requestedCustomDefinitions;
-        FixedDefinitionList effectiveCustomDefinitions;
     };
 
     struct State {

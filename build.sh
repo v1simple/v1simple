@@ -309,11 +309,6 @@ echo -e "${YELLOW}Building firmware (env: $PIO_ENV)...${NC}"
 "$PIO_CMD" run "${PIO_RUN_ARGS[@]}"
 echo -e "${GREEN}Firmware built successfully${NC}"
 
-# Show build size
-echo -e "${BLUE}Build size:${NC}"
-"$PIO_CMD" run "${PIO_RUN_ARGS[@]}" -t size | grep -E "RAM:|Flash:" || true
-echo ""
-
 # Build first so a compile failure cannot leave the device blank. Only erase
 # after every requested local build/test step has succeeded.
 if [ "$FACTORY_RESET" = true ]; then

@@ -126,7 +126,6 @@ class LittleFS:
                     expected = [
                         ["npm", "run", "build"],
                         ["pio", "run", "-e", "waveshare-349"],
-                        ["pio", "run", "-e", "waveshare-349", "-t", "size"],
                     ]
                     if arguments:
                         expected.append(["pio", "run", "-e", "waveshare-349", "-t", "upload"])
@@ -172,8 +171,7 @@ class LittleFS:
         self.environment["FIXTURE_LITTLEFS_VERSION"] = ""
         result, calls = self.run_build("--skip-web")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(calls, [["pio", "run", "-e", "waveshare-349"],
-                                 ["pio", "run", "-e", "waveshare-349", "-t", "size"]])
+        self.assertEqual(calls, [["pio", "run", "-e", "waveshare-349"]])
 
 
 if __name__ == "__main__":

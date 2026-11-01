@@ -25,6 +25,15 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+if __package__:
+    from .camera_artifacts import (
+        CameraArtifactError, load_capture_manifest, resolve_manifest_artifact, verify_capture_files,
+    )
+else:
+    from camera_artifacts import (
+        CameraArtifactError, load_capture_manifest, resolve_manifest_artifact, verify_capture_files,
+    )
+
 
 # Order: top, middle, bottom, upper left, upper right, lower left, lower right.
 DIGITS = {
@@ -334,20 +343,44 @@ def compare_run(run, limit=None, progress=None):
             window.get("camera", {}).get("result") != "CAPTURED" or
             window["camera"].get("video_timing_verification_result", {}).get("status") != "verified"):
         raise ValueError("replay capture is not complete and qualified")
+    camera_dir = run / "camera"
+    camera = window["camera"]
+    if "capture_manifest" in camera:
+        name = camera["capture_manifest"]
+        if not isinstance(name, str) or not name or Path(name).name != name or name in {".", ".."}:
+            raise CameraArtifactError("camera capture manifest name is invalid")
+        manifest = load_capture_manifest(camera_dir / name)
+        if manifest["identity"]["suite"] != "replay" or manifest["capture_id"] != camera.get("capture_id"):
+            raise CameraArtifactError("camera capture identity does not match replay")
+        verify_capture_files(camera_dir, manifest)
+        video, timing_path, preflight_path = (
+            resolve_manifest_artifact(camera_dir, manifest, artifact)
+            for artifact in ("video", "frame_timing", "preflight")
+        )
+        if video is None or timing_path is None or preflight_path is None:
+            raise CameraArtifactError("verified camera input disappeared")
+        camera_integrity = "verified"
+    else:
+        # Older recordings have no declared manifest. Preserve their reading
+        # path, but do not claim that their raw files passed integrity checks.
+        videos = list(camera_dir.glob("evidence_*.mov"))
+        if len(videos) != 1:
+            raise ValueError("expected exactly one recorded camera video")
+        video = videos[0]
+        timing_path = camera_dir / "frame_timing.ndjson"
+        preflight_path = camera_dir / "camera_preflight.json"
+        camera_integrity = "legacy-unverified"
+
     stimuli = list(ndjson(run / "replay_stimulus.ndjson"))
     if len(stimuli) < 3:
         raise ValueError("too few replay stimuli")
-    frames = [row for row in ndjson(run / "camera/frame_timing.ndjson") if row["status"] == "written"]
+    frames = [row for row in ndjson(timing_path) if row["status"] == "written"]
     host = [row["host_capture_ns"] for row in frames]
     if not frames or any(b <= a for a, b in zip(host, host[1:])):
         raise ValueError("missing or nonmonotonic camera timing")
-    videos = list((run / "camera").glob("evidence_*.mov"))
-    if len(videos) != 1:
-        raise ValueError("expected exactly one recorded camera video")
-    preflight = json.loads((run / "camera/camera_preflight.json").read_text())
+    preflight = json.loads(preflight_path.read_text())
     if preflight.get("registration", {}).get("result") != "PASS":
         raise ValueError("camera registration did not pass")
-    video = videos[0]
 
     eligible = []
     for index in range(1, len(stimuli) - 1):
@@ -423,6 +456,7 @@ def compare_run(run, limit=None, progress=None):
             "source": {"gitSha": window["git_sha"],
                        "imageId": window["runtime_identity"]["image_id"],
                        "cameraCaptureId": window["camera"]["capture_id"],
+                       "cameraIntegrity": camera_integrity,
                        "displayContractSha256": window["artifacts"]["replay_display_contract"]["sha256"]},
             "framesChecked": len(eligible), "fields": totals, "secondaryCardTextDirection": cards,
             "exceptions": exceptions}
@@ -442,7 +476,7 @@ def main():
             f"[bench] visual fields {checked}/{total} sampled frames", file=sys.stderr, flush=True
         )) if args.progress else None
         report = compare_run(args.run, args.limit, progress)
-    except (ValueError, KeyError, FileNotFoundError, subprocess.CalledProcessError) as error:
+    except (CameraArtifactError, OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         report = {"result": "INCONCLUSIVE", "reason": str(error)}
     rendered = json.dumps(report, indent=2) + "\n"
     if args.output is None:

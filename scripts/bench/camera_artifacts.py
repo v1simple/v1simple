@@ -10,8 +10,12 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from artifact_privacy import REDACTED_NAME, sanitize_artifact_value
-from camera_contract import EXPECTED_CAMERA_NAME
+if __package__:
+    from .artifact_privacy import REDACTED_NAME, sanitize_artifact_value
+    from .camera_contract import EXPECTED_CAMERA_NAME
+else:
+    from artifact_privacy import REDACTED_NAME, sanitize_artifact_value
+    from camera_contract import EXPECTED_CAMERA_NAME
 
 
 CAPTURE_MANIFEST_SCHEMA_VERSION = 3
@@ -242,7 +246,7 @@ def validate_capture_manifest(manifest: Mapping[str, Any]) -> None:
     if not isinstance(identity, Mapping):
         raise CameraArtifactError("camera capture identity is missing")
     suite = identity.get("suite")
-    if suite not in {"core", "display", "replay"}:
+    if not isinstance(suite, str) or suite not in {"core", "display", "replay"}:
         raise CameraArtifactError("camera capture suite is invalid")
     artifacts = identity.get("artifacts")
     if not isinstance(artifacts, Mapping):

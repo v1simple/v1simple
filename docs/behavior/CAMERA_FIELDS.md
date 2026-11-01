@@ -26,11 +26,28 @@ than relying on line numbers.
 | Start capture | [`run_window.py`](../../scripts/bench/run_window.py), `collect_live`, calls `run_camera_preflight` before starting replay. This collector can build/upload/reset a board; it is not a read-only verification command. |
 | Admit pose | [`camera_preflight.py`](../../scripts/bench/camera_preflight.py), `run_camera_preflight`, starts one capture session and reads its session still. [`camera_registration.py`](../../scripts/bench/camera_registration.py), `calibrate_display_crop` → `detect_display_crop_registration`, decodes the still at 960×540, checks SCAN landmark structure, scale/aspect and crop containment, then publishes `dynamic_similarity.crop_fractions`. Failure aborts capture. |
 | Retain evidence | [`camera_capture.py`](../../scripts/bench/camera_capture.py), `stop` and `_verify_video_timing`, finish video and timing verification. `collect_live` records firmware identity, runtime qualification and replay artifacts. [`bench.sh`](../../bench.sh) prints raw `COMPLETE` before visual interpretation. |
-| Admit a reading | [`read_replay_fields.py`](../../scripts/bench/read_replay_fields.py), `compare_run`, requires COMPLETE, qualified runtime, CAPTURED camera, verified timing, monotonic written-frame timestamps, exactly one video and PASS registration. |
+| Admit a reading | [`read_replay_fields.py`](../../scripts/bench/read_replay_fields.py), `compare_run`, requires COMPLETE, qualified runtime, CAPTURED camera, verified timing, monotonic written-frame timestamps and PASS registration. A declared capture manifest must match the replay capture, pass file-integrity checks and supply the exact video/timing/preflight paths consumed. Older undeclared captures retain the single-video path. |
 | Select a sample | `expectation` supports unmuted K/Ka/X primary radar. `compare_run` requires the same primary expectation in the preceding/current/following stimulus. It selects request time +180 ms using the camera timing sidecar; selection and decoded-frame checks each allow at most 20 ms deviation. This is a stable-state sample, not a latency measurement. |
 | Apply geometry | `registered_pixels` requires 1280×720 RGB, PASS `dynamic_similarity`, and four finite crop values with positive dimensions wholly inside the image. Pillow inverse affine mapping with bilinear sampling maps to `READER_REFERENCE_CROP`. The recorded video remains unchanged. |
 | Read pixels | `read_pixels` → frequency/counter seven-segment readers, band/direction regions and two card text/direction readers. The function receives only normalized RGB; it never receives the stimulus. |
 | Compare and publish | `compare_run` compares decoded values with expectations. `main` writes a separate JSON report; [`bench.sh`](../../bench.sh) keeps it beside raw `replay/` and returns PASS=0, FAIL=1 or INCONCLUSIVE=2. A visual verdict does not rewrite raw collection status. |
+
+For a declared manifest, the reader uses the existing `camera_artifacts.py`
+loader, file verifier and path resolver. It validates the manifest schema,
+identity digest, replay suite and window capture ID; checks sizes and hashes of
+all recorded artifacts; then reads the video, timing and preflight paths named
+by that verified manifest. Verifying one file cannot authorize reading a stale
+file at the former default path. A missing, malformed or mismatched declaration
+cannot silently fall back to legacy reading. These errors become INCONCLUSIVE
+with exit status 2 in both direct-script and package-module invocation.
+
+A report's `source.cameraIntegrity` is `verified` for this path and
+`legacy-unverified` when the window has no manifest declaration. The latter
+preserves older recordings' existing visual checks without claiming their files
+passed integrity verification. Hash verification detects changed recorded bytes;
+it does not authenticate an actor who rewrites every artifact and its manifest,
+or protect concurrent mutation after verification. Capture artifacts are owned
+as immutable inputs throughout reading.
 
 Registration estimates translation and uniform scale from the SCAN landmark.
 The reader derives X/Y mapping coefficients from that registered crop; this is
@@ -76,6 +93,12 @@ commands use fixtures and do not start a physical capture.
 | `test_comparison_requires_usable_registration_transform` | Missing, zero-size, out-of-frame and NaN crop data cannot receive a reading. |
 | `test_incomplete_raw_capture_cannot_receive_visual_pass` | Incomplete collection is refused before pixel comparison. |
 | `test_post_capture_report_has_distinct_exit_statuses` | Report result maps to the external command's three distinct statuses. |
+| `test_manifest_integrity_preserves_valid_and_wrong_visible_fields` | Intact declared capture still passes, wrong visible content still fails, and legacy reports explicitly remain unverified. |
+| `test_declared_capture_rejects_corrupt_or_missing_files_before_decoding` | Same-size timing/video/preflight/still changes and missing files are rejected before frame decoding. |
+| `test_declared_manifest_cannot_silently_become_legacy` | Missing or malformed declarations cannot bypass integrity checks. |
+| `test_manifest_identity_schema_and_replay_suite_are_required` | Window identity, manifest digest/schema and replay suite must agree. |
+| `test_reader_consumes_verified_manifest_paths_instead_of_default_paths` | Renamed verified inputs are read despite poisoned files at the old paths. |
+| `test_integrity_errors_are_inconclusive_in_script_and_package_commands` | Fresh processes exercise both invocation modes and turn integrity errors into an INCONCLUSIVE report/exit 2. |
 
 The comparison fixture substitutes only `frame_at` inside the comparison path;
 it fabricates capture metadata, timing and expectations and supplies procedural

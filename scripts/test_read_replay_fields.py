@@ -1,7 +1,10 @@
 """Focused reader checks; the retained recordings supply the real negative control."""
 
+import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -11,6 +14,7 @@ import numpy as np
 from PIL import Image
 
 from bench import read_replay_fields as reader
+from bench.camera_artifacts import build_capture_manifest
 from bench.read_replay_fields import CARD_TEMPLATES, read_pixels, secondary_identities
 
 
@@ -57,33 +61,194 @@ class ReadReplayFieldsTest(unittest.TestCase):
                                scale * width, scale * height]}}
         return moved, registration
 
+    def make_run(self, run, registration, *, declared=False):
+        camera = run / "camera"
+        camera.mkdir()
+        (run / "window_result.json").write_text(json.dumps({
+            "result": "COMPLETE", "runtime_qualification": {"status": "qualified"},
+            "camera": {"result": "CAPTURED", "capture_id": "fixture",
+                       "video_timing_verification_result": {"status": "verified"}},
+            "git_sha": "fixture", "runtime_identity": {"image_id": "fixture"},
+            "artifacts": {"replay_display_contract": {"sha256": "fixture"}}}))
+        expected = {"alerts": [
+            {"priority": True, "band": "k", "frequencyMHz": 24150, "direction": "FRONT"},
+            {"priority": False, "band": "k", "frequencyMHz": 24125,
+             "direction": "SIDE", "photoType": 1}],
+            "muted": False, "bogeyCounterChar": "3", "bandBlink": False, "arrowBlink": False}
+        (run / "replay_stimulus.ndjson").write_text("".join(json.dumps({
+            "stimulusSequence": index, "requestedHostMonotonicNs": 1_000_000_000,
+            "expected": expected}) + "\n" for index in range(1, 4)))
+        (camera / "frame_timing.ndjson").write_text("".join(json.dumps({
+            "status": "written", "host_capture_ns": when,
+            "video_pts_value": when, "video_pts_timescale": 1_000_000_000}) + "\n"
+            for when in (1_000_000_000, 1_180_000_000)))
+        (camera / "camera_preflight.json").write_text(json.dumps({
+            "kind": "bench_camera_preflight", "result": "PASS", "registration": registration}))
+        (camera / "evidence_fixture.mov").touch()
+        if declared:
+            result = {"result": "CAPTURED", "video": "evidence_fixture.mov",
+                      "frame_timing": "frame_timing.ndjson",
+                      "video_timing_verification_result": {"status": "verified"}}
+            (camera / result["video"]).write_bytes(b"fixture video")
+            for field in ("video_timing_verification", "session_start_still", "bright_still", "dim_still"):
+                result[field] = field + ".fixture"
+                (camera / result[field]).write_bytes(b"fixture")
+            manifest = build_capture_manifest(camera_dir=camera, camera_result=result, suite="replay")
+            self.publish_manifest(run, manifest)
+        return run
+
+    @staticmethod
+    def publish_manifest(run, manifest):
+        # Re-sign explicitly changed fixture ownership, just as the producer does.
+        identity = json.dumps(manifest["identity"], ensure_ascii=True, allow_nan=False,
+                              sort_keys=True, separators=(",", ":")).encode()
+        manifest["capture_id"] = hashlib.sha256(identity).hexdigest()
+        (run / "camera/capture_manifest.json").write_text(json.dumps(manifest))
+        window_path = run / "window_result.json"
+        window = json.loads(window_path.read_text())
+        window["camera"].update(capture_manifest="capture_manifest.json", capture_id=manifest["capture_id"])
+        window_path.write_text(json.dumps(window))
+
     def compare_frame(self, image, registration):
         with tempfile.TemporaryDirectory() as temporary:
-            run = Path(temporary)
-            camera = run / "camera"
-            camera.mkdir()
-            (run / "window_result.json").write_text(json.dumps({
-                "result": "COMPLETE", "runtime_qualification": {"status": "qualified"},
-                "camera": {"result": "CAPTURED", "capture_id": "fixture",
-                           "video_timing_verification_result": {"status": "verified"}},
-                "git_sha": "fixture", "runtime_identity": {"image_id": "fixture"},
-                "artifacts": {"replay_display_contract": {"sha256": "fixture"}}}))
-            expected = {"alerts": [
-                {"priority": True, "band": "k", "frequencyMHz": 24150, "direction": "FRONT"},
-                {"priority": False, "band": "k", "frequencyMHz": 24125,
-                 "direction": "SIDE", "photoType": 1}],
-                "muted": False, "bogeyCounterChar": "3", "bandBlink": False, "arrowBlink": False}
-            (run / "replay_stimulus.ndjson").write_text("".join(json.dumps({
-                "stimulusSequence": index, "requestedHostMonotonicNs": 1_000_000_000,
-                "expected": expected}) + "\n" for index in range(1, 4)))
-            (camera / "frame_timing.ndjson").write_text("".join(json.dumps({
-                "status": "written", "host_capture_ns": when,
-                "video_pts_value": when, "video_pts_timescale": 1_000_000_000}) + "\n"
-                for when in (1_000_000_000, 1_180_000_000)))
-            (camera / "camera_preflight.json").write_text(json.dumps({"registration": registration}))
-            (camera / "evidence_fixture.mov").touch()
+            run = self.make_run(Path(temporary), registration)
             with mock.patch.object(reader, "frame_at", return_value=(1.18, image)):
                 return reader.compare_run(run)
+
+    def test_manifest_integrity_preserves_valid_and_wrong_visible_fields(self):
+        for wrong_band in (False, True):
+            with self.subTest(wrong_band=wrong_band), tempfile.TemporaryDirectory() as temporary:
+                image, registration = self.camera_pose(self.radar_frame())
+                if wrong_band:
+                    image = image.copy()
+                    image[335:375, 335:390] = 0
+                    image[405:445, 335:390] = (240, 240, 240)
+                run = self.make_run(Path(temporary), registration, declared=True)
+                with mock.patch.object(reader, "frame_at", return_value=(1.18, image)):
+                    report = reader.compare_run(run)
+                self.assertEqual("FAIL" if wrong_band else "PASS", report["result"])
+                self.assertEqual("verified", report["source"]["cameraIntegrity"])
+        image, registration = self.camera_pose(self.radar_frame())
+        report = self.compare_frame(image, registration)
+        self.assertEqual("PASS", report["result"])
+        self.assertEqual("legacy-unverified", report["source"]["cameraIntegrity"])
+
+    def test_declared_capture_rejects_corrupt_or_missing_files_before_decoding(self):
+        for artifact in ("frame_timing", "video", "preflight", "bright_still"):
+            for missing in (False, True):
+                with self.subTest(artifact=artifact, missing=missing), tempfile.TemporaryDirectory() as temporary:
+                    image, registration = self.camera_pose(self.radar_frame())
+                    run = self.make_run(Path(temporary), registration, declared=True)
+                    manifest = json.loads((run / "camera/capture_manifest.json").read_text())
+                    path = run / "camera" / manifest["identity"]["artifacts"][artifact]["path"]
+                    if missing:
+                        path.unlink()
+                    else:
+                        original = path.read_bytes()
+                        if artifact == "frame_timing":
+                            changed = original.replace(b"1180000000", b"1180000001")
+                        else:
+                            changed = bytes([original[0] ^ 1]) + original[1:]
+                        self.assertNotEqual(original, changed)
+                        self.assertEqual(len(original), len(changed))
+                        path.write_bytes(changed)
+                    with (mock.patch.object(reader, "frame_at", return_value=(1.18, image)) as decode,
+                          self.assertRaisesRegex(RuntimeError, "changed|disappeared")):
+                        reader.compare_run(run)
+                    decode.assert_not_called()
+
+    def test_declared_manifest_cannot_silently_become_legacy(self):
+        for declaration in (None, "", False, [], "../capture_manifest.json", "missing.json"):
+            with self.subTest(declaration=declaration), tempfile.TemporaryDirectory() as temporary:
+                image, registration = self.camera_pose(self.radar_frame())
+                run = self.make_run(Path(temporary), registration, declared=True)
+                path = run / "window_result.json"
+                window = json.loads(path.read_text())
+                window["camera"]["capture_manifest"] = declaration
+                path.write_text(json.dumps(window))
+                with (mock.patch.object(reader, "frame_at", return_value=(1.18, image)) as decode,
+                      self.assertRaisesRegex(RuntimeError, "manifest|artifact")):
+                    reader.compare_run(run)
+                decode.assert_not_called()
+
+    def test_manifest_identity_schema_and_replay_suite_are_required(self):
+        for change in ("window-id", "identity-digest", "schema", "suite", "suite-shape"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                image, registration = self.camera_pose(self.radar_frame())
+                run = self.make_run(Path(temporary), registration, declared=True)
+                manifest_path = run / "camera/capture_manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                if change == "window-id":
+                    window_path = run / "window_result.json"
+                    window = json.loads(window_path.read_text())
+                    window["camera"]["capture_id"] = "mismatched"
+                    window_path.write_text(json.dumps(window))
+                elif change in {"suite", "suite-shape"}:
+                    manifest["identity"]["suite"] = "display" if change == "suite" else []
+                    self.publish_manifest(run, manifest)
+                else:
+                    manifest["schema_version" if change == "schema" else "capture_id"] = "invalid"
+                    manifest_path.write_text(json.dumps(manifest))
+                with (mock.patch.object(reader, "frame_at", return_value=(1.18, image)) as decode,
+                      self.assertRaisesRegex(RuntimeError, "schema|identity|suite")):
+                    reader.compare_run(run)
+                decode.assert_not_called()
+
+    def test_reader_consumes_verified_manifest_paths_instead_of_default_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            image, registration = self.camera_pose(self.radar_frame())
+            run = self.make_run(Path(temporary), registration, declared=True)
+            camera = run / "camera"
+            manifest = json.loads((camera / "capture_manifest.json").read_text())
+            for artifact in ("video", "frame_timing", "preflight"):
+                entry = manifest["identity"]["artifacts"][artifact]
+                original = camera / entry["path"]
+                entry["path"] = "verified_" + entry["path"]
+                original.rename(camera / entry["path"])
+                original.write_bytes(b"unverified stale default file")
+            self.publish_manifest(run, manifest)
+            with mock.patch.object(reader, "frame_at", return_value=(1.18, image)) as decode:
+                report = reader.compare_run(run)
+            self.assertEqual("PASS", report["result"])
+            self.assertEqual("verified", report["source"]["cameraIntegrity"])
+            self.assertEqual(camera / manifest["identity"]["artifacts"]["video"]["path"], decode.call_args.args[0])
+
+    def test_integrity_errors_are_inconclusive_in_script_and_package_commands(self):
+        scripts = Path(reader.__file__).resolve().parents[1]
+        env = {**os.environ, "PYTHONPATH": str(scripts), "PYTHONDONTWRITEBYTECODE": "1"}
+        for command in ([sys.executable, str(Path(reader.__file__))],
+                        [sys.executable, "-m", "bench.read_replay_fields"]):
+            for fault in ("missing", "identity", "suite-shape", "corrupt"):
+                with self.subTest(command=command[1:], fault=fault), tempfile.TemporaryDirectory() as temporary:
+                    _image, registration = self.camera_pose(self.radar_frame())
+                    run = self.make_run(Path(temporary), registration, declared=True)
+                    manifest_path = run / "camera/capture_manifest.json"
+                    if fault == "missing":
+                        manifest_path.unlink()
+                    elif fault in {"identity", "suite-shape"}:
+                        manifest = json.loads(manifest_path.read_text())
+                        if fault == "identity":
+                            manifest["capture_id"] = "invalid"
+                        else:
+                            manifest["identity"]["suite"] = []
+                        manifest_path.write_text(json.dumps(manifest))
+                    else:
+                        path = run / "camera/frame_timing.ndjson"
+                        path.write_bytes(path.read_bytes().replace(b"1180000000", b"1180000001"))
+                    binary = run / "bin"
+                    binary.mkdir()
+                    ffmpeg = binary / "ffmpeg"
+                    ffmpeg.write_text("#!/bin/sh\nexit 93\n")
+                    ffmpeg.chmod(0o755)
+                    command_env = {**env, "PATH": str(binary) + os.pathsep + env.get("PATH", "")}
+                    output = run / "reading.json"
+                    result = subprocess.run([*command, str(run), "--output", str(output)],
+                                            cwd=temporary, env=command_env, capture_output=True, text=True)
+                    self.assertEqual(2, result.returncode, result.stderr)
+                    report = json.loads(output.read_text())
+                    self.assertEqual("INCONCLUSIVE", report["result"])
+                    self.assertRegex(report["reason"], "camera.*(artifact|identity|suite)")
+                    self.assertNotIn("Traceback", result.stderr)
 
     def test_comparison_reads_registered_translation_and_scale(self):
         image = self.radar_frame()

@@ -208,7 +208,6 @@ bool V1BLEClient::setProxyRuntimeEnabled(bool enabled, const char* proxyName) {
 
 void V1BLEClient::disconnectProxyPhones() {
     clearProxyAdvertisingSchedule();
-    proxySuppressedForObdHold_ = true;
 
     if (!pServer_) {
         proxyClientConnected_ = false;
@@ -304,7 +303,6 @@ void V1BLEClient::handleProxyCallbackEvent(const ProxyCallbackEvent& event) {
         }
         setProxyClientConnected(true);
         proxyFastAdvertisingUntilMs_ = 0;
-        proxySuppressedForObdHold_ = false;
         proxyDisconnectRequestedByCoordinator_ = false;
         taskEXIT_CRITICAL(&proxyCallbackEventMux_);
         if (pServer_ && pServer_->getConnectedCount() > 0) {
@@ -330,7 +328,6 @@ void V1BLEClient::handleProxyCallbackEvent(const ProxyCallbackEvent& event) {
 
     case ProxyCallbackEventType::V1_DISCONNECTED:
         proxyClientConnected_ = false;
-        proxySuppressedForObdHold_ = false;
         proxyDisconnectRequestedByCoordinator_ = false;
         stopProxyAdvertisingFromMainLoop();
         return;

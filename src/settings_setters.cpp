@@ -136,92 +136,6 @@ bool SettingsManager::getSlotPriorityArrowOnly(int slotNum) const {
     return settings_.autoPushSlotView(slotNum).priorityArrow;
 }
 
-bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update, SettingsPersistMode persistMode) {
-    if (!ensureSettingsLoaded()) return false;
-    bool changed = false;
-    V1Settings::AutoPushSlotView slot = settings_.autoPushSlotView(update.slot);
-    const bool previousPriorityArrow = slot.priorityArrow;
-    const uint8_t previousAlertPersist = slot.alertPersist;
-
-    // Construct every allocation-bearing candidate before changing any live
-    // field. A late profile/name allocation failure must not leave earlier
-    // scalar edits applied in RAM.
-    String preparedName;
-    if (update.hasName) {
-        if (!ExactJsonInput::validSemanticString(update.name.c_str(), update.name.length())) return false;
-        preparedName = sanitizeSlotNameValue(update.name);
-        if (preparedName.length() != update.name.length()) return false;
-    }
-    String preparedProfile;
-    if (update.hasProfileName) {
-        preparedProfile = sanitizeProfileNameValue(update.profileName);
-        if (preparedProfile.length() != update.profileName.length() || preparedProfile != update.profileName) {
-            return false;
-        }
-    }
-
-    if (update.hasName) {
-        if (slot.name != preparedName) {
-            slot.name = std::move(preparedName);
-            changed = true;
-        }
-    }
-    if (update.hasColor) {
-        changed |= assignIfChanged(slot.color, update.color);
-    }
-    if (update.hasVolume) {
-        uint8_t volume = clampSlotVolumeValue(update.volume);
-        uint8_t muteVolume = update.hasMuteVolume ? clampSlotVolumeValue(update.muteVolume) : slot.muteVolume;
-        sanitizeSlotVolumePair(volume, muteVolume);
-        changed |= assignIfChanged(slot.volume, volume);
-        changed |= assignIfChanged(slot.muteVolume, muteVolume);
-    } else if (update.hasMuteVolume) {
-        uint8_t volume = slot.volume;
-        uint8_t muteVolume = clampSlotVolumeValue(update.muteVolume);
-        sanitizeSlotVolumePair(volume, muteVolume);
-        changed |= assignIfChanged(slot.volume, volume);
-        changed |= assignIfChanged(slot.muteVolume, muteVolume);
-    }
-    if (update.hasDarkMode) {
-        changed |= assignIfChanged(slot.darkMode, update.darkMode);
-    }
-    if (update.hasVolumeOverride) {
-        changed |= assignIfChanged(slot.volumeOverride, update.volumeOverride);
-    }
-    if (update.hasDarkModeOverride) {
-        changed |= assignIfChanged(slot.darkModeOverride, update.darkModeOverride);
-    }
-    if (update.hasMuteToZero) {
-        changed |= assignIfChanged(slot.muteToZero, update.muteToZero);
-    }
-    if (update.hasAlertPersist) {
-        changed |= assignIfChanged(slot.alertPersist, std::min<uint8_t>(5, update.alertPersist));
-    }
-    if (update.hasPriorityArrowOnly) {
-        changed |= assignIfChanged(slot.priorityArrow, update.priorityArrowOnly);
-    }
-    if (update.hasProfileName) {
-        if (slot.config.profileName != preparedProfile) {
-            slot.config.profileName = std::move(preparedProfile);
-            changed = true;
-        }
-    }
-    if (update.hasMode) {
-        changed |= assignIfChanged(slot.config.mode, normalizeV1ModeValue(static_cast<int>(update.mode)));
-    }
-
-    if (changed) {
-        if (V1Settings::normalizeAutoPushSlotIndex(update.slot) ==
-                V1Settings::normalizeAutoPushSlotIndex(settings_.activeSlot) &&
-            (previousPriorityArrow != slot.priorityArrow || previousAlertPersist != slot.alertPersist)) {
-            noteDisplayConfigurationMutation();
-        }
-        persistSettingsByMode(*this, persistMode);
-    }
-
-    return changed;
-}
-
 AutoPushPersistResult SettingsManager::applyAutoPushSlotUpdatePersisted(const AutoPushSlotUpdate& update) {
     if (!ensureSettingsLoaded()) return {};
     AutoPushPersistResult result;
@@ -326,28 +240,6 @@ AutoPushPersistResult SettingsManager::applyAutoPushSlotUpdatePersisted(const Au
     slot.config.mode = modeBefore;
     clearDeferredPersistState();
     return result;
-}
-
-bool SettingsManager::clearProfileReferencesPersisted(const String& canonicalProfileName, bool& changed) {
-    changed = false;
-    if (!ensureSettingsLoaded()) return false;
-    const V1Settings before = settings_;
-    for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
-        V1Settings::AutoPushSlotView slot = settings_.autoPushSlotView(slotIndex);
-        if (slot.config.profileName == canonicalProfileName) {
-            slot.config.profileName = "";
-            changed = true;
-        }
-    }
-    if (!changed) {
-        return true;
-    }
-    if (saveDeferredBackup()) {
-        return true;
-    }
-    settings_ = before;
-    clearDeferredPersistState();
-    return false;
 }
 
 SettingsPersistResult SettingsManager::applyAutoPushStateUpdate(const AutoPushStateUpdate& update,

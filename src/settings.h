@@ -117,8 +117,6 @@ class SettingsManager {
         const AudioSettingsUpdate& update, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     SettingsPersistResult applyObdSettingsUpdate(
         const ObdSettingsUpdate& update, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
-    bool applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update,
-                                 SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
     AutoPushPersistResult applyAutoPushSlotUpdatePersisted(const AutoPushSlotUpdate& update);
     SettingsPersistResult applyAutoPushStateUpdate(
         const AutoPushStateUpdate& update, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
@@ -135,9 +133,6 @@ class SettingsManager {
     // loop paths.
     bool save();
 
-    // Clear all references to a profile and persist the reconciliation before
-    // the profile file is deleted. Returns false without changing RAM on NVS failure.
-    bool clearProfileReferencesPersisted(const String& canonicalProfileName, bool& changed);
     // Delete a profile and its slot assignments as one recoverable operation.
     // A reset or write failure converges to either the old profile+assignments
     // or the deleted profile+cleared assignments, never a dangling reference.

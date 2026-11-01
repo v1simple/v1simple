@@ -35,7 +35,6 @@ using ObdStringUtils::stringContainsCI;
 void ObdRuntimeModule::resetForBegin() {
     state_ = ObdConnectionState::IDLE;
     stateEnteredMs_ = 0;
-    bootReadyMs_ = 0;
     stateEntryPending_ = false;
     lastProxyAdvertising_ = false;
     lastProxyClientConnected_ = false;
@@ -76,7 +75,6 @@ void ObdRuntimeModule::resetForBegin() {
     lastRssiMs_ = 0;
     bufferOverflowCount_ = 0;
     initRetries_ = 0;
-    consecutiveSpeedSamples_ = 0;
     securityRepairs_ = 0;
     lastConnectStartMs_ = 0;
     lastConnectSuccessMs_ = 0;
@@ -458,10 +456,6 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
     lastProxyAdvertising_ = proxyAdvertising;
     lastProxyClientConnected_ = proxyClientConnected;
     lastObdRetryAllowed_ = obdRetryAllowed;
-
-    if (bootReady && bootReadyMs_ == 0) {
-        bootReadyMs_ = nowMs == 0 ? 1 : nowMs;
-    }
 
     // The priority disconnect is a transport fence. Do not start a scan,
     // reconnect, or another GATT operation until its acknowledgement drains.

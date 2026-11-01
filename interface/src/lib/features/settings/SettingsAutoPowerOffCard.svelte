@@ -1,7 +1,7 @@
 <script>
     import CardSectionHead from '#lib/components/CardSectionHead.svelte';
 
-    let { settings } = $props();
+    let { settings = $bindable() } = $props();
 </script>
 
 <div class="surface-card">

@@ -268,14 +268,9 @@
         capturedSnapshot = null;
         snapshotLoading = true;
         try {
-            const loaded = await fetchWithTimeout(
-                '/api/v1/snapshot', {}, undefined, async (response) => ({
-                    ok: response.ok,
-                    body: response.ok ? await response.json() : null
-                })
-            );
+            const loaded = await fetchJsonWithTimeout('/api/v1/snapshot');
             if (disposed || generation !== snapshotGeneration) return;
-            const snapshot = loaded.ok ? loaded.body : null;
+            const snapshot = loaded.ok ? loaded.data : null;
             capturedSnapshot = snapshot?.available === true &&
                 /^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$/.test(snapshot.address || '')
                 ? snapshot

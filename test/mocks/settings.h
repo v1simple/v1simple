@@ -250,7 +250,6 @@ public:
     int saveCalls = 0;
     int saveDeferredBackupCalls = 0;
     int requestDeferredPersistCalls = 0;
-    int applyAutoPushSlotUpdateCalls = 0;
     int applyAutoPushStateUpdateCalls = 0;
     int backupToSDCalls = 0;
     int requestDeferredBackupCalls = 0;
@@ -425,67 +424,6 @@ public:
             }
         }
         return SettingsPersistResult{true, changed, persistMode == SettingsPersistMode::ImmediateNvsDeferredBackup};
-    }
-    bool applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update,
-                                 SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
-        ++applyAutoPushSlotUpdateCalls;
-        if (update.slot < 0 || update.slot > 2) {
-            return false;
-        }
-
-        bool changed = false;
-        if (update.hasName && slotNames[update.slot] != update.name) {
-            slotNames[update.slot] = update.name;
-            changed = true;
-        }
-        if (update.hasColor && slotColors[update.slot] != update.color) {
-            slotColors[update.slot] = update.color;
-            changed = true;
-        }
-        if (update.hasVolume && slotVolumes[update.slot] != update.volume) {
-            slotVolumes[update.slot] = update.volume;
-            changed = true;
-        }
-        if (update.hasMuteVolume && slotMuteVolumes[update.slot] != update.muteVolume) {
-            slotMuteVolumes[update.slot] = update.muteVolume;
-            changed = true;
-        }
-        if (update.hasDarkMode && slotDarkModes[update.slot] != update.darkMode) {
-            slotDarkModes[update.slot] = update.darkMode;
-            changed = true;
-        }
-        if (update.hasMuteToZero && slotMuteToZero[update.slot] != update.muteToZero) {
-            slotMuteToZero[update.slot] = update.muteToZero;
-            changed = true;
-        }
-        if (update.hasAlertPersist && slotAlertPersistSec[update.slot] != update.alertPersist) {
-            slotAlertPersistSec[update.slot] = update.alertPersist;
-            changed = true;
-        }
-        if (update.hasPriorityArrowOnly &&
-            slotPriorityArrowOnly[update.slot] != update.priorityArrowOnly) {
-            slotPriorityArrowOnly[update.slot] = update.priorityArrowOnly;
-            changed = true;
-        }
-        if (update.hasProfileName && slotConfigs[update.slot].profileName != update.profileName) {
-            slotConfigs[update.slot].profileName = update.profileName;
-            changed = true;
-        }
-        if (update.hasMode && slotConfigs[update.slot].mode != update.mode) {
-            slotConfigs[update.slot].mode = update.mode;
-            changed = true;
-        }
-
-        if (changed) {
-            if (persistMode == SettingsPersistMode::Deferred) {
-                ++requestDeferredPersistCalls;
-            } else if (persistMode == SettingsPersistMode::ImmediateNvsDeferredBackup) {
-                ++saveDeferredBackupCalls;
-            } else {
-                ++saveCalls;
-            }
-        }
-        return changed;
     }
     SettingsPersistResult applyAutoPushStateUpdate(
         const AutoPushStateUpdate& update, SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {

@@ -38,7 +38,7 @@ describe('automatic WiFi status refresh boundary', () => {
             { method: 'POST', match: '/api/wifi/enable', respond: () => { state = kind === 'enable scanning' ? 'disconnected' : 'connecting'; return jsonResponse({ success: true }); } },
             { method: 'GET', match: '/api/status', respond: () => { sharedReads++; return jsonResponse({ maintenanceBoot: true, wifi: { sta_connected: state === 'connected', sta_ip: state === 'connected' ? '192.168.1.2' : '', ap_active: true }, device: { hostname: 'v1' } }); } }
         ]);
-        const release = retainRuntimeStatus({ needsStatus: true });
+        const release = retainRuntimeStatus();
         const first = render(Settings);
         let firstMounted = true;
         try {

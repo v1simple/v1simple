@@ -98,7 +98,7 @@ static void checkIndependentQualityFreshness() {
             selected = selector.selectedSpeed();
             mute.update(selected.speedMph, selected.valid, now);
         }
-        assert(gps.snapshot(71000).hasFix && selector.snapshot().gpsFresh);
+        assert(gps.snapshot(71000).hasFix && selector.snapshotAt(71000).gpsFresh);
         assert(!selected.valid && !mute.getState().muteActive);
         printf("fresh UART RMC with quality mode=%u after 61 seconds: selected=%d mute=%d\n",
                mode, selected.valid, mute.getState().muteActive);

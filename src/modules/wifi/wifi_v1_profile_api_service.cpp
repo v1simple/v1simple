@@ -1,9 +1,9 @@
 #include "wifi_v1_profile_api_service.h"
 
 #include <ArduinoJson.h>
-#include <algorithm>
 #include <cstring>
 #include <utility>
+#include <vector>
 
 #include "wifi_api_response.h"
 #include "exact_urlencoded_form.h"
@@ -288,34 +288,9 @@ static void handleApiProfilesListResolved(WebServer& server, const Runtime& runt
         total = page.total;
         hasMore = page.hasMore;
         nextCursor = std::move(page.nextCursor);
-    } else if (runtime.listProfileNamesResult) {
-        const CatalogStatus status =
-            runtime.listProfileNamesResult(profileNames, runtime.listProfileNamesResultCtx);
-        if (status != CatalogStatus::Success) {
-            const int httpStatus = status == CatalogStatus::Busy ? 409 : 500;
-            const char* error = status == CatalogStatus::Busy ? "Profile storage busy; retry" :
-                                status == CatalogStatus::Corrupt ? "Profile catalog corrupt" :
-                                "Profile catalog unavailable";
-            server.send(httpStatus, "application/json", String("{\"error\":\"") + error + "\"}");
-            return;
-        }
-    } else if (runtime.listProfileNames) {
-        profileNames = runtime.listProfileNames(runtime.listProfileNamesCtx);
-    }
-    if (!runtime.listProfilePageResult) {
-        std::sort(profileNames.begin(), profileNames.end(), [](const String& lhs, const String& rhs) {
-            return std::strcmp(lhs.c_str(), rhs.c_str()) < 0;
-        });
-        total = profileNames.size();
-        std::vector<String> page;
-        page.reserve(limit);
-        for (const String& name : profileNames) {
-            if (after.length() > 0 && std::strcmp(name.c_str(), after.c_str()) <= 0) continue;
-            if (page.size() < limit) page.push_back(name);
-            else hasMore = true;
-        }
-        profileNames = std::move(page);
-        if (!profileNames.empty()) nextCursor = profileNames.back();
+    } else {
+        server.send(500, "application/json", "{\"error\":\"Profile catalog unavailable\"}");
+        return;
     }
     Serial.printf("[V1Profiles] Listing %d profiles\n", profileNames.size());
 
@@ -406,12 +381,7 @@ static void handleApiProfileGetResolved(WebServer& server, const Runtime& runtim
         server.send(httpStatus, "application/json", String("{\"error\":\"") + error + "\"}");
         return;
     }
-    if (!runtime.loadProfileJson || !runtime.loadProfileJson(name, profileJson, runtime.loadProfileJsonCtx)) {
-        server.send(404, "application/json", "{\"error\":\"Profile not found\"}");
-        return;
-    }
-
-    server.send(200, "application/json", profileJson);
+    server.send(500, "application/json", "{\"error\":\"Profile read failed\"}");
 }
 
 void handleApiProfileGetQuery(WebServer& server, const Runtime& runtime,
@@ -543,8 +513,6 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
         CatalogStatus status = CatalogStatus::NotFound;
         if (runtime.loadProfileJsonResult) {
             status = runtime.loadProfileJsonResult(name, existingJson, runtime.loadProfileJsonResultCtx);
-        } else if (runtime.loadProfileJson && runtime.loadProfileJson(name, existingJson, runtime.loadProfileJsonCtx)) {
-            status = CatalogStatus::Success;
         }
 
         if (status == CatalogStatus::Success &&
@@ -693,19 +661,12 @@ void handleApiProfileDeleteBody(WebServer& server, const Runtime& runtime, const
         return;
     }
 
-    if (!runtime.deleteProfileResult && !runtime.deleteProfile) {
+    if (!runtime.deleteProfileResult) {
         server.send(500, "application/json", "{\"error\":\"Profile persistence unavailable\"}");
         return;
     }
 
-    CatalogStatus deleteStatus = CatalogStatus::IoError;
-    if (runtime.deleteProfileResult) {
-        deleteStatus = runtime.deleteProfileResult(name, runtime.deleteProfileResultCtx);
-    } else if (runtime.deleteProfile(name, runtime.deleteProfileCtx)) {
-        deleteStatus = CatalogStatus::Success;
-    } else {
-        deleteStatus = CatalogStatus::NotFound;
-    }
+    const CatalogStatus deleteStatus = runtime.deleteProfileResult(name, runtime.deleteProfileResultCtx);
 
     if (deleteStatus == CatalogStatus::Success) {
         if (runtime.backupToSd) {

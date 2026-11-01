@@ -37,7 +37,7 @@
     let proxyNameSaving = $state(false);
 
     onMount(() => {
-        const releaseRuntimeStatus = retainRuntimeStatus({ needsStatus: true });
+        const releaseRuntimeStatus = retainRuntimeStatus();
         const releaseDeviceSettings = retainDeviceSettings();
         void loadOperatingMode();
         return () => {

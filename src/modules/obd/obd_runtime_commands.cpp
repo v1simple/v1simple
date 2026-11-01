@@ -26,7 +26,6 @@ void ObdRuntimeModule::clearSpeedState() {
     speedMph_ = 0.0f;
     speedSampleTsMs_ = 0;
     speedValid_ = false;
-    consecutiveSpeedSamples_ = 0;
 }
 
 void ObdRuntimeModule::resetPollingSchedule(uint32_t nowMs) {
@@ -181,7 +180,6 @@ bool ObdRuntimeModule::handleSpeedResponse(uint32_t nowMs) {
     speedMph_ = kmhToMph(kmh);
     speedSampleTsMs_ = bleResponseReceivedMs_;
     speedValid_ = true;
-    consecutiveSpeedSamples_++;
     consecutiveErrors_ = 0;
     backoffCycles_ = 0;
     pollCount_++;
@@ -310,7 +308,6 @@ void ObdRuntimeModule::handlePollingError(uint32_t nowMs, bool disconnectBleNow,
     markFailure(reason, nowMs);
     pollErrors_++;
     consecutiveErrors_++;
-    consecutiveSpeedSamples_ = 0;
     clearBleResponseState();
     resetCommandState();
     if (disconnectBleNow) {

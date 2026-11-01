@@ -5,7 +5,6 @@
 #include <unity.h>
 
 #include "../mocks/Arduino.h"
-#include "../mocks/settings.h"
 
 #ifndef ARDUINO
 SerialClass Serial;
@@ -55,8 +54,7 @@ AlpSnapshot makeAlp(bool owns, bool eventActive, bool latched) {
 }
 
 RenderFrame compose(const V1Snapshot& v1, const AlpSnapshot& alp) {
-    V1Settings settings{};
-    return RenderFrameComposer{}.compose(v1, alp, settings, 1000);
+    return RenderFrameComposer{}.compose(v1, alp);
 }
 
 bool frameHasLaserCard(const RenderFrame& frame) {

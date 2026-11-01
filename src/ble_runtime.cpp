@@ -183,7 +183,6 @@ void V1BLEClient::arbitrateProxyRuntime(uint32_t now) {
     if (!proxyKeepConnectionAllowed && proxyConnected && !proxyDisconnectRequestedByCoordinator_ && pServer_ &&
         pServer_->getConnectedCount() > 0) {
         proxyDisconnectRequestedByCoordinator_ = true;
-        proxySuppressedForObdHold_ = true;
         for (uint16_t h : pServer_->getPeerDevices()) {
             pServer_->disconnect(h);
         }
@@ -194,12 +193,10 @@ void V1BLEClient::arbitrateProxyRuntime(uint32_t now) {
     if (!proxyAdvertisingAllowed) {
         clearProxyAdvertisingSchedule();
         if (!proxyConnected && proxyAdvertisingActive) {
-            proxySuppressedForObdHold_ = true;
             stopProxyAdvertisingFromMainLoop();
         }
     } else if (!proxyConnected && !proxyAdvertisingActive && proxyAdvertisingStartMs_ == 0) {
         proxyAdvertisingStartMs_ = now + PROXY_STABILIZE_MS;
-        proxySuppressedForObdHold_ = false;
         Serial.printf("[BLE] Proxy advertising scheduled (%lums)\n",
                       static_cast<unsigned long>(PROXY_STABILIZE_MS));
     }
@@ -210,9 +207,7 @@ void V1BLEClient::arbitrateProxyRuntime(uint32_t now) {
 
     if (proxyAdvertisingStartMs_ != 0) {
         if (static_cast<int32_t>(now - proxyAdvertisingStartMs_) >= 0) {
-            if (!proxyAdvertisingAllowed) {
-                proxySuppressedForObdHold_ = true;
-            } else if (isConnected() && proxyEnabled_ && proxyServerInitialized_) {
+            if (proxyAdvertisingAllowed && isConnected() && proxyEnabled_ && proxyServerInitialized_) {
                 proxyAdvertisingStartMs_ = 0; // Clear pending flag
                 startProxyAdvertising();
             } else {

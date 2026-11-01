@@ -39,6 +39,28 @@ describe('runtime status store', () => {
         vi.unstubAllGlobals();
     });
 
+    it('keeps shared polling until the last mounted consumer releases it', async () => {
+        vi.useFakeTimers();
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('{"maintenanceBoot":true}')));
+        const releaseLayout = retainRuntimeStatus();
+        const releasePage = retainRuntimeStatus();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(get(isMaintenance)).toBe(true);
+
+        releasePage();
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(get(isMaintenance)).toBe(true);
+
+        releaseLayout();
+        expect(get(isMaintenance)).toBe(false);
+        expect(get(runtimeStatusLoading)).toBe(true);
+        expect(vi.getTimerCount()).toBe(0);
+        await vi.advanceTimersByTimeAsync(6000);
+        expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
     it('defaults to non-maintenance runtime status', () => {
         expect(get(runtimeStatus).maintenanceBoot).toBe(false);
         expect(get(runtimeStatus).maintenanceBootUptimeMs).toBe(0);
@@ -77,7 +99,7 @@ describe('runtime status store', () => {
             jsonResponse({})
         );
 
-        const release = retainRuntimeStatus({ needsStatus: true });
+        const release = retainRuntimeStatus();
 
         await waitFor(() => {
             expect(get(runtimeStatus).maintenanceBoot).toBe(true);
@@ -101,7 +123,7 @@ describe('runtime status store', () => {
             return new Response('{"maintenanceBoot":true}');
         });
         vi.stubGlobal('fetch', fetchMock);
-        const release = retainRuntimeStatus({ needsStatus: true });
+        const release = retainRuntimeStatus();
         try {
             await vi.advanceTimersByTimeAsync(4999);
             expect(get(runtimeStatusLoading)).toBe(true);
@@ -130,7 +152,7 @@ describe('runtime status store', () => {
             body = pendingJson(signal);
             return body.response;
         }));
-        const release = retainRuntimeStatus({ needsStatus: true });
+        const release = retainRuntimeStatus();
         try {
             await vi.advanceTimersByTimeAsync(400);
             expect(get(runtimeStatusLoading)).toBe(true);
@@ -152,7 +174,7 @@ describe('runtime status store', () => {
         vi.stubGlobal('fetch', vi.fn((_url, { signal }) => new Promise((_resolve, reject) => {
             signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
         })));
-        const release = retainRuntimeStatus({ needsStatus: true });
+        const release = retainRuntimeStatus();
         try {
             await vi.advanceTimersByTimeAsync(5000);
             expect(get(runtimeStatusError)).toBe('Connection lost');
@@ -169,7 +191,7 @@ describe('runtime status store', () => {
             body = pendingJson(signal, 503);
             return body.response;
         }));
-        const release = retainRuntimeStatus({ needsStatus: true });
+        const release = retainRuntimeStatus();
         try {
             await vi.advanceTimersByTimeAsync(0);
             expect(get(runtimeStatusError)).toBe('API error');
@@ -184,7 +206,7 @@ describe('runtime status store', () => {
     it('reports malformed successful JSON as a connection failure', async () => {
         vi.useFakeTimers();
         vi.stubGlobal('fetch', vi.fn(async () => new Response('{')));
-        const release = retainRuntimeStatus({ needsStatus: true });
+        const release = retainRuntimeStatus();
         try {
             await vi.advanceTimersByTimeAsync(0);
             expect(get(runtimeStatusError)).toBe('Connection lost');
@@ -203,10 +225,10 @@ describe('runtime status store', () => {
             return body.response;
         });
         vi.stubGlobal('fetch', fetchMock);
-        const releaseOld = retainRuntimeStatus({ needsStatus: true });
+        const releaseOld = retainRuntimeStatus();
         await vi.advanceTimersByTimeAsync(0);
         releaseOld();
-        const releaseNew = retainRuntimeStatus({ needsStatus: true });
+        const releaseNew = retainRuntimeStatus();
         try {
             await vi.advanceTimersByTimeAsync(0);
             if (outcome === 'complete') bodies[0].finish(true);

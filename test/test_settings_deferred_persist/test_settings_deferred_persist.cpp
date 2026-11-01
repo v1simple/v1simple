@@ -702,7 +702,7 @@ void test_display_configuration_revision_tracks_effective_policy_and_ignores_noo
     inactive.slot = 1;
     inactive.hasPriorityArrowOnly = true;
     inactive.priorityArrowOnly = !manager.getSlotPriorityArrowOnly(1);
-    manager.applyAutoPushSlotUpdate(inactive, SettingsPersistMode::Deferred);
+    TEST_ASSERT_TRUE(manager.applyAutoPushSlotUpdatePersisted(inactive).success);
     TEST_ASSERT_EQUAL_UINT32(0u, manager.displayConfigurationRevision());
 
     AutoPushStateUpdate selection;
@@ -710,12 +710,12 @@ void test_display_configuration_revision_tracks_effective_policy_and_ignores_noo
     selection.activeSlot = 1;
     manager.applyAutoPushStateUpdate(selection, SettingsPersistMode::Deferred);
     TEST_ASSERT_EQUAL_UINT32(1u, manager.displayConfigurationRevision());
-    manager.applyAutoPushSlotUpdate(inactive, SettingsPersistMode::Deferred);
+    TEST_ASSERT_TRUE(manager.applyAutoPushSlotUpdatePersisted(inactive).success);
     TEST_ASSERT_EQUAL_UINT32(1u, manager.displayConfigurationRevision());
     inactive.priorityArrowOnly = !inactive.priorityArrowOnly;
     inactive.hasAlertPersist = true;
     inactive.alertPersist = manager.getSlotAlertPersistSec(1) == 0 ? 3 : 0;
-    manager.applyAutoPushSlotUpdate(inactive, SettingsPersistMode::Deferred);
+    TEST_ASSERT_TRUE(manager.applyAutoPushSlotUpdatePersisted(inactive).success);
     TEST_ASSERT_EQUAL_UINT32(2u, manager.displayConfigurationRevision());
 
     AudioSettingsUpdate quiet;

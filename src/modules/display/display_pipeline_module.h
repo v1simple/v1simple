@@ -96,7 +96,7 @@ class DisplayPipelineModule {
     static constexpr uint32_t VOICE_RETRY_INTERVAL_MS = 100;
 
     RenderFrame buildRenderFrame(uint32_t nowMs, const V1Settings& settingsRef);
-    RenderFrame buildDisconnectedFrame(uint32_t nowMs, const V1Settings& settingsRef);
+    RenderFrame buildDisconnectedFrame(uint32_t nowMs);
     AlpLaserEvent buildPresentedAlpEvent(const AlpLaserEvent& rawAlpEvent, uint32_t nowMs);
     void updateAlpLatch(const AlpLaserEvent& alpEvent, uint32_t nowMs, uint8_t persistSec);
     bool settleVoicePlayback(uint32_t nowMs);

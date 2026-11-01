@@ -52,7 +52,7 @@
         'Apply to V1 uses the captured detector. V1Simple restarts to apply and check its settings, then returns here with the result.';
 
     onMount(() => {
-        const releaseRuntimeStatus = retainRuntimeStatus({ needsStatus: true });
+        const releaseRuntimeStatus = retainRuntimeStatus();
         void (async () => {
             await Promise.all([fetchSlots(), fetchProfiles(), fetchCapturedSnapshot()]);
             loading = false;
@@ -71,13 +71,8 @@
 
     async function fetchCapturedSnapshot() {
         try {
-            const loaded = await fetchWithTimeout(
-                '/api/v1/snapshot', {}, undefined, async (response) => ({
-                    ok: response.ok,
-                    body: response.ok ? await response.json() : null
-                })
-            );
-            const snapshot = loaded.ok ? loaded.body : null;
+            const loaded = await fetchJsonWithTimeout('/api/v1/snapshot');
+            const snapshot = loaded.ok ? loaded.data : null;
             capturedSnapshot = snapshot?.available === true &&
                 /^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$/.test(snapshot.address || '')
                 ? snapshot
@@ -330,15 +325,9 @@
         selectedProfileVolumePolicy = null;
         if (!name) return;
         try {
-            const result = await fetchWithTimeout(
-                `/api/v1/profile?name=${encodeURIComponent(name)}`,
-                {}, undefined, async (response) => ({
-                    ok: response.ok,
-                    body: response.ok ? await response.json() : null
-                })
-            );
+            const result = await fetchJsonWithTimeout(`/api/v1/profile?name=${encodeURIComponent(name)}`);
             if (editingDraft?.profile === name && result.ok) {
-                selectedProfileVolumePolicy = result.body?.detector?.volume?.policy || 'unchanged';
+                selectedProfileVolumePolicy = result.data?.detector?.volume?.policy || 'unchanged';
             }
         } catch {
             // Saving a volume modifier remains disabled until the assigned profile can be checked.

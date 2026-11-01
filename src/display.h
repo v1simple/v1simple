@@ -223,7 +223,6 @@ class V1Display {
     bool bleProxyClientConnected_ = false;
     bool bleReceivingData_ = true;         // True when V1 packets received recently (heartbeat)
     bool bleProxyDrawn_ = false;           // Track if icon has been drawn at least once
-    bool multiAlertMode_ = false;          // True while rendering a live multi-alert frame
     bool persistedMode_ = false;           // True when drawing persisted alerts (uses PALETTE_PERSISTED)
     bool speedVolZeroActive_ = false;      // Suppress VOL 0 warning during speed-mute vol 0
     // Leaf renderers record pixels actually painted after their cache checks.

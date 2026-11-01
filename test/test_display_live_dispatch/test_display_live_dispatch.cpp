@@ -399,7 +399,7 @@ void test_live_alp_owns_primary_direction_while_v1_radar_keeps_card_direction_ge
     alp.event.active = true;
     alp.event.direction = AlpLaserDirection::FRONT;
 
-    const RenderFrame frame = RenderFrameComposer{}.compose(v1, alp, settings.get(), mockMillis);
+    const RenderFrame frame = RenderFrameComposer{}.compose(v1, alp);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, frame.primaryKind);
     TEST_ASSERT_EQUAL_INT(DIR_FRONT, frame.primaryState.arrows);
     TEST_ASSERT_EQUAL_INT(1, frame.cardCount);

@@ -19,7 +19,7 @@ func fnv1a32Hex(_ data: Data) -> String {
     return String(format: "%08X", digest)
 }
 
-private func encodedMachineEventLine<T: Encodable>(_ event: T) -> String {
+func encodedMachineEventLine<T: Encodable>(_ event: T) -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     guard let data = try? encoder.encode(event),

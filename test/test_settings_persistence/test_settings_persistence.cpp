@@ -2443,7 +2443,9 @@ void test_autopush_slot_batch_update_skips_noop_persist_and_saves_once_on_change
     SettingsManager manager(storage, profiles);
 
     AutoPushSlotUpdate emptyUpdate;
-    manager.applyAutoPushSlotUpdate(emptyUpdate);
+    const auto emptyUpdateResult = manager.applyAutoPushSlotUpdatePersisted(emptyUpdate);
+    TEST_ASSERT_TRUE(emptyUpdateResult.success);
+    TEST_ASSERT_FALSE(emptyUpdateResult.changed);
     TEST_ASSERT_EQUAL_UINT32(1u, manager.backupRevision());
     TEST_ASSERT_EQUAL_STRING("", activeNamespaceOrEmpty().c_str());
 
@@ -2455,7 +2457,9 @@ void test_autopush_slot_batch_update_skips_noop_persist_and_saves_once_on_change
     sameValueUpdate.profileName = slot.config.profileName;
     sameValueUpdate.hasMode = true;
     sameValueUpdate.mode = slot.config.mode;
-    manager.applyAutoPushSlotUpdate(sameValueUpdate);
+    const auto sameValueUpdateResult = manager.applyAutoPushSlotUpdatePersisted(sameValueUpdate);
+    TEST_ASSERT_TRUE(sameValueUpdateResult.success);
+    TEST_ASSERT_FALSE(sameValueUpdateResult.changed);
     TEST_ASSERT_EQUAL_UINT32(1u, manager.backupRevision());
     TEST_ASSERT_EQUAL_STRING("", activeNamespaceOrEmpty().c_str());
 
@@ -2465,7 +2469,9 @@ void test_autopush_slot_batch_update_skips_noop_persist_and_saves_once_on_change
     changedUpdate.profileName = "Road";
     changedUpdate.hasMode = true;
     changedUpdate.mode = V1_MODE_LOGIC;
-    manager.applyAutoPushSlotUpdate(changedUpdate);
+    const auto changedUpdateResult = manager.applyAutoPushSlotUpdatePersisted(changedUpdate);
+    TEST_ASSERT_TRUE(changedUpdateResult.success);
+    TEST_ASSERT_TRUE(changedUpdateResult.changed);
     TEST_ASSERT_EQUAL_UINT32(2u, manager.backupRevision());
     TEST_ASSERT_TRUE(activeNamespaceOrEmpty().length() > 0);
 }
@@ -2867,9 +2873,10 @@ void test_profile_delete_reconciliation_clears_all_slots_and_survives_reload() {
     manager.mutableSettings().slot2_comfort.profileName = "Road";
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
 
-    bool changed = false;
-    TEST_ASSERT_TRUE(manager.clearProfileReferencesPersisted("Road", changed));
-    TEST_ASSERT_TRUE(changed);
+    V1Profile road("Road");
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    TEST_ASSERT_TRUE(manager.deleteProfileAndReferences("Road").success());
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::NotFound, profiles.loadProfileResult("Road", road).status);
     TEST_ASSERT_EQUAL_STRING("", manager.get().slot0_default.profileName.c_str());
     TEST_ASSERT_EQUAL_STRING("", manager.get().slot1_highway.profileName.c_str());
     TEST_ASSERT_EQUAL_STRING("", manager.get().slot2_comfort.profileName.c_str());

@@ -95,8 +95,7 @@ void appendFilteredV1Alerts(RenderFrame& frame, const V1Snapshot& v1, bool suppr
 
 } // namespace
 
-RenderFrame RenderFrameComposer::compose(const V1Snapshot& v1, const AlpSnapshot& alp, const V1Settings& /*settings*/,
-                                         uint32_t /*nowMs*/) const {
+RenderFrame RenderFrameComposer::compose(const V1Snapshot& v1, const AlpSnapshot& alp) const {
     RenderFrame frame;
     frame.context = v1.state;
 

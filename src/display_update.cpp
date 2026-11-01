@@ -406,7 +406,6 @@ void V1Display::update(const DisplayState& state) {
 
     // Resting mode shares the multi-alert layout geometry.
     dirty_.multiAlert = true;
-    multiAlertMode_ = false;
 
     if (needsFullRedraw) {
         drawBaseFrame();
@@ -469,7 +468,6 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     const bool needsFullRedraw = currentScreen_ != ScreenMode::Persisted || dirty_.resetTracking;
 
     dirty_.multiAlert = true;
-    multiAlertMode_ = false;
 
     if (needsFullRedraw) {
         drawBaseFrame();
@@ -525,7 +523,6 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     const bool needsFullRedraw = currentScreen_ != ScreenMode::Live || dirty_.resetTracking;
 
     dirty_.multiAlert = true;
-    multiAlertMode_ = true;
 
     // Priority-only hides directions the V1 is lighting; require explicit slot opt-in.
     Direction arrowsToShow;

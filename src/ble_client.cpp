@@ -339,20 +339,6 @@ void V1BLEClient::setConnectionCycleProxyPolicy(const bool advertisingAllowed, c
 }
 
 void V1BLEClient::setObdBleArbitrationRequest(ObdBleArbitrationRequest request) {
-    if (obdBleArbitrationRequest_ == request) {
-        return;
-    }
-
-    const bool releasingAutoHold = obdBleArbitrationRequest_ == ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD &&
-                                   request != ObdBleArbitrationRequest::HOLD_PROXY_FOR_AUTO_OBD;
-    const bool releasingManualPreempt =
-        obdBleArbitrationRequest_ == ObdBleArbitrationRequest::PREEMPT_PROXY_FOR_MANUAL_SCAN &&
-        request == ObdBleArbitrationRequest::NONE;
-
-    if (releasingAutoHold || releasingManualPreempt) {
-        proxySuppressedForObdHold_ = true;
-    }
-
     obdBleArbitrationRequest_ = request;
 }
 

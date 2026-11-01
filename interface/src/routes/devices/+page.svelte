@@ -18,7 +18,7 @@
     let activeDeviceFetch = null;
 
     onMount(() => {
-        const releaseRuntimeStatus = retainRuntimeStatus({ needsStatus: true });
+        const releaseRuntimeStatus = retainRuntimeStatus();
         void (async () => {
             try {
                 await refresh();

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "render_frame.h"
-#include "settings_types.h"
 
 struct V1Snapshot {
     DisplayState state{};
@@ -22,5 +21,5 @@ struct AlpSnapshot {
 
 class RenderFrameComposer {
   public:
-    RenderFrame compose(const V1Snapshot& v1, const AlpSnapshot& alp, const V1Settings& settings, uint32_t nowMs) const;
+    RenderFrame compose(const V1Snapshot& v1, const AlpSnapshot& alp) const;
 };

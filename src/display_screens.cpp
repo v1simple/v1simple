@@ -25,7 +25,6 @@ void V1Display::showDisconnected() {
 
 void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
     dirty_.multiAlert = true;
-    multiAlertMode_ = false;
     persistedMode_ = false;
     drawnRegion_.reset();
 
@@ -67,7 +66,6 @@ void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
 
 void V1Display::showResting(bool forceRedraw) {
     dirty_.multiAlert = true;
-    multiAlertMode_ = false;
 
     // Preserve the connected-mode indicator; image2 is the blink off-phase.
     char savedBogeyChar = lastState_.bogeyCounterChar;
@@ -331,7 +329,6 @@ void V1Display::showLowBattery() {
 
 void V1Display::showStealth(float speedMph, bool speedValid) {
     dirty_.multiAlert = true;
-    multiAlertMode_ = false;
     persistedMode_ = false;
 
     const bool displaySpeedValid = speedValid && speedMph >= 0.0f;

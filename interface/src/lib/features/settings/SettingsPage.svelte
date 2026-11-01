@@ -220,15 +220,7 @@
 
         const request = (async () => {
             try {
-                const res = await fetchWithTimeout(
-                    '/api/wifi/status',
-                    {},
-                    timeoutMs,
-                    async (response) => ({
-                        ok: response.ok,
-                        data: response.ok ? await response.json() : null
-                    })
-                );
+                const res = await fetchJsonWithTimeout('/api/wifi/status', {}, timeoutMs);
                 if (!isCurrent()) return null;
                 if (res.ok) {
                     const data = res.data;
@@ -1417,7 +1409,7 @@
         {/if}
 
         <fieldset disabled={saving || restoring || !settingsLoaded}>
-            <SettingsAutoPowerOffCard {settings} />
+            <SettingsAutoPowerOffCard bind:settings />
         </fieldset>
 
         <button

@@ -144,15 +144,7 @@ struct ReplayStimulusEvent: Encodable, Equatable {
         }
     }
 
-    var machineEventLine: String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        guard let payload = try? encoder.encode(self),
-              let json = String(data: payload, encoding: .utf8) else {
-            preconditionFailure("replay stimulus event must be JSON encodable")
-        }
-        return "V1REPLAY_EVENT " + json
-    }
+    var machineEventLine: String { encodedMachineEventLine(self) }
 }
 
 extension V1.ModeGlyph {

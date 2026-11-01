@@ -564,7 +564,7 @@ void test_invalid_gga_cannot_refresh_quality_and_no_fix_gga_cannot_authorize_mut
     SpeedSourceSelector selector;
     selector.begin(nullptr, false, &gpsRuntimeModule, true);
     selector.update(10000);
-    TEST_ASSERT_TRUE(selector.snapshot().gpsFresh);
+    TEST_ASSERT_TRUE(selector.snapshotAt(10000).gpsFresh);
     TEST_ASSERT_FALSE(selector.selectedSpeed().valid);
     TEST_ASSERT_EQUAL_UINT32(9000, gpsRuntimeModule.snapshot(10000).qualityAgeMs);
 
@@ -589,7 +589,7 @@ void test_expired_quality_cannot_reappear_after_a_full_millis_cycle() {
     SpeedSourceSelector selector;
     selector.begin(nullptr, false, &gpsRuntimeModule, true);
     selector.update(1000);
-    TEST_ASSERT_TRUE(selector.snapshot().gpsFresh);
+    TEST_ASSERT_TRUE(selector.snapshotAt(1000).gpsFresh);
     TEST_ASSERT_FALSE(selector.selectedSpeed().valid);
     injectGoodQuality(1000);
     selector.update(1000);

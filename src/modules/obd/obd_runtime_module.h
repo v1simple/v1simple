@@ -315,7 +315,6 @@ class ObdRuntimeModule {
     bool enabled_ = false;
     ObdConnectionState state_ = ObdConnectionState::IDLE;
     uint32_t stateEnteredMs_ = 0;
-    uint32_t bootReadyMs_ = 0;
     bool stateEntryPending_ = false;
     bool lastProxyAdvertising_ = false;
     bool lastProxyClientConnected_ = false;
@@ -360,7 +359,6 @@ class ObdRuntimeModule {
     uint32_t lastRssiMs_ = 0;
     uint32_t bufferOverflowCount_ = 0;
     uint8_t initRetries_ = 0;
-    uint32_t consecutiveSpeedSamples_ = 0;
     uint32_t securityRepairs_ = 0;
     uint32_t lastConnectStartMs_ = 0;
     uint32_t lastConnectSuccessMs_ = 0;

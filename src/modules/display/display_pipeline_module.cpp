@@ -268,7 +268,7 @@ bool DisplayPipelineModule::v1PersistenceRefreshDue(uint32_t nowMs) const {
 
 RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Settings& settingsRef) {
     if (!ble_->isConnected()) {
-        return buildDisconnectedFrame(nowMs, settingsRef);
+        return buildDisconnectedFrame(nowMs);
     }
     DisplayState state = parser_->getDisplayState();
     const bool hasAlerts = parser_->hasAlerts();
@@ -355,17 +355,16 @@ RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Sett
     alp.isPersistedLatch = !displayAlpEvent.active && alpLatch_ && alpLatch_->isLatched();
     alp.latchedEvent = alp.isPersistedLatch ? alpLatch_->latchedEvent() : AlpLaserEvent{};
 
-    return composer_.compose(v1, alp, settingsRef, nowMs);
+    return composer_.compose(v1, alp);
 }
 
 // Callers inject stealth fields after buildRenderFrame() returns to keep the
 // composer pure.
 
-RenderFrame DisplayPipelineModule::buildDisconnectedFrame(uint32_t nowMs, const V1Settings& settingsRef) {
+RenderFrame DisplayPipelineModule::buildDisconnectedFrame(uint32_t nowMs) {
     const AlpLaserEvent& rawAlpEvent = alp_ ? alp_->currentEvent() : sAlpEventEmpty;
     const AlpLaserEvent displayAlpEvent = buildPresentedAlpEvent(rawAlpEvent, nowMs);
-    // ALP persist is global, not per-slot — settingsRef is forwarded to the
-    // composer below for owner-resolution only.
+    // ALP persistence uses its global setting, independent of the V1 slot.
     const uint8_t alpPersistSec = settings_->getAlpAlertPersistSec();
     updateAlpLatch(displayAlpEvent, nowMs, alpPersistSec);
 
@@ -378,7 +377,7 @@ RenderFrame DisplayPipelineModule::buildDisconnectedFrame(uint32_t nowMs, const 
     alp.isPersistedLatch = !displayAlpEvent.active && alpLatch_ && alpLatch_->isLatched();
     alp.latchedEvent = alp.isPersistedLatch ? alpLatch_->latchedEvent() : AlpLaserEvent{};
 
-    return composer_.compose(v1, alp, settingsRef, nowMs);
+    return composer_.compose(v1, alp);
 }
 
 // Admission only reserves the worker. Voice dedup is committed once PCM can

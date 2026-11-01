@@ -1,6 +1,6 @@
 import { derived, writable } from 'svelte/store';
 
-import { createPoll, fetchWithTimeout } from '#lib/utils/poll.js';
+import { createPoll, fetchJsonWithTimeout } from '#lib/utils/poll.js';
 
 const STATUS_POLL_INTERVAL_MS = 3000;
 
@@ -74,10 +74,7 @@ async function fetchRuntimeStatus() {
     const fetchVersion = stateVersion;
 
     try {
-        const statusRes = await fetchWithTimeout('/api/status', {}, undefined, async (response) => ({
-            ok: response.ok,
-            data: response.ok ? await response.json() : null
-        }));
+        const statusRes = await fetchJsonWithTimeout('/api/status');
         if (fetchVersion !== stateVersion || statusConsumerCount <= 0) return;
 
         if (statusRes.ok) {
@@ -99,19 +96,15 @@ async function fetchRuntimeStatus() {
     }
 }
 
-export function retainRuntimeStatus({ needsStatus = false } = {}) {
-    if (needsStatus) {
-        statusConsumerCount += 1;
-    }
+export function retainRuntimeStatus() {
+    statusConsumerCount += 1;
 
     syncStatusPoll();
 
-    if (needsStatus) {
-        void fetchRuntimeStatus();
-    }
+    void fetchRuntimeStatus();
 
     return () => {
-        if (needsStatus && statusConsumerCount > 0) {
+        if (statusConsumerCount > 0) {
             statusConsumerCount -= 1;
         }
 

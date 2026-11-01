@@ -82,9 +82,6 @@ def force_before_upload(target, source, env):
     # serial port, so do not subst() the whole command here.  Keep $UPLOAD_PORT
     # and $SOURCE symbolic, and only patch the offset/extra-image variables.
     force_flash_layout(env)
-    upload_cmd = env.get("UPLOADCMD")
-    if isinstance(upload_cmd, str):
-        env.Replace(UPLOADCMD=patch_upload_command(upload_cmd))
     print(
         f"[UploadOffset] pre-upload app image offset forced to {APP_OFFSET}; "
         f"boot_app0 skipped"

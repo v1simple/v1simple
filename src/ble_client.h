@@ -283,7 +283,6 @@ class V1BLEClient {
         if (sessionAllVolumeCaptureArmed_ && ingressSequence != 0 &&
             commandResponseEligible(0x3C, ingressSequence, sessionAllVolumeIngressBoundary_)) {
             hasSessionAllVolume_ = true;
-            sessionAllVolumeIngressSequence_ = ingressSequence;
         }
     }
     void beginSessionUserBytesCapture(uint32_t ingressBoundary) {
@@ -296,7 +295,6 @@ class V1BLEClient {
         sessionAllVolumeIngressBoundary_ = ingressBoundary;
         sessionAllVolumeCaptureArmed_ = true;
         hasSessionAllVolume_ = false;
-        sessionAllVolumeIngressSequence_ = 0;
     }
     void beginSessionSweepSectionsCapture(uint32_t ingressBoundary) {
         sessionSweepSectionsIngressBoundary_ = ingressBoundary;
@@ -804,7 +802,6 @@ class V1BLEClient {
     bool proxyFastStartWindowArmed_ = false;
     bool proxyAdvertisingFastCadence_ = true;
     bool proxyClientConnectedOnceThisBoot_ = false;
-    bool proxySuppressedForObdHold_ = false;
     bool proxyDisconnectRequestedByCoordinator_ = false;
     bool proxyAdvertisingAllowed_ = false;
     bool proxyKeepConnectionAllowed_ = false;
@@ -821,7 +818,6 @@ class V1BLEClient {
     bool sessionUserBytesCaptureArmed_ = false;
     bool expectsSessionAllVolume_ = false;
     bool hasSessionAllVolume_ = false;
-    uint32_t sessionAllVolumeIngressSequence_ = 0;
     uint32_t sessionAllVolumeIngressBoundary_ = 0;
     bool sessionAllVolumeCaptureArmed_ = false;
     bool expectsSessionSweeps_ = false;

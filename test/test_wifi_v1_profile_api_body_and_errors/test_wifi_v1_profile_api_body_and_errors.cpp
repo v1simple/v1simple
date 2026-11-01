@@ -775,8 +775,164 @@ void test_in_the_box_http_save_forwards_policy_and_preserves_omitted_legacy_meta
     TEST_ASSERT_EQUAL_INT(2, runtime.saveCalls);
 }
 
+// The real service handles exact bytes; only the storage callback is scripted.
+struct PageWitness {
+    ProfilePageResult result;
+    String requestedAfter;
+    size_t requestedLimit = 0;
+    int pageCalls = 0;
+    int summaryCalls = 0;
+    int failSummaryAt = 0;
+};
+
+WifiV1ProfileApiService::Runtime pageRuntime(FakeRuntime& rt, PageWitness& witness) {
+    auto runtime = makeRuntime(rt);
+    runtime.listProfilePageResult = [](const String& after, size_t limit, void* ctx) {
+        auto& value = *static_cast<PageWitness*>(ctx);
+        value.requestedAfter = after;
+        value.requestedLimit = limit;
+        ++value.pageCalls;
+        return value.result;
+    };
+    runtime.listProfilePageResultCtx = &witness;
+    runtime.loadProfileSummary = [](const String& name,
+                                    WifiV1ProfileApiService::ProfileSummary& summary, void* ctx) {
+        auto& value = *static_cast<PageWitness*>(ctx);
+        ++value.summaryCalls;
+        if (value.summaryCalls == value.failSummaryAt) return false;
+        summary.name = name;
+        summary.description = String("description ") + name;
+        return true;
+    };
+    runtime.loadProfileSummaryCtx = &witness;
+    return runtime;
+}
+
+void assertPageResponse(const char* label, const WebServer& server, const FakeRuntime& rt,
+                        int status, const char* body) {
+    TEST_ASSERT_EQUAL_INT_MESSAGE(status, server.lastStatusCode, label);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("application/json", server.lastContentType.c_str(), label);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(body, server.lastBody.c_str(), label);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, server.sendCount, label);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, rt.backupCalls, label);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, rt.saveCalls, label);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, rt.deleteCalls, label);
+}
+
+void callList(WebServer& server, const WifiV1ProfileApiService::Runtime& runtime, const char* query) {
+    WifiV1ProfileApiService::handleApiProfilesListQuery(
+        server, runtime, reinterpret_cast<const uint8_t*>(query), std::strlen(query));
+}
+
+void test_list_page_real_handler_nonempty_cursor_preserves_order_and_metadata() {
+    FakeRuntime rt;
+    PageWitness witness;
+    witness.result.status = ProfileStorageStatus::Success;
+    witness.result.profiles = {"Beta", "Gamma"};
+    witness.result.total = 4;
+    witness.result.hasMore = true;
+    witness.result.nextCursor = "Gamma";
+    WebServer server;
+    callList(server, pageRuntime(rt, witness), "after=Alpha&limit=2");
+    assertPageResponse("nonempty", server, rt, 200,
+        "{\"schemaVersion\":4,\"detectorConfigurationOwner\":\"profile\",\"profiles\":[{\"name\":\"Beta\",\"description\":\"description Beta\"},{\"name\":\"Gamma\",\"description\":\"description Gamma\"}],\"total\":4,\"limit\":2,\"hasMore\":true,\"nextCursor\":\"Gamma\"}");
+    TEST_ASSERT_EQUAL_STRING("Alpha", witness.requestedAfter.c_str());
+    TEST_ASSERT_EQUAL_UINT(2, witness.requestedLimit);
+    TEST_ASSERT_EQUAL_INT(1, witness.pageCalls);
+    TEST_ASSERT_EQUAL_INT(2, witness.summaryCalls);
+}
+
+void test_list_page_real_handler_empty_last_has_null_cursor_and_legacy_owner() {
+    FakeRuntime rt;
+    rt.profileSchemaReady = false;
+    PageWitness witness;
+    witness.result.status = ProfileStorageStatus::Success;
+    witness.result.total = 4;
+    witness.result.nextCursor = "must not leak";
+    WebServer server;
+    callList(server, pageRuntime(rt, witness), "after=Zulu&limit=2");
+    assertPageResponse("empty-last", server, rt, 200,
+        "{\"schemaVersion\":1,\"detectorConfigurationOwner\":\"legacy-slot\",\"profiles\":[],\"total\":4,\"limit\":2,\"hasMore\":false,\"nextCursor\":null}");
+    TEST_ASSERT_EQUAL_STRING("Zulu", witness.requestedAfter.c_str());
+    TEST_ASSERT_EQUAL_UINT(2, witness.requestedLimit);
+    TEST_ASSERT_EQUAL_INT(1, witness.pageCalls);
+    TEST_ASSERT_EQUAL_INT(0, witness.summaryCalls);
+}
+
+void verifyPageError(const char* label, ProfileStorageStatus status, const char* error,
+                     int expectedStatus, const char* expectedBody) {
+    FakeRuntime rt;
+    PageWitness witness;
+    witness.result.status = status;
+    witness.result.error = error;
+    witness.result.profiles = {"must not load"};
+    WebServer server;
+    callList(server, pageRuntime(rt, witness), "");
+    assertPageResponse(label, server, rt, expectedStatus, expectedBody);
+    TEST_ASSERT_EQUAL_INT(1, witness.pageCalls);
+    TEST_ASSERT_EQUAL_INT(0, witness.summaryCalls);
+    TEST_ASSERT_EQUAL_UINT(V1_PROFILE_CATALOG_MAX_COUNT, witness.requestedLimit);
+}
+
+void test_list_page_real_handler_busy() {
+    verifyPageError("busy", ProfileStorageStatus::Busy, "Profile storage busy; retry", 409,
+                    "{\"error\":\"Profile storage busy; retry\"}");
+}
+void test_list_page_real_handler_corrupt() {
+    verifyPageError("corrupt", ProfileStorageStatus::Corrupt, "Profile catalog corrupt", 500,
+                    "{\"error\":\"Profile catalog corrupt\"}");
+}
+void test_list_page_real_handler_unavailable() {
+    verifyPageError("unavailable", ProfileStorageStatus::IoError, "", 500,
+                    "{\"error\":\"Profile catalog unavailable\"}");
+}
+void test_list_page_real_handler_invalid_name() {
+    verifyPageError("invalid-name", ProfileStorageStatus::InvalidName, "Invalid profile page cursor", 400,
+                    "{\"error\":\"Invalid profile page cursor\"}");
+}
+void test_list_page_real_handler_summary_failure_has_no_partial_success() {
+    FakeRuntime rt;
+    PageWitness witness;
+    witness.result.status = ProfileStorageStatus::Success;
+    witness.result.profiles = {"Beta", "Gamma"};
+    witness.result.total = 2;
+    witness.failSummaryAt = 2;
+    WebServer server;
+    callList(server, pageRuntime(rt, witness), "limit=2");
+    assertPageResponse("summary-failure", server, rt, 500,
+        "{\"error\":\"Profile catalog unavailable\"}");
+    TEST_ASSERT_EQUAL_INT(1, witness.pageCalls);
+    TEST_ASSERT_EQUAL_INT(2, witness.summaryCalls);
+}
+void test_list_page_real_handler_invalid_query_never_reaches_storage() {
+    const char* queries[] = {"limit=0", "limit=99", "after=Alpha&after=Beta", "unknown=value", "after=%00"};
+    const char* errors[] = {"{\"error\":\"Invalid profile page limit\"}",
+                            "{\"error\":\"Invalid profile page limit\"}",
+                            "{\"error\":\"Invalid profile page query\"}",
+                            "{\"error\":\"Invalid profile page query\"}",
+                            "{\"error\":\"Invalid profile page query\"}"};
+    for (size_t index = 0; index < sizeof(queries) / sizeof(queries[0]); ++index) {
+        FakeRuntime rt;
+        PageWitness witness;
+        WebServer server;
+        callList(server, pageRuntime(rt, witness), queries[index]);
+        assertPageResponse(queries[index], server, rt, 400, errors[index]);
+        TEST_ASSERT_EQUAL_INT(0, witness.pageCalls);
+        TEST_ASSERT_EQUAL_INT(0, witness.summaryCalls);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_list_page_real_handler_nonempty_cursor_preserves_order_and_metadata);
+    RUN_TEST(test_list_page_real_handler_empty_last_has_null_cursor_and_legacy_owner);
+    RUN_TEST(test_list_page_real_handler_busy);
+    RUN_TEST(test_list_page_real_handler_corrupt);
+    RUN_TEST(test_list_page_real_handler_unavailable);
+    RUN_TEST(test_list_page_real_handler_invalid_name);
+    RUN_TEST(test_list_page_real_handler_summary_failure_has_no_partial_success);
+    RUN_TEST(test_list_page_real_handler_invalid_query_never_reaches_storage);
+
     RUN_TEST(test_in_the_box_http_save_forwards_policy_and_preserves_omitted_legacy_metadata);
     RUN_TEST(test_save_error_with_quotes_and_backslashes_stays_valid_json);
     RUN_TEST(test_save_error_with_control_characters_stays_valid_json);

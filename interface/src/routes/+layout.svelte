@@ -94,7 +94,7 @@
 
     onMount(() => {
         const releaseDeviceSettings = retainDeviceSettings();
-        const releaseRuntimeStatus = retainRuntimeStatus({ needsStatus: true });
+        const releaseRuntimeStatus = retainRuntimeStatus();
         const unsubscribeRuntimeStatus = runtimeStatus.subscribe((status) => {
             maintenanceAnchorRemainingMs = reportedMaintenanceRemainingMs(status);
             maintenanceAnchorAtMs = Date.now();

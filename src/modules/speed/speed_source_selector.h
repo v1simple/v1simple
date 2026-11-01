@@ -51,9 +51,8 @@ class SpeedSourceSelector {
     void update(uint32_t nowMs);
 
     // Producers call update(nowMs) once per loop to commit state.
-    // Consumers read snapshot() for the committed state or snapshotAt(nowMs)
-    // for a pure point-in-time view that does not mutate counters/state.
-    SpeedSelectorStatus snapshot() const;
+    // Consumers read selectedSpeed() for committed selection; snapshotAt(nowMs)
+    // provides a pure diagnostic view without mutating counters/state.
     SpeedSelectorStatus snapshotAt(uint32_t nowMs) const;
     SpeedSelection selectedSpeed() const { return selectedSpeed_; }
 
@@ -73,6 +72,5 @@ class SpeedSourceSelector {
     uint32_t obdSelections_ = 0;
     uint32_t gpsSelections_ = 0;
     uint32_t noSourceSelections_ = 0;
-    SpeedSelectorStatus cachedStatus_ = {};
     SpeedSelection selectedSpeed_ = {};
 };

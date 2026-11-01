@@ -1,4 +1,4 @@
-import { fetchWithTimeout } from '#lib/utils/poll.js';
+import { fetchJsonWithTimeout } from '#lib/utils/poll.js';
 
 let settingsFetchPromise = null;
 let settingsInvalidatedDuringFetch = false;
@@ -12,10 +12,7 @@ function resetDeviceSettingsState() {
 }
 
 async function fetchDeviceSettingsOnce(fetchVersion) {
-    const res = await fetchWithTimeout('/api/device/settings', {}, undefined, async (response) => ({
-        ok: response.ok,
-        data: response.ok ? await response.json() : null
-    }));
+    const res = await fetchJsonWithTimeout('/api/device/settings');
     if (!res.ok || fetchVersion !== stateVersion || settingsConsumerCount <= 0) return undefined;
     return res.data;
 }

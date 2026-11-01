@@ -424,8 +424,6 @@ WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
 
 WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
     return WifiV1ProfileApiService::Runtime{
-        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->profiles_.listProfiles(); },
-        this,
         [](const String& name, WifiV1ProfileApiService::ProfileSummary& summary, void* ctx) {
             auto& profiles = static_cast<WiFiManager*>(ctx)->profiles_;
             V1Profile profile;
@@ -436,15 +434,6 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             summary.description = profile.description;
             if (summary.name != profile.name || summary.description != profile.description) return false;
             return true;
-        },
-        this,
-        [](const String& name, String& json, void* ctx) {
-            auto& profiles = static_cast<WiFiManager*>(ctx)->profiles_;
-            V1Profile profile;
-            if (!profiles.loadProfile(name, profile)) {
-                return false;
-            }
-            return profiles.profileToJson(profile, json);
         },
         this,
         [](const JsonObject& settingsObj, uint8_t outBytes[6], void* ctx) {
@@ -476,8 +465,6 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             return true;
         },
         this,
-        nullptr,
-        nullptr,
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->profiles_.hasCurrentSettings(); },
         this,
         [](void* ctx) {
@@ -488,21 +475,6 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->bleRuntime_->isConnected(); },
         this,
         [](void* ctx) { static_cast<WiFiManager*>(ctx)->settings_.requestDeferredBackupFromCurrentState(); },
-        this,
-        [](std::vector<String>& names, void* ctx) {
-            const ProfileListResult result = static_cast<WiFiManager*>(ctx)->profiles_.listProfilesResult(0);
-            names = result.profiles;
-            switch (result.status) {
-            case ProfileStorageStatus::Success:
-                return WifiV1ProfileApiService::CatalogStatus::Success;
-            case ProfileStorageStatus::Busy:
-                return WifiV1ProfileApiService::CatalogStatus::Busy;
-            case ProfileStorageStatus::Corrupt:
-                return WifiV1ProfileApiService::CatalogStatus::Corrupt;
-            default:
-                return WifiV1ProfileApiService::CatalogStatus::IoError;
-            }
-        },
         this,
         [](const String& name, String& json, void* ctx) {
             auto& profileManager = static_cast<WiFiManager*>(ctx)->profiles_;

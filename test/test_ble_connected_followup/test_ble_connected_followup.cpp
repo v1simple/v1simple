@@ -97,7 +97,6 @@ void V1BLEClient::resetSessionSettingsCapture() {
     sessionUserBytesCaptureArmed_ = false;
     expectsSessionAllVolume_ = false;
     hasSessionAllVolume_ = false;
-    sessionAllVolumeIngressSequence_ = 0;
     sessionAllVolumeIngressBoundary_ = 0;
     sessionAllVolumeCaptureArmed_ = false;
     expectsSessionSweeps_ = false;

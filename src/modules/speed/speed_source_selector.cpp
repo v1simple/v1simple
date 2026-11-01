@@ -18,17 +18,12 @@ void SpeedSourceSelector::begin(ObdRuntimeModule* obd, bool obdEnabled, GpsRunti
     obdSelections_ = 0;
     gpsSelections_ = 0;
     noSourceSelections_ = 0;
-    cachedStatus_ = SpeedSelectorStatus{};
-    cachedStatus_.obdEnabled = obdEnabled_;
-    cachedStatus_.gpsEnabled = gpsEnabled_;
     selectedSpeed_ = SpeedSelection{};
 }
 
 void SpeedSourceSelector::syncEnabledInputs(bool obdEnabled, bool gpsEnabled) {
     obdEnabled_ = obdEnabled;
     gpsEnabled_ = gpsEnabled;
-    cachedStatus_.obdEnabled = obdEnabled_;
-    cachedStatus_.gpsEnabled = gpsEnabled_;
 }
 
 SpeedSelectorStatus SpeedSourceSelector::buildStatus(uint32_t nowMs) const {
@@ -84,9 +79,7 @@ SpeedSelectorStatus SpeedSourceSelector::buildStatus(uint32_t nowMs) const {
 }
 
 void SpeedSourceSelector::update(uint32_t nowMs) {
-    // Skip status work when no source is enabled. Enable flags are boot-fixed
-    // (syncEnabledInputs runs only from begin), so the cache remains valid.
-    // Runtime toggles would need to refresh it and count the disabled edge.
+    // No enabled source can produce a valid committed selection.
     if (!obdEnabled_ && !gpsEnabled_) {
         if (selectedSpeed_.valid) {
             selectedSpeed_ = SpeedSelection{};
@@ -121,16 +114,6 @@ void SpeedSourceSelector::update(uint32_t nowMs) {
         sourceSwitches_++;
     }
     lastSource_ = picked;
-
-    next.sourceSwitches = sourceSwitches_;
-    next.obdSelections = obdSelections_;
-    next.gpsSelections = gpsSelections_;
-    next.noSourceSelections = noSourceSelections_;
-    cachedStatus_ = next;
-}
-
-SpeedSelectorStatus SpeedSourceSelector::snapshot() const {
-    return cachedStatus_;
 }
 
 SpeedSelectorStatus SpeedSourceSelector::snapshotAt(uint32_t nowMs) const {

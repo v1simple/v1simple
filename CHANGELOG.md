@@ -14,6 +14,8 @@ GitHub Releases retain the complete commit history.
   preserving the existing configuration.
 - Prevented lost alert input from authorizing an In-the-Box automatic mute.
 - Preserved committed profile replacements when a later settings read fails.
+- Rejected profile names that share an SD filename, preserving existing
+  profiles and slot assignments when a save or import is refused.
 - Corrected GPS detection timing when its start timestamp is zero.
 - Aligned generated factory images with the application partition and kept
   filesystem staging limited to explicit filesystem builds and uploads.

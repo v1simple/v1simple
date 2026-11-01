@@ -12,6 +12,7 @@
 #include <string>
 #include <system_error>
 #include <vector>
+#include "ff.h"
 
 #ifndef FILE_READ
 #define FILE_READ "r"
@@ -27,6 +28,7 @@
 
 namespace fs {
 class FS;
+enum class MockNameSemantics { Host, ByteSensitive, FatFs };
 }
 
 namespace mock_fs_detail {
@@ -44,6 +46,49 @@ inline std::string g_fail_next_remove_full_path;
 inline std::string g_reset_after_remove_path;
 inline bool g_require_existing_write_parent = false;
 inline bool g_exists_uses_read_open = false;
+
+// Opt-in filesystem semantics must not depend on the CI host's case rules.
+// Hex components retain exact bytes even on case-insensitive APFS.
+inline std::string encodeName(const std::string& name) {
+    const char* hex = "0123456789abcdef";
+    std::string encoded = "~";
+    for (unsigned char byte : name) {
+        encoded += hex[byte >> 4];
+        encoded += hex[byte & 15];
+    }
+    return encoded;
+}
+
+inline std::string decodeName(const std::string& name) {
+    if (name.empty() || name[0] != '~' || name.size() % 2 == 0) return name;
+    const auto digit = [](char c) { return c >= '0' && c <= '9' ? c - '0' :
+                                        c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1; };
+    std::string decoded;
+    for (size_t index = 1; index < name.size(); index += 2) {
+        const int high = digit(name[index]);
+        const int low = digit(name[index + 1]);
+        if (high < 0 || low < 0) return name;
+        decoded += static_cast<char>((high << 4) | low);
+    }
+    return decoded;
+}
+
+inline std::vector<uint32_t> fatFsName(const std::string& name) {
+    std::vector<uint32_t> folded;
+    for (size_t index = 0; index < name.size();) {
+        uint32_t point = static_cast<unsigned char>(name[index++]);
+        unsigned remaining = 0;
+        if (point >= 0xf0u) { point &= 7u; remaining = 3; }
+        else if (point >= 0xe0u) { point &= 15u; remaining = 2; }
+        else if (point >= 0xc0u) { point &= 31u; remaining = 1; }
+        while (remaining > 0 && index < name.size()) {
+            --remaining;
+            point = (point << 6u) | (static_cast<unsigned char>(name[index++]) & 63u);
+        }
+        folded.push_back(ff_wtoupper(point));
+    }
+    return folded;
+}
 
 }  // namespace mock_fs_detail
 
@@ -231,11 +276,13 @@ public:
         const std::filesystem::path next = state_->dirEntries[state_->dirIndex++];
         // Arduino's openNextFile advances readdir before opening the child.
         // A failed child open is indistinguishable from EOF through that API.
-        if (next.filename().string() == mock_fs_detail::g_fail_directory_entry_open) {
+        const std::string name = state_->encodedNames ? mock_fs_detail::decodeName(next.filename().string())
+                                                     : next.filename().string();
+        if (name == mock_fs_detail::g_fail_directory_entry_open) {
             mock_fs_detail::g_fail_directory_entry_open.clear();
             return File();
         }
-        return openPath(next, FILE_READ);
+        return openPath(next, FILE_READ, state_->encodedNames);
     }
 
 private:
@@ -245,6 +292,7 @@ private:
         bool readable = false;
         bool writable = false;
         bool directory = false;
+        bool encodedNames = false;
         std::string name;
         std::vector<std::filesystem::path> dirEntries;
         size_t dirIndex = 0;
@@ -253,11 +301,13 @@ private:
 
     explicit File(std::shared_ptr<State> state) : state_(std::move(state)) {}
 
-    static File openPath(const std::filesystem::path& path, const char* mode) {
+    static File openPath(const std::filesystem::path& path, const char* mode, bool encodedNames = false) {
         std::error_code ec;
         auto state = std::make_shared<State>();
         state->path = path;
-        state->name = path.filename().string();
+        state->encodedNames = encodedNames;
+        state->name = encodedNames ? mock_fs_detail::decodeName(path.filename().string())
+                                  : path.filename().string();
 
         if (std::filesystem::is_directory(path, ec)) {
             state->directory = true;
@@ -432,13 +482,19 @@ public:
         std::filesystem::create_directories(root_, ec);
     }
 
-    explicit FS(const std::filesystem::path& root)
-        : root_(root) {
+    explicit FS(const std::filesystem::path& root, MockNameSemantics semantics = MockNameSemantics::Host)
+        : root_(root), nameSemantics_(semantics) {
         std::error_code ec;
         std::filesystem::create_directories(root_, ec);
     }
 
     const char* mountpoint() { return root_.c_str(); }
+
+    bool mockEncodedNames() const { return nameSemantics_ != MockNameSemantics::Host; }
+    std::filesystem::path mockResolve(const char* path) const { return resolve(path); }
+    std::string mockDirectoryName(const char* name) const {
+        return mockEncodedNames() ? mock_fs_detail::decodeName(name) : std::string(name);
+    }
 
     File open(const char* path, const char* mode = FILE_READ, bool /*create*/ = false) {
         if (path && mode && std::string(mode) == FILE_READ &&
@@ -450,7 +506,7 @@ public:
             mock_fs_detail::g_fail_next_read_path.clear();
             return File();
         }
-        return File::openPath(resolve(path), mode);
+        return File::openPath(resolve(path), mode, mockEncodedNames());
     }
 
     File open(const String& path, const char* mode = FILE_READ, bool create = false) {
@@ -545,10 +601,29 @@ private:
         if (relative.is_absolute()) {
             relative = relative.relative_path();
         }
-        return root_ / relative;
+        if (!mockEncodedNames()) return root_ / relative;
+        std::filesystem::path result = root_;
+        for (const auto& component : relative) {
+            const std::string name = component.string();
+            if (name == "." || name == "..") { result /= component; continue; }
+            std::filesystem::path selected = mock_fs_detail::encodeName(name);
+            if (nameSemantics_ == MockNameSemantics::FatFs) {
+                std::error_code error;
+                const auto key = mock_fs_detail::fatFsName(name);
+                for (const auto& entry : std::filesystem::directory_iterator(result, error)) {
+                    if (mock_fs_detail::fatFsName(mock_fs_detail::decodeName(entry.path().filename().string())) == key) {
+                        selected = entry.path().filename();
+                        break;
+                    }
+                }
+            }
+            result /= selected;
+        }
+        return result;
     }
 
     std::filesystem::path root_;
+    MockNameSemantics nameSemantics_ = MockNameSemantics::Host;
 };
 
 }  // namespace fs

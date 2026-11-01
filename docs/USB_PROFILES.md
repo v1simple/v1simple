@@ -96,6 +96,18 @@ The supported catalog contains at most 10 profiles. Names are at most 64 UTF-8
 bytes, descriptions at most 4096 UTF-8 bytes, and slot display names at most 20
 UTF-8 bytes. Complete bundle documents are capped at 128 KiB.
 
+Profile names must be distinct under the SD filesystem's case comparison,
+including Unicode pairs such as `École` and `école`. This also applies without
+an SD card so the catalog remains usable when a card is inserted later. Other
+Unicode names remain supported. A conflicting import is rejected before
+replacing the existing profiles or slot assignments.
+If an older catalog already contains a conflicting pair, profile recovery
+stops and preserves the files instead of choosing one profile to keep.
+This also applies when a case-only replacement is made without an SD card
+and that card later returns with the old spelling. Keep both stores connected
+for a case-only replacement; automatic resolution of conflicting offline
+copies is not supported.
+
 Old installations could already contain more than 10 profiles. Those entries
 are retained so they can be deleted without silent loss. New saves, complete
 export/import, migration, and live Apply remain blocked until the catalog can be

@@ -82,6 +82,29 @@ schema v3. Current USB v5 retains that slot contract and adds profile-schema-v4
    Older clients reject v5 exports. Profiles in v1–v4 inputs receive inactive
    In-the-Box defaults; v5 strictly validates and preserves the app policy.
 
+   Profile admission uses the linked FatFS Unicode uppercase rule in
+   [profile_name.h](../../src/profile_name.h), including code points whose
+   uppercase form has a different UTF-8 length. Names such as `École` and
+   `école` cannot coexist on SD. The same rule applies to direct saves and
+   complete USB/full-backup documents, including LittleFS-only operation so
+   a later SD insertion cannot merge distinct profiles. Noncolliding Unicode
+   names and intentional single-profile case-only replacements with both
+   configured stores present remain valid.
+   Browser and host checks are preliminary; firmware admission is authoritative.
+
+   Before startup recovery changes profile files, the profile manager checks
+   live payload, rollback and save-intent filenames across both stores. A
+   conflicting catalog stays unavailable and retains its files; it cannot
+   silently select one of two acknowledged profiles. Metadata-only deletion history and
+   uncommitted staging files do not block an intentional case-only replacement.
+   This guard preserves ambiguous older data; it does not automatically rename
+   or repair that data. Reconciliation skips metadata-only historical aliases
+   only after validating the different live profile's exact identity, so an
+   old deletion record cannot delete an acknowledged case-only replacement.
+   A stale detached store returning after an offline case-only replacement can
+   still present two payload identities. That conflict remains unavailable
+   with both copies preserved; automatic resolution is not claimed.
+
 5. **Transaction scope and rollback.** `applyUsbProfileDocument()` passes
    `SettingsBackupScope::ProfilesOnly` to
    [SettingsManager::applyBackupDocument()](../../src/settings_backup_doc.cpp).
@@ -248,6 +271,14 @@ python3 scripts/run_native_tests_serial.py --env native-sanitized \
 The document suite also measures the maximum USB fixture at 117,187 bytes,
 under the 131,072-byte cap. This is a serialized-size measurement, not a device
 heap or SD latency measurement.
+
+The Unicode collision cases in `test_v1_profiles` and
+`test_usb_profile_document` explicitly model case-insensitive FatFS and
+byte-sensitive LittleFS, independent of the host filesystem. They check
+unchanged files, settings, credentials and slots on rejection, preserved
+ambiguous recovery data, and case-only replacement/rollback with both stores
+present, including an old uncommitted staging file. Native tests use the pinned
+FatFS uppercase table; firmware calls the linked filesystem implementation.
 
 **Closure:** preserved representation across serialization and production JSON
 parsing, strict compatibility semantics, successful canonical full-backup

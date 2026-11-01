@@ -1099,6 +1099,52 @@ DirectoryProfileNameStatus directoryProfileName(const char* rawPath, const char*
     return DirectoryProfileNameStatus::Ignore;
 }
 
+// An older release could admit distinct Unicode names that alias on SD.
+// Inspect payloads and recovery owners before any recovery writer interprets
+// their shared paths. Metadata-only history is deliberately excluded: a valid
+// full-catalog case replacement can leave the old spelling's tombstone behind.
+DirectoryProfileNameStatus recoveryProfileName(const char* entry, String& name) {
+    // Temporary staging has no acknowledged identity. A rejected old save can
+    // leave it behind during an intentional case-only catalog replacement.
+    for (const char* suffix : {".json", ".json.bak", ".json.prev", ".json.syncbak",
+                              ".json.savepending", ".json.savecommitted"}) {
+        const auto status = directoryProfileName(entry, suffix, name);
+        if (status != DirectoryProfileNameStatus::Ignore) return status;
+    }
+    return DirectoryProfileNameStatus::Ignore;
+}
+
+bool profileRecoveryNamesCompatible(fs::FS& primary, fs::FS* secondary, const String& directory) {
+    for (fs::FS* source : {&primary, secondary}) {
+        if (!source) continue;
+        StorageDirectory entries(*source, directory);
+        if (!entries) return false;
+        const char* entry;
+        while ((entry = entries.next())) {
+            String name;
+            const auto status = recoveryProfileName(entry, name);
+            if (status == DirectoryProfileNameStatus::Unavailable) return false;
+            if (status != DirectoryProfileNameStatus::Profile) continue;
+            for (fs::FS* peer : {&primary, secondary}) {
+                if (!peer) continue;
+                StorageDirectory peers(*peer, directory);
+                if (!peers) return false;
+                const char* other;
+                while ((other = peers.next())) {
+                    String peerName;
+                    const auto peerStatus = recoveryProfileName(other, peerName);
+                    if (peerStatus == DirectoryProfileNameStatus::Unavailable) return false;
+                    if (peerStatus == DirectoryProfileNameStatus::Profile && name != peerName &&
+                        profileCanonicalNamesCollide(name, peerName)) return false;
+                }
+                if (!peers.complete()) return false;
+            }
+        }
+        if (!entries.complete()) return false;
+    }
+    return true;
+}
+
 enum class ProfileCatalogScanStatus : uint8_t { Success = 0, IoError, Corrupt, Collision };
 
 struct ProfileCatalogSaveScan {
@@ -1375,6 +1421,11 @@ bool V1ProfileManager::initialize(fs::FS* filesystem, fs::FS* importFilesystem, 
         return false;
     }
 
+    if (!profileRecoveryNamesCompatible(*fs_, secondaryFs_, profileDir_)) {
+        lastError_ = "Profile names conflict or recovery catalog is unavailable";
+        return false;
+    }
+
     // A configured secondary can be the only acknowledged winner. Recover
     // both stores before reconciliation is allowed to select any authority.
     if (!recoverSaveIntentsUnlocked() || !recoverInterruptedSavesUnlocked(*fs_) ||
@@ -1417,6 +1468,36 @@ bool V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs, size_t& reconcile
     // begin() has established both directories; only an actual scan can
     // distinguish an empty catalog from a temporarily unreadable directory.
 
+    // A case-only catalog replacement leaves the old spelling's tombstone on
+    // byte-sensitive LittleFS. SD resolves that old path to the new profile;
+    // treating its different document name as corrupt would let the tombstone
+    // delete the acknowledged replacement. The initialization guard has ruled
+    // out competing payload identities, so reconcile the unique live spelling
+    // and retain metadata-only alias history without applying it to that file.
+    auto metadataHasLiveAlias = [&](const String& name, bool& alias) {
+        alias = false;
+        for (fs::FS* filesystem : {sourceFs, fs_}) {
+            StorageDirectory entries(*filesystem, profileDir_);
+            if (!entries) return false;
+            const char* entry;
+            while ((entry = entries.next())) {
+                String liveName;
+                const auto status = directoryProfileName(entry, ".json", liveName);
+                if (status == DirectoryProfileNameStatus::Unavailable) return false;
+                if (status == DirectoryProfileNameStatus::Profile && name != liveName &&
+                    profileCanonicalNamesCollide(name, liveName)) {
+                    String path;
+                    if (!buildProfilePathChecked(profileDir_, liveName, path)) return false;
+                    const auto live = inspectProfileFile(*filesystem, path, liveName);
+                    if (!live.valid || live.unavailable) return false;
+                    alias = true;
+                }
+            }
+            if (!entries.complete()) return false;
+        }
+        return true;
+    };
+
     // Deleted names remain as durable tombstones and are not part of the live
     // catalog limit. Scan all history before changing either store, then visit
     // it in bounded pages so retained RAM does not grow with past deletions.
@@ -1434,6 +1515,11 @@ bool V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs, size_t& reconcile
                 std::memcmp(rawPath + rawLength - (sizeof(".json.meta") - 1u), ".json.meta",
                             sizeof(".json.meta") - 1u) == 0) {
                 status = directoryProfileName(rawPath, ".json.meta", canonical);
+                if (status == DirectoryProfileNameStatus::Profile) {
+                    bool alias = false;
+                    if (!metadataHasLiveAlias(canonical, alias)) return false;
+                    if (alias) continue;
+                }
             } else {
                 status = directoryProfileName(rawPath, ".json", canonical);
             }

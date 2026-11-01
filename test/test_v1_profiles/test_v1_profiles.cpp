@@ -1269,6 +1269,70 @@ void test_profile_name_contract_rejects_hidden_long_blank_and_canonical_collisio
     TEST_ASSERT_EQUAL_STRING("Quiet", quiet.name.c_str());
 }
 
+void test_unicode_sd_alias_is_rejected_without_mutation_on_every_store() {
+    for (bool mirrored : {false, true}) {
+        fs::FS primary(g_tempRoot / (mirrored ? "mirrored" : "single"), fs::MockNameSemantics::FatFs);
+        fs::FS secondary(g_tempRoot / "secondary", fs::MockNameSemantics::ByteSensitive);
+        V1ProfileManager manager;
+        TEST_ASSERT_TRUE(manager.begin(&primary, mirrored ? &secondary : nullptr));
+        TEST_ASSERT_TRUE(manager.saveProfile(makeProfile(u8"École Highway", 10, "retain original"), true).success);
+        const auto before = filesSnapshot();
+        for (bool createOnly : {false, true}) {
+            const auto result = manager.saveProfile(makeProfile(u8"école Highway", 20, "must not replace"), createOnly);
+            TEST_ASSERT_FALSE(result.success);
+            TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::InvalidName), static_cast<int>(result.status));
+            TEST_ASSERT_TRUE(before == filesSnapshot());
+        }
+        V1Profile loaded;
+        TEST_ASSERT_TRUE(manager.loadProfile(u8"École Highway", loaded));
+        TEST_ASSERT_EQUAL_STRING("retain original", loaded.description.c_str());
+        TEST_ASSERT_EQUAL_UINT8(10, loaded.settings.bytes[0]);
+        TEST_ASSERT_TRUE(manager.saveProfile(makeProfile(u8"École Highway", 30, "intentional update")).success);
+        TEST_ASSERT_TRUE(manager.saveProfile(makeProfile(u8"école City", 40, "distinct UTF-8")).success);
+        V1ProfileManager reopened;
+        TEST_ASSERT_TRUE(reopened.begin(&primary, mirrored ? &secondary : nullptr));
+        TEST_ASSERT_TRUE(reopened.loadProfile(u8"École Highway", loaded));
+        TEST_ASSERT_EQUAL_STRING("intentional update", loaded.description.c_str());
+        TEST_ASSERT_TRUE(reopened.loadProfile(u8"école City", loaded));
+    }
+}
+
+void test_existing_unicode_aliases_defer_recovery_without_changing_payloads_or_sidecars() {
+    for (bool interrupted : {false, true}) {
+        fs::FS primary(g_tempRoot / (interrupted ? "pending_sd" : "live_sd"), fs::MockNameSemantics::FatFs);
+        fs::FS secondary(g_tempRoot / (interrupted ? "pending_little" : "live_little"), fs::MockNameSemantics::ByteSensitive);
+        V1ProfileManager original, offline;
+        TEST_ASSERT_TRUE(original.begin(&primary));
+        TEST_ASSERT_TRUE(offline.begin(&secondary));
+        TEST_ASSERT_TRUE(original.saveProfile(makeProfile(u8"École Highway", 10, "original acknowledged")).success);
+        TEST_ASSERT_TRUE(offline.saveProfile(makeProfile(u8"école Highway", 20, "offline acknowledged")).success);
+        if (interrupted) {
+            TEST_ASSERT_TRUE(primary.rename(u8"/v1profiles/École Highway.json", u8"/v1profiles/École Highway.json.bak"));
+            writeFileFromString(primary, u8"/v1profiles/École Highway.json.tmp", "partial staged replacement");
+        }
+        const auto before = filesSnapshot();
+        for (int boot = 0; boot < 2; ++boot) {
+            V1ProfileManager reopened;
+            TEST_ASSERT_FALSE(reopened.begin(&primary, &secondary));
+            TEST_ASSERT_TRUE(before == filesSnapshot());
+            reopened.serviceRecovery(mockMillis + 2000);
+            TEST_ASSERT_TRUE(before == filesSnapshot());
+        }
+    }
+}
+
+void test_profile_collisions_follow_fatfs_unicode_codepoints() {
+    TEST_ASSERT_TRUE(profileCanonicalNamesCollide(u8"École", u8"école"));
+    TEST_ASSERT_TRUE(profileCanonicalNamesCollide(u8"Σ Road", u8"ς Road"));
+    TEST_ASSERT_TRUE(profileCanonicalNamesCollide(u8"Я Road", u8"я Road"));
+    // U+023A and U+2C65 fold together despite different UTF-8 byte lengths.
+    TEST_ASSERT_TRUE(profileCanonicalNamesCollide(u8"Ⱥ Road", u8"ⱥ Road"));
+    TEST_ASSERT_FALSE(profileCanonicalNamesCollide(u8"École", u8"école City"));
+    TEST_ASSERT_FALSE(profileCanonicalNamesCollide(u8"École", u8"Ecole"));
+    TEST_ASSERT_FALSE(profileCanonicalNamesCollide(u8"🚘 Road", u8"🚙 Road"));
+    TEST_ASSERT_TRUE(profileCanonicalNamesCollide(u8"🚘 Road", u8"🚘 road"));
+}
+
 void test_sd_contention_returns_busy_for_every_profile_transaction() {
     fs::FS fs(g_tempRoot);
     StorageManager localStorage;
@@ -2923,6 +2987,9 @@ int main() {
     RUN_TEST(test_v41039_photo_settings_round_trip_through_json);
     RUN_TEST(test_path_like_name_is_rejected_without_creating_a_profile);
     RUN_TEST(test_profile_name_contract_rejects_hidden_long_blank_and_canonical_collisions);
+    RUN_TEST(test_unicode_sd_alias_is_rejected_without_mutation_on_every_store);
+    RUN_TEST(test_existing_unicode_aliases_defer_recovery_without_changing_payloads_or_sidecars);
+    RUN_TEST(test_profile_collisions_follow_fatfs_unicode_codepoints);
     RUN_TEST(test_sd_contention_returns_busy_for_every_profile_transaction);
     RUN_TEST(test_catalog_collection_allocation_failures_return_unavailable_without_throw_or_mutation);
     RUN_TEST(test_save_scratch_allocation_failure_precedes_new_save_files);

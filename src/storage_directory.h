@@ -39,7 +39,14 @@ public:
         if (!mountedPath) return;
         std::memcpy(mountedPath.get(), mountpoint, mountLength);
         std::memcpy(mountedPath.get() + mountLength, path.c_str(), pathLength + 1u);
-        directory_ = ::opendir(mountedPath.get());
+        const char* directoryPath = mountedPath.get();
+#ifdef UNIT_TEST
+        filesystem_ = &filesystem;
+        const auto mockPath = filesystem.mockEncodedNames() ? filesystem.mockResolve(path.c_str())
+                                                           : std::filesystem::path();
+        if (filesystem.mockEncodedNames()) directoryPath = mockPath.c_str();
+#endif
+        directory_ = ::opendir(directoryPath);
 #ifdef UNIT_TEST
         if (directory_ && StorageDirectoryTest::failOnOpen != 0 &&
             --StorageDirectoryTest::failOnOpen == 0) {
@@ -72,6 +79,10 @@ public:
             if (std::strcmp(entry->d_name, ".") == 0 || std::strcmp(entry->d_name, "..") == 0) continue;
 #ifdef UNIT_TEST
             ++returnedEntries_;
+            if (filesystem_->mockEncodedNames()) {
+                decodedName_ = filesystem_->mockDirectoryName(entry->d_name);
+                return decodedName_.c_str();
+            }
 #endif
             return entry->d_name;
         }
@@ -88,6 +99,8 @@ private:
     bool finished_ = false;
     bool complete_ = false;
 #ifdef UNIT_TEST
+    fs::FS* filesystem_ = nullptr;
+    std::string decodedName_;
     size_t returnedEntries_ = 0;
     size_t failAfterEntries_ = std::numeric_limits<size_t>::max();
 #endif

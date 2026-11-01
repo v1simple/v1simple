@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <ff.h>
 
 inline constexpr size_t MAX_PROFILE_NAME_LEN = 64;
 
@@ -59,20 +60,30 @@ inline const char* profileNameStatusMessage(ProfileNameStatus status) {
     return "Invalid profile name";
 }
 
-// Canonical names are valid UTF-8 and only ASCII case folding participates in
-// the historical collision rule. Compare in place so a failed temporary
-// String allocation can never turn two unrelated names into the same empty key
-// or let Road/road bypass the collision guard.
-inline bool profileCanonicalNamesCollide(const String& lhs, const String& rhs) {
-    if (lhs.length() != rhs.length()) return false;
-    for (size_t index = 0; index < lhs.length(); ++index) {
-        unsigned char left = static_cast<unsigned char>(lhs[index]);
-        unsigned char right = static_cast<unsigned char>(rhs[index]);
-        if (left >= 'A' && left <= 'Z') left = static_cast<unsigned char>(left - 'A' + 'a');
-        if (right >= 'A' && right <= 'Z') right = static_cast<unsigned char>(right - 'A' + 'a');
-        if (left != right) return false;
+// Profile names must coexist on every supported store, including SD/FatFS
+// after an offline LittleFS edit. Use the filesystem's actual Unicode mapping,
+// not locale case conversion or byte-length equality (case can change width).
+// Names are validated UTF-8 before admission; decoding remains bounded even
+// when this helper receives malformed input from a recovery candidate.
+inline uint32_t nextProfileNameCodePoint(const String& text, size_t& offset) {
+    const uint8_t first = static_cast<uint8_t>(text[offset++]);
+    if (first < 0x80u) return first;
+    const unsigned count = first < 0xe0u ? 1u : first < 0xf0u ? 2u : 3u;
+    uint32_t point = first & (0x7fu >> count);
+    for (unsigned index = 0; index < count && offset < text.length(); ++index) {
+        point = (point << 6u) | (static_cast<uint8_t>(text[offset++]) & 0x3fu);
     }
-    return true;
+    return point;
+}
+
+inline bool profileCanonicalNamesCollide(const String& lhs, const String& rhs) {
+    size_t left = 0;
+    size_t right = 0;
+    while (left < lhs.length() && right < rhs.length()) {
+        if (ff_wtoupper(nextProfileNameCodePoint(lhs, left)) !=
+            ff_wtoupper(nextProfileNameCodePoint(rhs, right))) return false;
+    }
+    return left == lhs.length() && right == rhs.length();
 }
 
 // Copy the longest whole-code-point UTF-8 prefix that fits in maxBytes.

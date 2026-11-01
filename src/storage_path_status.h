@@ -26,7 +26,13 @@ inline StoragePathStatus storagePathStatus(fs::FS& filesystem, const String& pat
     std::memcpy(mountedPath.get(), mountpoint, mountLength);
     std::memcpy(mountedPath.get() + mountLength, path.c_str(), pathLength + 1u);
     struct stat info {};
-    if (::stat(mountedPath.get(), &info) == 0) {
+    const char* statusPath = mountedPath.get();
+#ifdef UNIT_TEST
+    const auto mockPath = filesystem.mockEncodedNames() ? filesystem.mockResolve(path.c_str())
+                                                       : std::filesystem::path();
+    if (filesystem.mockEncodedNames()) statusPath = mockPath.c_str();
+#endif
+    if (::stat(statusPath, &info) == 0) {
         if (details) *details = info;
         return StoragePathStatus::Present;
     }

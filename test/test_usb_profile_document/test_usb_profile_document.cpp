@@ -45,6 +45,23 @@ std::unique_ptr<V1ProfileManager> profileManager;
 std::unique_ptr<SettingsManager> manager;
 int fixtureNumber = 0;
 
+// Pin both target filename rules independently of the host filesystem.
+// Otherwise APFS aliases the LittleFS mirror too and hides rename regressions.
+void useTargetProfileFilesystems() {
+    manager.reset();
+    profileManager.reset();
+    primaryFs.reset();
+    secondaryFs.reset();
+    std::filesystem::remove_all(root);
+    primaryFs = std::make_unique<fs::FS>(root / "sd", fs::MockNameSemantics::FatFs);
+    secondaryFs = std::make_unique<fs::FS>(root / "little", fs::MockNameSemantics::ByteSensitive);
+    storage.setFilesystem(primaryFs.get(), true);
+    storage.setLittleFS(secondaryFs.get());
+    profileManager = std::make_unique<V1ProfileManager>();
+    TEST_ASSERT_TRUE(profileManager->begin(storage));
+    manager = std::make_unique<SettingsManager>(storage, *profileManager);
+}
+
 String jsonText(const JsonDocument& doc) {
     String text;
     serializeJson(doc, text);
@@ -1061,6 +1078,114 @@ void test_case_only_catalog_replacement_recovers_exact_original_name() {
     TEST_ASSERT_EQUAL_STRING(jsonText(incoming).c_str(), snapshot().c_str());
 }
 
+void test_case_only_replacement_reopens_after_an_old_unacknowledged_staging_file() {
+    useTargetProfileFilesystems();
+    seed();
+    V1ProfileManager littleOnly;
+    TEST_ASSERT_TRUE(littleOnly.begin(secondaryFs.get()));
+    V1Profile attempted;
+    TEST_ASSERT_TRUE(littleOnly.loadProfile("Original", attempted));
+    attempted.description = "Rejected update";
+    fs::mock_set_fs_write_budget(0);
+    fs::mock_fail_next_remove("/v1profiles/Original.json.tmp");
+    TEST_ASSERT_FALSE(littleOnly.saveProfile(attempted).success);
+    fs::mock_reset_fs_write_budget();
+    fs::mock_reset_fs_remove_state();
+    TEST_ASSERT_TRUE(secondaryFs->exists("/v1profiles/Original.json.tmp"));
+    JsonDocument incoming;
+    replacement(incoming);
+    incoming["profiles"][0]["name"] = "ORIGINAL";
+    for (JsonObject slot : incoming["slots"].as<JsonArray>()) slot["profile"] = "ORIGINAL";
+    String error;
+    TEST_ASSERT_TRUE(applyUsbProfileDocument(*manager, *profileManager, incoming, error).success);
+    reboot();
+    TEST_ASSERT_EQUAL_STRING(jsonText(incoming).c_str(), snapshot().c_str());
+}
+
+void test_unicode_alias_bundle_is_rejected_before_any_profiles_settings_or_credentials_change() {
+    useTargetProfileFilesystems();
+    seed();
+    const String before = snapshot();
+    const String unrelatedBefore = unrelatedSettingsSnapshot();
+    const auto filesBefore = filesSnapshot();
+    const auto preferencesBefore = mock_preferences::store();
+    JsonDocument incoming;
+    replacement(incoming);
+    incoming["profiles"][0]["name"] = u8"École Highway";
+    incoming["profiles"][1]["name"] = u8"école Highway";
+    for (JsonObject slot : incoming["slots"].as<JsonArray>()) slot["profile"] = u8"École Highway";
+    incoming["slots"][1]["profile"] = u8"école Highway";
+    String error;
+    TEST_ASSERT_FALSE(applyUsbProfileDocument(*manager, *profileManager, incoming, error).success);
+    TEST_ASSERT_EQUAL_STRING("Duplicate profile name", error.c_str());
+    TEST_ASSERT_TRUE(filesBefore == filesSnapshot());
+    TEST_ASSERT_TRUE(preferencesEqual(preferencesBefore));
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), snapshot().c_str());
+    TEST_ASSERT_EQUAL_STRING(unrelatedBefore.c_str(), unrelatedSettingsSnapshot().c_str());
+    reboot();
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), snapshot().c_str());
+    TEST_ASSERT_EQUAL_STRING(unrelatedBefore.c_str(), unrelatedSettingsSnapshot().c_str());
+}
+
+void test_unicode_alias_full_backup_is_rejected_before_any_state_changes() {
+    useTargetProfileFilesystems();
+    seed();
+    JsonDocument incoming;
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+        incoming, manager->get(), *profileManager,
+        BackupPayloadBuilder::BackupTransport::HttpDownload, 1000).safeToCommit);
+    incoming["profiles"][0]["name"] = u8"École Highway";
+    incoming["profiles"][1]["name"] = u8"école Highway";
+    incoming["slot0ProfileName"] = u8"École Highway";
+    incoming["slot1ProfileName"] = u8"école Highway";
+    incoming["slot2ProfileName"] = u8"École Highway";
+    incoming["brightness"] = 14;
+    // Prove the rest of this complete backup is valid, then change only the
+    // second identity/slot from a distinct UTF-8 name to its SD alias.
+    incoming["profiles"][1]["name"] = u8"école City";
+    incoming["slot1ProfileName"] = u8"école City";
+    std::vector<V1Profile> prepared, existing;
+    TEST_ASSERT_TRUE(validateBackupDocumentForApply(
+        incoming, manager->get(), *profileManager, prepared, existing, true));
+    incoming["profiles"][1]["name"] = u8"école Highway";
+    incoming["slot1ProfileName"] = u8"école Highway";
+    const auto filesBefore = filesSnapshot();
+    const auto preferencesBefore = mock_preferences::store();
+    const String before = snapshot();
+    const String unrelatedBefore = unrelatedSettingsSnapshot();
+    TEST_ASSERT_FALSE(manager->applyBackupDocument(incoming, true).success);
+    TEST_ASSERT_TRUE(filesBefore == filesSnapshot());
+    TEST_ASSERT_TRUE(preferencesEqual(preferencesBefore));
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), snapshot().c_str());
+    TEST_ASSERT_EQUAL_STRING(unrelatedBefore.c_str(), unrelatedSettingsSnapshot().c_str());
+    reboot();
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), snapshot().c_str());
+    TEST_ASSERT_EQUAL_STRING(unrelatedBefore.c_str(), unrelatedSettingsSnapshot().c_str());
+}
+
+void test_unicode_case_only_catalog_replacement_preserves_exact_name_through_rollback() {
+    useTargetProfileFilesystems();
+    seed();
+    JsonDocument incoming;
+    replacement(incoming);
+    incoming["profiles"][0]["name"] = u8"École Highway";
+    for (JsonObject slot : incoming["slots"].as<JsonArray>()) slot["profile"] = u8"École Highway";
+    String error;
+    TEST_ASSERT_TRUE(applyUsbProfileDocument(*manager, *profileManager, incoming, error).success);
+    const String before = snapshot();
+    String expected = before;
+    expected.replace(u8"École Highway", u8"école Highway");
+    incoming["profiles"][0]["name"] = u8"école Highway";
+    for (JsonObject slot : incoming["slots"].as<JsonArray>()) slot["profile"] = u8"école Highway";
+    manager->utInterruptRestoreAfterProfiles(true);
+    TEST_ASSERT_FALSE(applyUsbProfileDocument(*manager, *profileManager, incoming, error).success);
+    reboot();
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), snapshot().c_str());
+    TEST_ASSERT_TRUE(applyUsbProfileDocument(*manager, *profileManager, incoming, error).success);
+    reboot();
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), snapshot().c_str());
+}
+
 void test_empty_catalog_restore_deletes_extras_and_clears_assignments() {
     seed();
     JsonDocument incoming;
@@ -1707,6 +1832,10 @@ int main() {
     RUN_TEST(test_acknowledged_replacement_survives_unavailable_commit_readback);
     RUN_TEST(test_acknowledged_replacement_journal_recovers_after_unavailable_commit_readback);
     RUN_TEST(test_case_only_catalog_replacement_recovers_exact_original_name);
+    RUN_TEST(test_case_only_replacement_reopens_after_an_old_unacknowledged_staging_file);
+    RUN_TEST(test_unicode_alias_bundle_is_rejected_before_any_profiles_settings_or_credentials_change);
+    RUN_TEST(test_unicode_alias_full_backup_is_rejected_before_any_state_changes);
+    RUN_TEST(test_unicode_case_only_catalog_replacement_preserves_exact_name_through_rollback);
     RUN_TEST(test_empty_catalog_restore_deletes_extras_and_clears_assignments);
     RUN_TEST(test_unavailable_catalog_export_returns_no_partial_bundle);
     RUN_TEST(test_profile_validation_staging_allocation_failure_returns_no_partial_bundle);

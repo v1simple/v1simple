@@ -10,7 +10,6 @@
 #include "../mocks/settings.h"
 #include "../mocks/display.h"
 #include "../mocks/modules/power/power_module.h"
-#include "../mocks/v1_profiles.h"
 
 SerialClass Serial;
 unsigned long mockMillis = 0;
@@ -47,7 +46,6 @@ struct VoiceRuntime {
     BleQueueModule queue;
     PacketParser parser;
     V1BLEClient ble;
-    V1ProfileManager profiles;
     DisplayPreviewModule preview;
     PowerModule power;
     SettingsManager settings;
@@ -72,7 +70,7 @@ struct VoiceRuntime {
         dependencies.alertPersistence = &persistence;
         dependencies.voice = &voice;
         pipeline.begin(dependencies);
-        TEST_ASSERT_TRUE(queue.begin(&ble, &parser, &profiles, &preview, &power));
+        TEST_ASSERT_TRUE(queue.begin(&ble, &parser, &preview, &power));
         connection.begin(&ble, &parser, &display, &power, &queue, &persistence);
         connection.handleSessionOpened(generation);
         enqueue(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2}, 9000);

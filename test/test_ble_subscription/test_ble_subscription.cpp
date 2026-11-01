@@ -307,7 +307,7 @@ void test_reconnect_after_failed_long_subscription_delivers_complete_sweep_respo
 
     PacketParser parser;
     BleQueueModule queue;
-    TEST_ASSERT_TRUE(queue.begin(&fixture.client, &parser, nullptr, nullptr, nullptr));
+    TEST_ASSERT_TRUE(queue.begin(&fixture.client, &parser, nullptr, nullptr));
     queue.openSession(2);
     fixture.client.beginSessionSweepSectionsCapture(fixture.client.noteV1NotificationIngress());
     notificationSink = [&](const uint8_t* bytes, size_t length, uint16_t characteristic, uint32_t generation,

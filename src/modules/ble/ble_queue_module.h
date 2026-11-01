@@ -13,11 +13,10 @@
 
 class DisplayPreviewModule;
 class PowerModule;
-class V1ProfileManager;
 
 // V1 notification integration boundary, not a generic byte queue. This module
 // owns notification-session admission, frame reassembly, parser dispatch, and
-// the immediate effects of accepted parsed frames: profile synchronization,
+// the immediate effects of accepted parsed frames: settings capture,
 // firmware-version reporting, V1 activity notification to power management,
 // preview cancellation when an alert becomes live, and the parsed-work signal
 // consumed by the display pipeline.
@@ -29,8 +28,8 @@ class BleQueueModule {
         Config() : queueDepth(24), rxBufferCap(512) {}
     };
 
-    bool begin(V1BLEClient* bleClient, PacketParser* parser, V1ProfileManager* profileMgr,
-               DisplayPreviewModule* previewModule, PowerModule* powerModule, Config cfg = Config());
+    bool begin(V1BLEClient* bleClient, PacketParser* parser, DisplayPreviewModule* previewModule,
+               PowerModule* powerModule, Config cfg = Config());
 
     // Release the FreeRTOS queue created by begin(). The firmware never tears
     // this module down (the queue lives for the life of the device), but
@@ -103,7 +102,6 @@ class BleQueueModule {
 
     V1BLEClient* ble_ = nullptr;
     PacketParser* parser_ = nullptr;
-    V1ProfileManager* profiles_ = nullptr;
     DisplayPreviewModule* preview_ = nullptr;
     PowerModule* power_ = nullptr;
     QueueHandle_t queueHandle_ = nullptr;

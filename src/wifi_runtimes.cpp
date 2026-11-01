@@ -465,15 +465,6 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             return true;
         },
         this,
-        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->profiles_.hasCurrentSettings(); },
-        this,
-        [](void* ctx) {
-            auto& profiles = static_cast<WiFiManager*>(ctx)->profiles_;
-            return profiles.settingsToJson(profiles.getCurrentSettings());
-        },
-        this,
-        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->bleRuntime_->isConnected(); },
-        this,
         [](void* ctx) { static_cast<WiFiManager*>(ctx)->settings_.requestDeferredBackupFromCurrentState(); },
         this,
         [](const String& name, String& json, void* ctx) {

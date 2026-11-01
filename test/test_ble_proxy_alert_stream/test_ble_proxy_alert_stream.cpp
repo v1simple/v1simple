@@ -82,7 +82,6 @@ void tearDown() {}
 #include "../mocks/display.h"
 #include "../mocks/settings.h"
 #include "../mocks/modules/power/power_module.h"
-#include "../mocks/v1_profiles.h"
 #include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
 #include "../../src/modules/alp/alp_event_latch.cpp"
 #include "../../src/modules/quiet/quiet_coordinator_module.cpp"
@@ -122,7 +121,6 @@ struct StreamFixture {
   V1BLEClient::ProxyWriteCallbacks writer{&client};
   BleQueueModule queue;
   PacketParser parser;
-  V1ProfileManager profiles;
   DisplayPreviewModule preview;
   PowerModule power;
   V1Display display;
@@ -151,7 +149,7 @@ struct StreamFixture {
     client.bleState_ = BLEState::CONNECTED;
     client.connectedFollowupStep_ = V1BLEClient::ConnectedFollowupStep::NONE;
     TEST_ASSERT_TRUE(
-        queue.begin(&client, &parser, &profiles, &preview, &power));
+        queue.begin(&client, &parser, &preview, &power));
     connection.begin(&client, &parser, &display, &power, &queue, &persistence);
     voice.begin(&settings);
     DisplayPipelineDependencies dependencies;

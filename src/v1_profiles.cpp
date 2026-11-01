@@ -1188,7 +1188,7 @@ bool detectorConfigurationCrc(const V1DetectorConfiguration& config, uint32_t& o
 
 V1ProfileManager::V1ProfileManager()
     : fs_(nullptr), secondaryFs_(nullptr), storage_(nullptr), usingSd_(false), ready_(false),
-      profileDir_("/v1profiles"), currentValid_(false) {}
+      profileDir_("/v1profiles") {}
 
 #ifdef UNIT_TEST
 void V1ProfileManager::utFailAllocation(V1ProfileAllocationFailurePoint point, size_t occurrence,
@@ -2828,11 +2828,6 @@ ProfileOperationResult V1ProfileManager::snapshotProfiles(std::vector<V1Profile>
         return profileResult(ProfileStorageStatus::IoError, "Profile snapshot memory unavailable");
     }
     return profileResult(ProfileStorageStatus::Success);
-}
-
-void V1ProfileManager::setCurrentSettings(const uint8_t* bytes) {
-    memcpy(currentSettings_.bytes, bytes, 6);
-    currentValid_ = true;
 }
 
 String V1ProfileManager::settingsToJson(const V1UserSettings& s) const {

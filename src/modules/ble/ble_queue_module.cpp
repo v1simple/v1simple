@@ -10,7 +10,6 @@
 #ifndef UNIT_TEST
 #include "modules/display/display_preview_module.h"
 #include "modules/power/power_module.h"
-#include "v1_profiles.h"
 #endif
 
 // Maximum bytes in the BLE RX frame-reassembly buffer.
@@ -21,11 +20,10 @@ static constexpr size_t RX_COMPACT_THRESHOLD = RX_BUFFER_MAX / 2;
 // admission is the ownership boundary: after tryOnNotify() returns true, process()
 // must either consume that whole notification or leave it queued. It may never
 // dequeue a notification and then discard it because this staging buffer is full.
-bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1ProfileManager* profileMgr,
+bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr,
                            DisplayPreviewModule* previewModule, PowerModule* powerModule, Config cfg) {
     ble_ = bleClient;
     parser_ = parserPtr;
-    profiles_ = profileMgr;
     preview_ = previewModule;
     power_ = powerModule;
     config_ = cfg;
@@ -672,12 +670,11 @@ void BleQueueModule::process() {
         // RESP_USER_BYTES has six settings bytes. Checksum-originator EAh uses
         // PL=7; no-checksum E9h uses PL=6. Origin-qualified width validation
         // prevents a truncated EAh frame's checksum from becoming byte six.
-        if (packetPtr[3] == PACKET_ID_RESP_USER_BYTES && profiles_ &&
+        if (packetPtr[3] == PACKET_ID_RESP_USER_BYTES && ble_ &&
             V1PacketFraming::hasCanonicalResponseEvidenceForDestination(packetPtr, packetSize, 6, 0xD6)) {
             uint8_t userBytes[6];
             memcpy(userBytes, &packetPtr[5], 6);
             ble_->onUserBytesReceived(userBytes, packetIngressSequence);
-            profiles_->setCurrentSettings(userBytes);
             consumePacket();
             continue;
         }

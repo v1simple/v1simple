@@ -302,7 +302,7 @@ void DriveRuntime::initializeRuntimeModules() {
     displayPipeline_.begin(pipelineDependencies);
 
     systemEvents_.reset();
-    if (!bleQueue_.begin(&ble_, &parser_, &profiles_, &preview_, &power_)) {
+    if (!bleQueue_.begin(&ble_, &parser_, &preview_, &power_)) {
         fatalBootError(display_, "BLE queue init failed", true);
     }
     connectionRuntime_.begin(ble_, bleQueue_);

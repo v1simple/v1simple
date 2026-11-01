@@ -36,7 +36,6 @@ struct FakeRuntime {
     int saveCalls = 0;
     int deleteCalls = 0;
     int backupCalls = 0;
-    bool connected = true;
     String savedDescription;
     bool savedDisplayOn = true;
     uint8_t savedMainVolume = 0xFF;
@@ -99,8 +98,6 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
     runtime.loadProfileJsonResultCtx = &rt;
     runtime.backupToSd = [](void* ctx) { static_cast<FakeRuntime*>(ctx)->backupCalls++; };
     runtime.backupToSdCtx = &rt;
-    runtime.v1Connected = [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->connected; };
-    runtime.v1ConnectedCtx = &rt;
     runtime.deleteProfileResult = [](const String&, void* ctx) {
         auto* rtp = static_cast<FakeRuntime*>(ctx);
         rtp->deleteCalls++;
@@ -605,7 +602,6 @@ void test_current_endpoint_returns_persisted_snapshot_with_explicit_provenance_a
 void test_current_endpoint_reports_not_captured_without_live_fallback() {
     WebServer server(80);
     FakeRuntime rt;
-    rt.connected = true; // A maintenance API must not use this as live proof.
 
     WifiV1ProfileApiService::handleApiCurrentSettings(server, makeCapturedRuntime(rt));
 

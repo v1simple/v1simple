@@ -698,40 +698,7 @@ void handleApiProfileDelete(WebServer& server, const Runtime& runtime, bool (*ch
 }
 
 void handleApiCurrentSettings(WebServer& server, const Runtime& runtime) {
-    if (runtime.loadCapturedSnapshot) {
-        sendCapturedSnapshot(server, runtime);
-        return;
-    }
-
-    WifiJson::Document doc;
-    doc["connected"] = runtime.v1Connected ? runtime.v1Connected(runtime.v1ConnectedCtx) : false;
-
-    if (!runtime.hasCurrentSettings || !runtime.hasCurrentSettings(runtime.hasCurrentSettingsCtx)) {
-        doc["available"] = false;
-        if (doc.overflowed() || measureJson(doc) == 0) {
-            server.send(503, "application/json", "{\"error\":\"Captured settings unavailable\"}");
-            return;
-        }
-        WifiApiResponse::sendJsonDocument(server, 200, doc);
-        return;
-    }
-
-    doc["available"] = true;
-    // Parse existing settings JSON and embed it
-    if (runtime.currentSettingsJson) {
-        WifiJson::Document settingsDoc;
-        String settingsJson = runtime.currentSettingsJson(runtime.currentSettingsJsonCtx);
-        DeserializationError parseErr = deserializeJson(settingsDoc, settingsJson.c_str());
-        if (!parseErr) {
-            doc["settings"] = settingsDoc;
-        }
-    }
-
-    if (doc.overflowed() || measureJson(doc) == 0) {
-        server.send(503, "application/json", "{\"error\":\"Captured settings unavailable\"}");
-        return;
-    }
-    WifiApiResponse::sendJsonDocument(server, 200, doc);
+    sendCapturedSnapshot(server, runtime);
 }
 
 } // namespace WifiV1ProfileApiService

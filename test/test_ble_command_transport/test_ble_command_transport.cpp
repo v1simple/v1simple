@@ -232,7 +232,7 @@ void test_delayed_ack_keeps_notifications_and_loop_work_responsive() {
     const bool started = held.start();
     PacketParser parser;
     BleQueueModule queue;
-    const bool queueReady = queue.begin(&f.client, &parser, nullptr, nullptr, nullptr);
+    const bool queueReady = queue.begin(&f.client, &parser, nullptr, nullptr);
     queue.openSession(1);
     // Real notification callback -> ingress queue -> production parser continues
     // while the actual command task is parked inside writeValue().

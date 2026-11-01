@@ -8,7 +8,6 @@
 #include "../mocks/ble_client.h"
 #include "../mocks/modules/power/power_module.h"
 #include "../mocks/packet_parser.h"
-#include "../mocks/v1_profiles.h"
 
 #ifndef ARDUINO
 SerialClass Serial;
@@ -42,7 +41,6 @@ constexpr uint16_t kLongCharacteristic = 0xB4E0;
 BleQueueModule queue;
 PacketParser parser;
 V1BLEClient client;
-V1ProfileManager profiles;
 DisplayPreviewModule preview;
 PowerModule power;
 
@@ -102,7 +100,7 @@ void beginQueue(size_t queueDepth = 24) {
     BleQueueModule::Config config;
     config.queueDepth = queueDepth;
     config.rxBufferCap = 1024;
-    TEST_ASSERT_TRUE(queue.begin(&client, &parser, &profiles, &preview, &power, config));
+    TEST_ASSERT_TRUE(queue.begin(&client, &parser, &preview, &power, config));
     queue.openSession(kSession);
 }
 
@@ -126,7 +124,6 @@ void setUp() {
     queue.end();
     parser.reset();
     client.reset();
-    profiles.reset();
     preview = DisplayPreviewModule{};
     power.reset();
     HealthCounters::reset();
@@ -441,8 +438,7 @@ void test_held_long_user_bytes_dispatches_once_before_newer_settings() {
     queue.process();
     TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
     TEST_ASSERT_EQUAL_INT(2, client.onUserBytesReceivedCalls);
-    TEST_ASSERT_EQUAL_INT(2, profiles.setCurrentSettingsCalls);
-    TEST_ASSERT_EQUAL_HEX8(0x44, client.sessionUserBytes[0]);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(newer.data() + 5, client.sessionUserBytes, 6);
     TEST_ASSERT_EQUAL_UINT32(3, client.sessionUserBytesIngressSequence());
     TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
 }
@@ -570,7 +566,6 @@ void test_stale_stamped_packets_cannot_trigger_downstream_effects() {
     queue.process();
 
     TEST_ASSERT_EQUAL_INT(0, parser.parseCalls);
-    TEST_ASSERT_EQUAL_INT(0, profiles.setCurrentSettingsCalls);
     TEST_ASSERT_EQUAL_INT(0, client.onUserBytesReceivedCalls);
     TEST_ASSERT_EQUAL_UINT32(0, client.v1FirmwareVersion());
     TEST_ASSERT_EQUAL_INT(0, power.onV1DataReceivedCalls);
@@ -590,7 +585,6 @@ void test_truncated_user_bytes_response_cannot_complete_capture() {
     queue.process();
 
     TEST_ASSERT_EQUAL_INT(0, client.onUserBytesReceivedCalls);
-    TEST_ASSERT_EQUAL_INT(0, profiles.setCurrentSettingsCalls);
     TEST_ASSERT_FALSE(client.hasSessionUserBytes());
 
     const std::vector<uint8_t> canonical = makeCanonicalUserBytesFrame(0x43);
@@ -598,8 +592,9 @@ void test_truncated_user_bytes_response_cannot_complete_capture() {
     TEST_ASSERT_TRUE(deliverRawNotify(canonical.data(), canonical.size(), kCharacteristic, kSession, 426));
     queue.process();
     TEST_ASSERT_EQUAL_INT(1, client.onUserBytesReceivedCalls);
-    TEST_ASSERT_EQUAL_INT(1, profiles.setCurrentSettingsCalls);
     TEST_ASSERT_TRUE(client.hasSessionUserBytes());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(canonical.data() + 5, client.sessionUserBytes, 6);
+    TEST_ASSERT_EQUAL_UINT32(2, client.sessionUserBytesIngressSequence());
 
     // The same PL=6 is complete only when the packet identifies a
     // no-checksum V1 (E9h): all six payload bytes are settings bytes.
@@ -607,21 +602,24 @@ void test_truncated_user_bytes_response_cannot_complete_capture() {
     TEST_ASSERT_TRUE(deliverRawNotify(noChecksum.data(), noChecksum.size(), kCharacteristic, kSession, 427));
     queue.process();
     TEST_ASSERT_EQUAL_INT(2, client.onUserBytesReceivedCalls);
-    TEST_ASSERT_EQUAL_INT(2, profiles.setCurrentSettingsCalls);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(noChecksum.data() + 5, client.sessionUserBytes, 6);
+    TEST_ASSERT_EQUAL_UINT32(3, client.sessionUserBytesIngressSequence());
 
     const std::vector<uint8_t> wrongDestination = makeCanonicalUserBytesFrame(0x45, 0xEA, 0xDA);
     TEST_ASSERT_TRUE(deliverRawNotify(wrongDestination.data(), wrongDestination.size(), kCharacteristic,
                                       kSession, 428));
     queue.process();
     TEST_ASSERT_EQUAL_INT(2, client.onUserBytesReceivedCalls);
-    TEST_ASSERT_EQUAL_INT(2, profiles.setCurrentSettingsCalls);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(noChecksum.data() + 5, client.sessionUserBytes, 6);
+    TEST_ASSERT_EQUAL_UINT32(3, client.sessionUserBytesIngressSequence());
 
     const std::vector<uint8_t> corruptChecksum = makeCanonicalUserBytesFrame(0x46, 0xEA, 0xD6, true);
     TEST_ASSERT_TRUE(deliverRawNotify(corruptChecksum.data(), corruptChecksum.size(), kCharacteristic,
                                       kSession, 429));
     queue.process();
     TEST_ASSERT_EQUAL_INT(2, client.onUserBytesReceivedCalls);
-    TEST_ASSERT_EQUAL_INT(2, profiles.setCurrentSettingsCalls);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(noChecksum.data() + 5, client.sessionUserBytes, 6);
+    TEST_ASSERT_EQUAL_UINT32(3, client.sessionUserBytesIngressSequence());
 }
 
 void test_rejected_all_volume_response_cannot_complete_capture() {

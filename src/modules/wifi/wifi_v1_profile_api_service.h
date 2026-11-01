@@ -28,12 +28,6 @@ struct Runtime {
                         const uint8_t inBytes[6],
                         bool createOnly, String& error, void* ctx) = nullptr;
     void* saveProfileCtx = nullptr;
-    bool (*hasCurrentSettings)(void* ctx) = nullptr;
-    void* hasCurrentSettingsCtx = nullptr;
-    String (*currentSettingsJson)(void* ctx) = nullptr;
-    void* currentSettingsJsonCtx = nullptr;
-    bool (*v1Connected)(void* ctx) = nullptr;
-    void* v1ConnectedCtx = nullptr;
     void (*backupToSd)(void* ctx) = nullptr;
     void* backupToSdCtx = nullptr;
     CatalogStatus (*loadProfileJsonResult)(const String& canonicalName, String& json, void* ctx) = nullptr;

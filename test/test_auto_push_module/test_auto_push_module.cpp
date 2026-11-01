@@ -1445,7 +1445,7 @@ void runQueuedCustomCommitReply(bool duringSend) {
     auto snapshot = makeSnapshot();
     addSweepSnapshot(snapshot);
     stageSnapshot(snapshot);
-    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, nullptr, nullptr));
     protocolQueue.openSession(ble.sessionGeneration());
     queueAndPreflight();
     at(100); // First used definition, without commit.
@@ -1509,7 +1509,7 @@ void runQueuedCustomRefreshReply(uint8_t selectedStep, bool duringSend,
     auto snapshot = makeSnapshot(41039, before);
     addSweepSnapshot(snapshot);
     stageSnapshot(snapshot);
-    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, nullptr, nullptr));
     protocolQueue.openSession(ble.sessionGeneration());
     queueAndPreflight();
     verifyUserBytes();
@@ -3292,7 +3292,7 @@ void test_in_flight_focused_reads_keep_replies_parsed_before_ack() {
     for (const auto phase : {BasicSendPhase::UserRead, BasicSendPhase::VolumeRead}) {
         setUp();
         const unsigned long first = prepareBasicSendPhase(phase);
-        TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+        TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, nullptr, nullptr));
         protocolQueue.openSession(ble.sessionGeneration());
         setBasicSendResult(phase, SendResult::IN_FLIGHT);
         at(first);
@@ -3353,7 +3353,7 @@ void test_in_flight_custom_commit_and_readback_keep_early_replies() {
     auto snapshot = makeSnapshot();
     addSweepSnapshot(snapshot);
     stageSnapshot(snapshot);
-    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, nullptr, nullptr));
     protocolQueue.openSession(ble.sessionGeneration());
     queueAndPreflight();
     at(100);
@@ -3405,7 +3405,7 @@ void test_in_flight_region_refresh_keeps_each_early_capture() {
     auto snapshot = makeSnapshot(41039, before);
     addSweepSnapshot(snapshot);
     stageSnapshot(snapshot);
-    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, nullptr, nullptr));
     protocolQueue.openSession(ble.sessionGeneration());
     queueAndPreflight();
     verifyUserBytes();
@@ -3748,7 +3748,7 @@ void checkVolumePolicyReceipt(VolumeRejectionTiming timing, V1VolumeDisconnectPo
     detector.volumeDisconnect = disconnect;
     detector.volumePolicy = policy;
     stageSnapshot(makeSnapshot());
-    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, nullptr, nullptr));
     protocolQueue.openSession(ble.sessionGeneration());
     ble.enforceVolumeFlowControl = true;
     deliverProtocolReply(makeV1Packet(PACKET_ID_DISPLAY_DATA, {0x3F, 0x3F, 0, 0, 0, 0x0C, 4, 0x52}));
@@ -3844,7 +3844,7 @@ void test_explicit_volume_policy_rejection_reaches_terminal_failure_and_releases
 void test_volume_rejection_keeps_earlier_verified_components_but_never_publishes_success() {
     configureProfile();
     stageSnapshot(makeSnapshot());
-    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, nullptr, nullptr));
     protocolQueue.openSession(ble.sessionGeneration());
     queueAndPreflight();
     verifyUserBytes();
@@ -3897,7 +3897,7 @@ void test_new_volume_writer_cannot_verify_an_older_apply_policy() {
 void test_queue_manual_choice_clear_then_verified_apply_uses_only_the_new_baseline() {
     VolumeFadeModule fade;
     configureVolumeOnlyApplyWithFade(fade);
-    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, nullptr, nullptr));
     protocolQueue.openSession(ble.sessionGeneration());
     const auto live = makeV1Packet(PACKET_ID_ALERT_DATA, {0x11, 0x87, 0x8C, 0xAC, 0, 0x22, 0x80}, 0xEA, 0xD8);
     const auto clear = makeV1Packet(PACKET_ID_ALERT_DATA, {0, 0, 0, 0, 0, 0, 0}, 0xEA, 0xD8);

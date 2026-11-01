@@ -7,7 +7,6 @@
 #include <ArduinoJson.h>
 #include <array>
 #include <cstdint>
-#include <cstring>
 
 #include "../../src/v1_custom_frequency_definitions.h"
 
@@ -96,9 +95,7 @@ struct ProfileOperationResult {
 
 class V1ProfileManager {
 public:
-    int setCurrentSettingsCalls = 0;
     mutable int loadProfileCalls = 0;
-    uint8_t lastSettings[6] = {};
     bool loadProfileSuccess = false;
     ProfileStorageStatus nextLoadStatus = ProfileStorageStatus::NotFound;
     String loadableProfileName;
@@ -106,21 +103,12 @@ public:
     mutable String lastLoadProfileName;
 
     void reset() {
-        setCurrentSettingsCalls = 0;
         loadProfileCalls = 0;
-        std::memset(lastSettings, 0, sizeof(lastSettings));
         loadProfileSuccess = false;
         nextLoadStatus = ProfileStorageStatus::NotFound;
         loadableProfileName = "";
         loadableProfile = V1Profile{};
         lastLoadProfileName = "";
-    }
-
-    void setCurrentSettings(const uint8_t* bytes) {
-        setCurrentSettingsCalls++;
-        if (bytes) {
-            std::memcpy(lastSettings, bytes, sizeof(lastSettings));
-        }
     }
 
     bool loadProfile(const String& name, V1Profile& profile) const {

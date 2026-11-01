@@ -439,11 +439,6 @@ class V1ProfileManager {
     // Get last error message
     const String& getLastError() const { return lastError_; }
 
-    // Current V1 settings (from last pull)
-    bool hasCurrentSettings() const { return currentValid_; }
-    const V1UserSettings& getCurrentSettings() const { return currentSettings_; }
-    void setCurrentSettings(const uint8_t* bytes);
-
     // JSON serialization for web API
     bool profileToJson(const V1Profile& profile, String& output) const;
     String profileToJson(const V1Profile& profile) const;
@@ -469,9 +464,6 @@ class V1ProfileManager {
     mutable bool repeatAllocationFailure_ = false;
     void maybeFailAllocationForTest(V1ProfileAllocationFailurePoint point) const;
 #endif
-
-    V1UserSettings currentSettings_;
-    bool currentValid_;
 
     String profilePath(const String& canonicalName) const;
     static uint32_t calculateCRC32(const uint8_t* data, size_t length);

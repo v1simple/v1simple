@@ -20,7 +20,6 @@ unsigned long mockMicros = 0;
 
 #include "../mocks/ble_client.h"
 #include "../mocks/modules/power/power_module.h"
-#include "../mocks/v1_profiles.h"
 
 class DisplayPreviewModule {
   public:
@@ -42,7 +41,6 @@ constexpr uint16_t kCharacteristic = 0xB2CE;
 BleQueueModule queue;
 PacketParser parser;
 V1BLEClient client;
-V1ProfileManager profiles;
 DisplayPreviewModule preview;
 PowerModule power;
 
@@ -73,12 +71,11 @@ void setUp() {
     queue.end();
     parser = PacketParser{};
     client.reset();
-    profiles.reset();
     preview = DisplayPreviewModule{};
     power.reset();
     HealthCounters::reset();
     BleQueueModule::Config config;
-    TEST_ASSERT_TRUE(queue.begin(&client, &parser, &profiles, &preview, &power, config));
+    TEST_ASSERT_TRUE(queue.begin(&client, &parser, &preview, &power, config));
     queue.openSession(kSession);
 }
 

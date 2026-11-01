@@ -174,6 +174,49 @@ class V1BLEClient {
         return v1NotificationIngressSequence_.load(std::memory_order_acquire);
     }
 
+    // Queue loss withdraws automatic-mute authority immediately, including
+    // before the main loop reaches the missing notification. The short lock
+    // binds callback loss, session replacement and command admission together.
+    void resetV1AlertInput(uint32_t generation) {
+        portENTER_CRITICAL(&alertInputMux_);
+        alertInputSession_ = generation;
+        alertInputLossIngress_ = 0;
+        alertInputContinuous_ = generation != 0;
+        ++alertInputRevision_;
+        portEXIT_CRITICAL(&alertInputMux_);
+    }
+    void noteV1NotificationLoss(uint32_t generation, uint32_t ingress) {
+        portENTER_CRITICAL(&alertInputMux_);
+        if (generation != 0 && generation == alertInputSession_ && ingress != 0) {
+            if (alertInputContinuous_ || alertInputLossIngress_ == 0 ||
+                static_cast<int32_t>(ingress - alertInputLossIngress_) > 0)
+                alertInputLossIngress_ = ingress;
+            alertInputContinuous_ = false;
+            ++alertInputRevision_;
+        }
+        portEXIT_CRITICAL(&alertInputMux_);
+    }
+    void qualifyV1AlertInput(uint32_t generation, uint32_t ingress) {
+        portENTER_CRITICAL(&alertInputMux_);
+        if (generation != 0 && generation == alertInputSession_ && !alertInputContinuous_ &&
+            ingress != 0 && static_cast<int32_t>(ingress - alertInputLossIngress_) > 0)
+            alertInputContinuous_ = true;
+        portEXIT_CRITICAL(&alertInputMux_);
+    }
+    bool hasContinuousV1AlertInput(uint32_t* revision = nullptr) const {
+        portENTER_CRITICAL(&alertInputMux_);
+        const bool continuous = alertInputContinuous_;
+        if (revision) *revision = alertInputRevision_;
+        portEXIT_CRITICAL(&alertInputMux_);
+        return continuous;
+    }
+    bool permitsInTheBoxMute(uint32_t revision) const {
+        portENTER_CRITICAL(&alertInputMux_);
+        const bool permitted = alertInputContinuous_ && revision == alertInputRevision_;
+        portEXIT_CRITICAL(&alertInputMux_);
+        return permitted;
+    }
+
     bool sendCommand(const uint8_t* data, size_t length);
 
     SendResult sendCommandWithResult(const uint8_t* data, size_t length);
@@ -397,6 +440,8 @@ class V1BLEClient {
         uint32_t generation = 0;
         uint32_t phoneGeneration = 0;
         V1CommandOwner commandOwner = V1CommandOwner::Legacy;
+        uint32_t alertInputRevision = 0;
+        bool requiresContinuousAlertInput = false;
         uint8_t data[64] = {};
         size_t length = 0;
         bool response = true;
@@ -810,6 +855,11 @@ class V1BLEClient {
     std::atomic<bool> verifyPushMatchEdgePending_{false};
     std::atomic<uint32_t> verifiedSettingsApplyGeneration_{0};
     std::atomic<uint32_t> v1NotificationIngressSequence_{0};
+    mutable portMUX_TYPE alertInputMux_ = portMUX_INITIALIZER_UNLOCKED;
+    uint32_t alertInputSession_ = 0;
+    uint32_t alertInputLossIngress_ = 0;
+    uint32_t alertInputRevision_ = 0;
+    bool alertInputContinuous_ = true;
     bool hasSessionUserBytes_ = false;
     uint8_t sessionUserBytes_[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     uint32_t sessionUserBytesRevision_ = 0;

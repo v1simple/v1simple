@@ -918,12 +918,243 @@ void test_box_confirmation_without_overlap() {
     f.assertNextOwnerCanSend(11110);
 }
 
+namespace {
+// Real callback -> indexed/short queue -> parser -> quiet policy -> command
+// worker. Only the clock, RTOS and NimBLE characteristic are substitutes.
+std::vector<uint8_t> lossFrame(uint8_t id, std::initializer_list<uint8_t> payload) {
+    std::vector<uint8_t> bytes{0xAA, 0xD8, 0xEA, id, static_cast<uint8_t>(payload.size() + 1)};
+    bytes.insert(bytes.end(), payload.begin(), payload.end());
+    uint8_t sum = 0;
+    for (auto byte : bytes) sum = static_cast<uint8_t>(sum + byte);
+    bytes.push_back(sum);
+    bytes.push_back(0xAB);
+    return bytes;
+}
+std::vector<uint8_t> lossDisplay() {
+    return lossFrame(0x31, {0x06, 0x06, 1, 0x24, 0x24, 0x0C, 0x04, 0x53});
+}
+std::vector<uint8_t> lossAlert(uint16_t frequency, uint8_t row = 0x11) {
+    return lossFrame(0x43, {row, static_cast<uint8_t>(frequency >> 8),
+        static_cast<uint8_t>(frequency), 0x90, 0, 0x24, 0x80});
+}
+struct LossTransport {
+    CommandFixture wire;
+    NimBLERemoteCharacteristic indexed{V1_DISPLAY_DATA_LONG_UUID};
+    PacketParser parser;
+    BleQueueModule queue;
+    QuietCoordinatorModule quiet;
+    bool admitted = false;
+    uint32_t policyAt = 0;
+    LossTransport() {
+        HealthCounters::reset();
+        TEST_ASSERT_TRUE(queue.begin(&wire.client, &parser, nullptr, nullptr));
+        queue.openSession(1);
+        wire.client.notifyShortChar_.store(&wire.display);
+        wire.client.notifyShortCharId_.store(0xB2CE);
+        wire.client.notifyLongChar_.store(&indexed);
+        wire.client.notifyLongCharId_.store(0xB4E0);
+        notificationSink = [this](const uint8_t* bytes, size_t length, uint16_t characteristic,
+                                  uint32_t generation, uint32_t at, uint32_t ingress) {
+            admitted = queue.tryOnNotify(bytes, length, characteristic, generation, at, ingress);
+        };
+        quiet.begin(&wire.client, &parser);
+        V1InTheBoxSettings settings;
+        settings.bands[2].muteOutside = true;
+        quiet.setInTheBoxSettings(settings, 1);
+        notify(lossDisplay(), 100, false);
+        queue.process();
+        notify(lossAlert(24040), 130);
+        queue.process();
+        TEST_ASSERT_TRUE(parser.displayOnObservation().available);
+        TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+    }
+    ~LossTransport() { notificationSink = nullptr; queue.end(); }
+    void notify(std::vector<uint8_t> bytes, uint32_t at, bool longChannel = true) {
+        mockMillis = at;
+        if (longChannel) bytes.insert(bytes.begin(), 0x11);
+        V1BLEClient::notifyCallback(longChannel ? &indexed : &wire.display, bytes.data(), bytes.size(), true);
+    }
+    void overflow(uint32_t cadence = 100) {
+        for (unsigned i = 0; i < 12; ++i) {
+            notify(lossDisplay(), 1000 + cadence * i, false);
+            TEST_ASSERT_TRUE(admitted);
+            notify(lossAlert(24040), 1000 + std::min(30u, cadence / 2) + cadence * i);
+            TEST_ASSERT_TRUE(admitted);
+        }
+        policyAt = 1000 + cadence * 12 + 1;
+        notify(lossAlert(24150), policyAt - 1);
+        TEST_ASSERT_FALSE(admitted);
+        TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::inputDrops());
+    }
+    void drain(uint32_t at) {
+        mockMillis = at;
+        for (unsigned i = 0; i < 32; ++i) queue.process();
+    }
+    void tick(uint32_t at) {
+        mockMillis = at;
+        queue.process();
+        quiet.processInTheBox(at);
+        completePendingTask();
+        if (queue.isBackpressured()) queue.process();
+    }
+};
+}
+
+void test_known_indexed_tail_loss_blocks_mute_before_and_during_drain() {
+    for (uint32_t cadence : {100u, 333u}) {
+        LossTransport f;
+        f.overflow(cadence);
+        // Callback loss must act even before another queue/policy drain.
+        f.quiet.processInTheBox(f.policyAt);
+        completePendingTask();
+        for (unsigned i = 0; i < 16; ++i) f.tick(f.policyAt + i);
+        TEST_ASSERT_EQUAL_UINT32(0, f.wire.command.writeValueCalls());
+        TEST_ASSERT_EQUAL_UINT32(1, f.parser.getAlertCount());
+        TEST_ASSERT_EQUAL_UINT16(24040, f.parser.getPriorityAlert().frequency);
+        TEST_ASSERT_TRUE(f.wire.client.isConnected());
+    }
+}
+
+void test_post_loss_partial_table_waits_for_complete_recovery() {
+    LossTransport f;
+    f.overflow();
+    f.drain(f.policyAt);
+    // The first post-loss row clears pre-loss candidates; it is insufficient
+    // to recover a two-row table, including across separate queue passes.
+    f.notify(lossAlert(24040, 0x12), f.policyAt + 30);
+    f.tick(f.policyAt + 31);
+    TEST_ASSERT_FALSE(f.wire.client.hasContinuousV1AlertInput());
+    TEST_ASSERT_EQUAL_UINT32(0, f.wire.command.writeValueCalls());
+    f.notify(lossAlert(24030, 0x22), f.policyAt + 60);
+    f.tick(f.policyAt + 61);
+    TEST_ASSERT_TRUE(f.wire.client.hasContinuousV1AlertInput());
+    TEST_ASSERT_EQUAL_UINT32(2, f.parser.getAlertCount());
+    TEST_ASSERT_EQUAL_UINT32(1, f.wire.command.writeValueCalls());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(muteOn, f.wire.command.lastWriteValue().data(), sizeof(muteOn));
+}
+
+void test_partial_short_frame_spanning_loss_cannot_rearm_mute() {
+    LossTransport f;
+    auto row = lossAlert(24040);
+    f.notify(std::vector<uint8_t>(row.begin(), row.begin() + 6), 200, false);
+    f.queue.process();
+    // Model the rejected notification using the same gate called by queue
+    // admission, then deliver a tail with the genuine skipped ingress.
+    const uint32_t lost = f.wire.client.noteV1NotificationIngress();
+    f.wire.client.noteV1NotificationLoss(1, lost);
+    f.notify(std::vector<uint8_t>(row.begin() + 6, row.end()), 210, false);
+    f.tick(211);
+    TEST_ASSERT_FALSE(f.wire.client.hasContinuousV1AlertInput());
+    TEST_ASSERT_EQUAL_UINT32(0, f.wire.command.writeValueCalls());
+    f.notify(lossAlert(24040), 230);
+    f.tick(231);
+    TEST_ASSERT_EQUAL_UINT32(1, f.wire.command.writeValueCalls());
+}
+
+void test_pre_loss_partial_table_cannot_complete_from_post_loss_tail() {
+    LossTransport f;
+    f.notify(lossAlert(24040, 0x12), 200);
+    f.queue.process();
+    const uint32_t lost = f.wire.client.noteV1NotificationIngress();
+    f.wire.client.noteV1NotificationLoss(1, lost);
+    f.notify(lossAlert(24030, 0x22), 210);
+    f.tick(211);
+    TEST_ASSERT_FALSE(f.wire.client.hasContinuousV1AlertInput());
+    TEST_ASSERT_EQUAL_UINT32(0, f.wire.command.writeValueCalls());
+    f.notify(lossAlert(24040, 0x12), 230);
+    f.tick(231);
+    TEST_ASSERT_FALSE(f.wire.client.hasContinuousV1AlertInput());
+    f.notify(lossAlert(24030, 0x22), 240);
+    f.tick(241);
+    TEST_ASSERT_TRUE(f.wire.client.hasContinuousV1AlertInput());
+    TEST_ASSERT_EQUAL_UINT32(1, f.wire.command.writeValueCalls());
+}
+
+void test_loss_after_mute_admission_blocks_worker_even_after_recovery() {
+    for (bool recover : {false, true}) {
+        LossTransport f;
+        mockMillis = 200;
+        f.quiet.processInTheBox(200);
+        TEST_ASSERT_TRUE(f.wire.client.commandInFlight(V1CommandOwner::InTheBox));
+        f.overflow(1);
+        if (recover) {
+            f.drain(f.policyAt);
+            f.notify(lossAlert(24040), f.policyAt + 30);
+            f.drain(f.policyAt + 31);
+            TEST_ASSERT_TRUE(f.wire.client.hasContinuousV1AlertInput());
+        }
+        completePendingTask();
+        TEST_ASSERT_EQUAL_UINT32(0, f.wire.command.writeValueCalls());
+        // A veto follows the existing failed-worker retirement path.
+        f.wire.client.serviceCommandWrite();
+        TEST_ASSERT_FALSE(f.wire.client.isConnected());
+    }
+}
+
+void test_loss_preserves_manual_mute_and_owned_unmute_transport() {
+    for (bool manualMute : {false, true}) {
+        LossTransport f;
+        f.overflow();
+        V1BLEClient::CommandScope scope(f.wire.client,
+            manualMute ? V1CommandOwner::TapGesture : V1CommandOwner::InTheBox);
+        TEST_ASSERT_EQUAL(SendResult::IN_FLIGHT, f.wire.client.setMuteResult(manualMute));
+        completePendingTask();
+        TEST_ASSERT_EQUAL_UINT32(1, f.wire.command.writeValueCalls());
+        TEST_ASSERT_EQUAL_UINT8(manualMute ? 0x34 : 0x35, f.wire.command.lastWriteValue()[3]);
+    }
+}
+
+void test_no_response_automatic_mute_checks_loss_and_recovers() {
+    LossTransport f;
+    f.wire.command.setCanWrite(false);
+    f.wire.command.setCanWriteNoResponse(true);
+    f.overflow();
+    V1BLEClient::CommandScope scope(f.wire.client, V1CommandOwner::InTheBox);
+    TEST_ASSERT_EQUAL(SendResult::NOT_YET, f.wire.client.setMuteResult(true));
+    TEST_ASSERT_EQUAL_UINT32(0, f.wire.command.writeValueCalls());
+    f.drain(f.policyAt);
+    f.notify(lossAlert(24040), f.policyAt + 30);
+    f.drain(f.policyAt + 31);
+    TEST_ASSERT_EQUAL(SendResult::SENT, f.wire.client.setMuteResult(true));
+    TEST_ASSERT_EQUAL_UINT32(1, f.wire.command.writeValueCalls());
+}
+
+void test_loss_gate_retires_old_session_and_orders_wrap() {
+    LossTransport f;
+    f.wire.client.noteV1NotificationLoss(1, UINT32_MAX - 1);
+    f.wire.client.noteV1NotificationLoss(1, UINT32_MAX - 2); // late older loss
+    f.wire.client.qualifyV1AlertInput(1, UINT32_MAX - 1);
+    TEST_ASSERT_FALSE(f.wire.client.hasContinuousV1AlertInput());
+    f.wire.client.qualifyV1AlertInput(1, 1);
+    TEST_ASSERT_TRUE(f.wire.client.hasContinuousV1AlertInput());
+    // Once recovered, an old boundary must not fail at the half-range.
+    f.wire.client.qualifyV1AlertInput(1, 0x80000000u);
+    TEST_ASSERT_TRUE(f.wire.client.hasContinuousV1AlertInput());
+    f.queue.closeSession();
+    f.queue.openSession(2);
+    f.wire.client.noteV1NotificationLoss(1, 100); // outgoing callback completes late
+    TEST_ASSERT_TRUE(f.wire.client.hasContinuousV1AlertInput());
+    f.wire.client.noteV1NotificationLoss(2, 110);
+    f.wire.client.qualifyV1AlertInput(1, 120); // old publication cannot release it
+    TEST_ASSERT_FALSE(f.wire.client.hasContinuousV1AlertInput());
+    f.wire.client.qualifyV1AlertInput(2, 111);
+    TEST_ASSERT_TRUE(f.wire.client.hasContinuousV1AlertInput());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_delayed_ack_keeps_notifications_and_loop_work_responsive);
 #ifdef BLE_COMMAND_LATENCY_ONLY
     return UNITY_END();
 #endif
+    RUN_TEST(test_known_indexed_tail_loss_blocks_mute_before_and_during_drain);
+    RUN_TEST(test_post_loss_partial_table_waits_for_complete_recovery);
+    RUN_TEST(test_partial_short_frame_spanning_loss_cannot_rearm_mute);
+    RUN_TEST(test_pre_loss_partial_table_cannot_complete_from_post_loss_tail);
+    RUN_TEST(test_loss_after_mute_admission_blocks_worker_even_after_recovery);
+    RUN_TEST(test_loss_preserves_manual_mute_and_owned_unmute_transport);
+    RUN_TEST(test_no_response_automatic_mute_checks_loss_and_recovers);
+    RUN_TEST(test_loss_gate_retires_old_session_and_orders_wrap);
     RUN_TEST(test_first_restore_echo_before_ack_harvest_keeps_connection);
     RUN_TEST(test_restore_echo_before_retry_keeps_connection);
     RUN_TEST(test_restore_echo_after_retry_harvest_keeps_connection);

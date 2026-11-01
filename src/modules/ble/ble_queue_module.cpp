@@ -80,6 +80,7 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr,
 
 void BleQueueModule::end() {
     acceptNotifications_.store(false, std::memory_order_release);
+    if (ble_) ble_->resetV1AlertInput(0);
     if (queueHandle_ != nullptr) {
         vQueueDelete(queueHandle_);
         queueHandle_ = nullptr;
@@ -96,11 +97,13 @@ void BleQueueModule::openSession(uint32_t sessionGeneration) {
     // queue send after closeSession() drained the queue.
     closeSession();
     sessionGeneration_.store(sessionGeneration, std::memory_order_release);
+    if (ble_) ble_->resetV1AlertInput(sessionGeneration);
     acceptNotifications_.store(true, std::memory_order_release);
 }
 
 void BleQueueModule::closeSession() {
     acceptNotifications_.store(false, std::memory_order_release);
+    if (ble_) ble_->resetV1AlertInput(0);
 
     BLEDataPacket discarded;
     while (queueHandle_ && xQueueReceive(queueHandle_, &discarded, 0) == pdTRUE) {
@@ -149,6 +152,7 @@ bool BleQueueModule::tryOnNotify(const uint8_t* data, size_t length, uint16_t ch
         BaseType_t result = xQueueSend(queueHandle_, &pkt, 0);
         if (result != pdTRUE) {
             HealthCounters::recordInputDrop();
+            if (ble_) ble_->noteV1NotificationLoss(sessionGeneration, ingressSequence);
         }
         return result == pdTRUE;
     }
@@ -708,6 +712,13 @@ void BleQueueModule::process() {
                                       ble_ && ble_->receivedAfterPhoneAlertStop(packetIngressSequence));
         if (!parseOk && packetId == PACKET_ID_ALERT_DATA) {
             markAlertStreamDiscontinuous();
+        }
+        if (parseOk && packetId == PACKET_ID_ALERT_DATA && ble_ &&
+            parser_->hasFreshAlertTable(packetTimestampMs)) {
+            // Gap handling above clears every partial table before post-loss
+            // rows enter the parser. Older queued publications remain visible,
+            // but cannot cross the callback's loss boundary and rearm audio.
+            ble_->qualifyV1AlertInput(activeSessionGeneration, packetIngressSequence);
         }
 
         if (parseOk && packetId == PACKET_ID_DISPLAY_DATA && ble_) {

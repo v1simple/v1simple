@@ -278,6 +278,9 @@ public:
         sessionUserBytesRevisionValue = 0;
         sessionUserBytesIngressSequenceValue = 0;
         v1NotificationIngressSequenceValue = 0;
+        alertInputSession = 0;
+        alertInputLossIngress = 0;
+        alertInputContinuous = true;
         verifiedSettingsApplyGenerationValue = 0;
         clearVerifiedSettingsApplyEdgeCalls = 0;
         publishVerifiedSettingsApplyEdgeCalls = 0;
@@ -485,6 +488,28 @@ public:
         return v1NotificationIngressSequenceValue;
     }
     uint32_t latestV1NotificationIngressSequence() const { return v1NotificationIngressSequenceValue; }
+    void resetV1AlertInput(uint32_t generation) {
+        alertInputSession = generation;
+        alertInputLossIngress = 0;
+        alertInputContinuous = generation != 0;
+    }
+    void noteV1NotificationLoss(uint32_t generation, uint32_t ingress) {
+        if (generation == alertInputSession && generation != 0 && ingress != 0) {
+            if (alertInputContinuous || alertInputLossIngress == 0 ||
+                static_cast<int32_t>(ingress - alertInputLossIngress) > 0)
+                alertInputLossIngress = ingress;
+            alertInputContinuous = false;
+        }
+    }
+    void qualifyV1AlertInput(uint32_t generation, uint32_t ingress) {
+        if (generation == alertInputSession && generation != 0 && ingress != 0 &&
+            static_cast<int32_t>(ingress - alertInputLossIngress) > 0)
+            alertInputContinuous = true;
+    }
+    bool hasContinuousV1AlertInput() const { return alertInputContinuous; }
+    uint32_t alertInputSession = 0;
+    uint32_t alertInputLossIngress = 0;
+    bool alertInputContinuous = true;
 
     bool setDisplayOn(bool displayOn) {
         return setDisplayOn(displayOn, false);

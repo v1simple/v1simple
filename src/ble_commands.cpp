@@ -37,7 +37,8 @@ void V1BLEClient::commandTaskFunc(void* param) {
         self->sessionPublicationGate_.accepts(context.generation) &&
         (context.phoneGeneration == 0 || self->acceptsPhoneSession(context.phoneGeneration));
     bool result = false;
-    if (accepted && context.characteristic) {
+    if (accepted && context.characteristic &&
+        (!context.requiresContinuousAlertInput || self->permitsInTheBoxMute(context.alertInputRevision))) {
         self->commandWorkerIngress_.store(self->latestV1NotificationIngressSequence(), std::memory_order_relaxed);
         self->commandWorkerStarted_.store(true, std::memory_order_release);
         result = context.characteristic->writeValue(context.data, context.length, context.response);
@@ -119,6 +120,11 @@ SendResult V1BLEClient::sendCharacteristicCommand(NimBLERemoteCharacteristic* ch
     }
     if (discoveryTaskRunning_.load(std::memory_order_acquire))
         return SendResult::NOT_YET;
+    const bool requiresContinuousAlertInput = commandOwner_ == V1CommandOwner::InTheBox &&
+        length > 3 && data[3] == PACKET_ID_MUTE_ON;
+    uint32_t alertInputRevision = 0;
+    if (requiresContinuousAlertInput && !hasContinuousV1AlertInput(&alertInputRevision))
+        return SendResult::NOT_YET;
     const uint32_t now = static_cast<uint32_t>(millis());
     // Preserve the long-channel queue's existing contiguous chunk delivery.
     // Only the short command channel has the five-millisecond pacing gate.
@@ -131,6 +137,8 @@ SendResult V1BLEClient::sendCharacteristicCommand(NimBLERemoteCharacteristic* ch
     const uint16_t mtu = pClient_ ? pClient_->getMTU() : 23;
     if (!response && length <= static_cast<size_t>(mtu >= 3 ? mtu - 3 : 0)) {
         const uint32_t boundary = latestV1NotificationIngressSequence();
+        if (requiresContinuousAlertInput && !permitsInTheBoxMute(alertInputRevision))
+            return SendResult::NOT_YET;
         if (!characteristic->writeValue(data, length, false)) return SendResult::NOT_YET;
         if (!sessionPublicationGate_.accepts(generation)) return SendResult::FAILED;
         // A synchronous write already reached this V1 session. The phone queue
@@ -146,6 +154,8 @@ SendResult V1BLEClient::sendCharacteristicCommand(NimBLERemoteCharacteristic* ch
     commandTaskContext_.generation = generation;
     commandTaskContext_.phoneGeneration = phoneGeneration;
     commandTaskContext_.commandOwner = commandOwner_;
+    commandTaskContext_.alertInputRevision = alertInputRevision;
+    commandTaskContext_.requiresContinuousAlertInput = requiresContinuousAlertInput;
     commandTaskContext_.length = length;
     commandTaskContext_.response = response;
     memcpy(commandTaskContext_.data, data, length);

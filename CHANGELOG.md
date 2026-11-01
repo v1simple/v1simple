@@ -12,6 +12,8 @@ GitHub Releases retain the complete commit history.
   another Save, and serviced the watchdog between restored profile transactions.
 - Rejected Auto-Push saves when a complete slot snapshot is unavailable,
   preserving the existing configuration.
+- Prevented lost alert input from authorizing an In-the-Box automatic mute.
+- Preserved committed profile replacements when a later settings read fails.
 - Corrected GPS detection timing when its start timestamp is zero.
 - Aligned generated factory images with the application partition and kept
   filesystem staging limited to explicit filesystem builds and uploads.

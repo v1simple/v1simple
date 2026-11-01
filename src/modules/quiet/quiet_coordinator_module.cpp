@@ -311,7 +311,8 @@ void QuietCoordinatorModule::processInTheBox(uint32_t nowMs) {
     }
 
     InTheBoxDecision decision;
-    const bool fresh = !inTheBoxSuspended_ && parser_->hasFreshAlertTable(nowMs);
+    const bool fresh = !inTheBoxSuspended_ && ble_->hasContinuousV1AlertInput() &&
+                       parser_->hasFreshAlertTable(nowMs);
     if (fresh) {
         const auto& alerts = parser_->getAllAlerts();
         decision = inTheBox_.process(inTheBoxSettings_, alerts.data(),

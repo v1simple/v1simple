@@ -46,6 +46,11 @@ Audio uses only complete tables at most 1500 ms old. Known stream loss invalidat
 eligibility immediately. Partial rows never contribute to the decision; the
 previous complete table remains usable within that age limit. Unknown rows and
 gaps preserve encounter history and cannot manufacture a new inside event.
+Receive-queue rejection withdraws audio authority at the callback boundary,
+while retaining accepted alert rows for display. Older queued tables cannot
+restore it; gap handling clears partial assembly before a complete post-loss
+table qualifies again. An automatic mute queued before that loss remains
+invalid even if a newer table arrives before the transport worker runs.
 Command retries recheck current eligibility; an inside-unmute retry requires a
 current inside row on a band with inside unmuting enabled. Confirmation requires
 a canonical display packet admitted after the send boundary, using `isSoft`
@@ -88,6 +93,10 @@ order changes, duplicate frequencies and all 15 rows. `test_in_the_box_runtime`
 uses the production quiet coordinator with parser/BLE substitutes to cover
 transport deferral/failure, confirmation, ownership and episode transitions.
 `test_packet_parser_stream` exercises real packet parsing, freshness and gaps.
+`test_ble_command_transport` carries indexed queue overflow through the real
+callback, parser, quiet policy and command worker, including lost-tail input,
+post-loss partial/complete tables, split frames, session and sequence wrap,
+pending-write invalidation, and preserved manual mute/owned-unmute commands.
 `test_auto_push_module` verifies activation after detector success and app commit,
 and preservation of the old policy when either fails. Profile/device/USB/backup
 suites exercise production serialization and reload using filesystem/NVS

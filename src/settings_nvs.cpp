@@ -1723,10 +1723,11 @@ bool finalizeNamespaceGeneration(const char* ns, uint32_t generation) {
         return false;
     }
     const size_t written = prefs.putUInt(kNvsCommittedGeneration, generation);
-    const bool committed = written == sizeof(uint32_t) &&
-                           prefs.getUInt(kNvsCommittedGeneration, 0) == generation;
     prefs.end();
-    return committed;
+    // Preferences acknowledges this write only after nvs_commit succeeds.
+    // A later failed read cannot undo that commit or authorize callers to
+    // roll back the profile/credential stores paired with these settings.
+    return written == sizeof(uint32_t);
 }
 
 uint32_t seedLegacyNamespaceGeneration(const String& active, const SettingsNamespaceState& state) {

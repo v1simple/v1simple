@@ -135,6 +135,16 @@ schema v3. Current USB v5 retains that slot contract and adds profile-schema-v4
    from one requiring rollback. `resolveRestoreTransaction()` removes obsolete
    journals or restores the pre-transaction catalog.
 
+   The acknowledged `commitGen` write is the settings commit point:
+   `Preferences::putUInt()` reports success only after `nvs_commit` succeeds.
+   A subsequent unavailable read must not reject that committed replacement
+   and roll back only its profile files. The USB document regressions inject
+   unreadable generation/validity entries after the acknowledged write and
+   preserve the complete new bundle through boot recovery and a second load,
+   both with immediate journal cleanup and a retained committed journal.
+   Failed precommit writes still reject the replacement and restore its prior
+   state. These tests model storage errors; they do not measure physical flash.
+
    New HTTP and SD backup snapshots use `prepareBackupSnapshot()` to resolve
    restore/delete journals before reading profiles. Incomplete rollback remains
    recovery-pending; an already queued pre-failure snapshot stays authoritative.

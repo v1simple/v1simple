@@ -981,6 +981,69 @@ void test_committed_replacement_survives_reboot_and_stale_journal_cleanup() {
     TEST_ASSERT_FALSE(secondaryFs->exists("/v1restore_transaction.json"));
 }
 
+void exercise_committed_replacement_with_unavailable_readback(bool leaveJournal) {
+    seed();
+    const String unrelated = unrelatedSettingsSnapshot();
+    JsonDocument incoming;
+    replacement(incoming);
+    const String expected = jsonText(incoming);
+    const String active = mock_preferences::getString(SETTINGS_NS_META, kNvsMetaActive);
+    const String staging = active == SETTINGS_NS_A ? SETTINGS_NS_B : SETTINGS_NS_A;
+    bool commitAcknowledged = false;
+    mock_preferences::afterWrite() = [&](const char* key) {
+        if (std::strcmp(key, kNvsCommittedGeneration) != 0 || commitAcknowledged) return;
+        commitAcknowledged = true;
+        // Model unreadable committed entries until reboot. Preferences hides
+        // these errors as a default generation and an absent validity key;
+        // the durable bytes remain present, as after NVS page invalidation.
+        mock_preferences::set_scalar_read_fault(staging.c_str(), kNvsCommittedGeneration,
+                                                PT_U32, ESP_FAIL, SIZE_MAX);
+        mock_preferences::set_scalar_read_fault(staging.c_str(), kNvsValid,
+                                                PT_I32, ESP_FAIL, SIZE_MAX);
+    };
+    manager->utLeaveRestoreJournalAfterCommit(leaveJournal);
+    String error;
+    const auto result = applyUsbProfileDocument(*manager, *profileManager, incoming, error);
+    mock_preferences::afterWrite() = {};
+
+    // Exercise the unavailable reads explicitly even when the save correctly
+    // does not re-read its acknowledged commit. Inspect durable bytes apart
+    // from the faulted reader, then recover exactly as a fresh boot would.
+    Preferences unreadable;
+    TEST_ASSERT_TRUE(unreadable.begin(staging.c_str(), true));
+    TEST_ASSERT_EQUAL_UINT32(0, unreadable.getUInt(kNvsCommittedGeneration, 0));
+    TEST_ASSERT_FALSE(unreadable.isKey(kNvsValid));
+    unreadable.end();
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(staging.c_str(), kNvsCommittedGeneration));
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(staging.c_str(), kNvsValid));
+    const String immediateSlot = manager->get().slot0_default.profileName;
+    const bool journalRetained = primaryFs->exists(RESTORE_TRANSACTION_PATH) &&
+                                 secondaryFs->exists(RESTORE_TRANSACTION_PATH);
+    mock_preferences::scalarReadFaults().clear();
+    reboot();
+    manager->migrateAutoPushProfilesToV2();
+    manager->validateProfileReferences(*profileManager);
+    reboot();
+
+    TEST_ASSERT_TRUE(commitAcknowledged);
+    TEST_ASSERT_TRUE_MESSAGE(result.success, error.c_str());
+    TEST_ASSERT_EQUAL_STRING("A Replacement", immediateSlot.c_str());
+    TEST_ASSERT_EQUAL(leaveJournal, journalRetained);
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), snapshot().c_str());
+    TEST_ASSERT_EQUAL_STRING(unrelated.c_str(), unrelatedSettingsSnapshot().c_str());
+    TEST_ASSERT_EQUAL_STRING("fixture-password", manager->getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(primaryFs->exists(RESTORE_TRANSACTION_PATH));
+    TEST_ASSERT_FALSE(secondaryFs->exists(RESTORE_TRANSACTION_PATH));
+}
+
+void test_acknowledged_replacement_survives_unavailable_commit_readback() {
+    exercise_committed_replacement_with_unavailable_readback(false);
+}
+
+void test_acknowledged_replacement_journal_recovers_after_unavailable_commit_readback() {
+    exercise_committed_replacement_with_unavailable_readback(true);
+}
+
 void test_case_only_catalog_replacement_recovers_exact_original_name() {
     seed();
     const String before = snapshot();
@@ -1641,6 +1704,8 @@ int main() {
     RUN_TEST(test_profile_storage_failure_during_replacement_rolls_back_catalog);
     RUN_TEST(test_interrupted_replacement_recovers_both_catalog_and_slots_from_mirrored_journal);
     RUN_TEST(test_committed_replacement_survives_reboot_and_stale_journal_cleanup);
+    RUN_TEST(test_acknowledged_replacement_survives_unavailable_commit_readback);
+    RUN_TEST(test_acknowledged_replacement_journal_recovers_after_unavailable_commit_readback);
     RUN_TEST(test_case_only_catalog_replacement_recovers_exact_original_name);
     RUN_TEST(test_empty_catalog_restore_deletes_extras_and_clears_assignments);
     RUN_TEST(test_unavailable_catalog_export_returns_no_partial_bundle);

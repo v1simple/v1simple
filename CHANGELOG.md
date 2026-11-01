@@ -3,6 +3,23 @@
 This is the short version of changes users and integrators may notice. Git and
 GitHub Releases retain the complete commit history.
 
+## v2.4.3 — Unreleased
+
+- Added an offline first-use guide to the maintenance interface and installer.
+- Exposed observed settings-save and SD-backup status so pending work and
+  recovery results are visible.
+- Reloaded device settings after an uncertain restore response before allowing
+  another Save, and serviced the watchdog between restored profile transactions.
+- Rejected Auto-Push saves when a complete slot snapshot is unavailable,
+  preserving the existing configuration.
+- Corrected GPS detection timing when its start timestamp is zero.
+- Aligned generated factory images with the application partition and kept
+  filesystem staging limited to explicit filesystem builds and uploads.
+- Removed unused state, obsolete adapters and duplicate configuration paths
+  across firmware, the maintenance interface and replay tools.
+- Verified declared camera capture identities and file hashes before reading
+  replay fields, with explicit handling for older recordings.
+
 ## v2.4.1 — 2026-10-16
 
 - Preserved newer profile drafts and selections when an earlier Edit or Copy

@@ -188,13 +188,10 @@ void appendDurableOperation(JsonObject root, const V1SettingsOperationStore::Sna
 
 void handleApiSlots(WebServer& server, const Runtime& runtime) {
     SlotsSnapshot snapshot;
-    if (runtime.loadSlotsSnapshotResult) {
-        if (!runtime.loadSlotsSnapshotResult(snapshot, runtime.loadSlotsSnapshotResultCtx)) {
-            server.send(503, "application/json", "{\"error\":\"Slot settings memory unavailable\",\"retryable\":true}");
-            return;
-        }
-    } else if (runtime.loadSlotsSnapshot) {
-        runtime.loadSlotsSnapshot(snapshot, runtime.loadSlotsSnapshotCtx);
+    if (!runtime.loadSlotsSnapshotResult ||
+        !runtime.loadSlotsSnapshotResult(snapshot, runtime.loadSlotsSnapshotResultCtx)) {
+        server.send(503, "application/json", "{\"error\":\"Slot settings memory unavailable\",\"retryable\":true}");
+        return;
     }
 
     PsramJson::Document doc;
@@ -378,7 +375,11 @@ void handleApiSlotSaveImpl(WebServer& server, const Runtime& runtime, const Exac
         return;
 
     SlotsSnapshot current;
-    if (runtime.loadSlotsSnapshot) runtime.loadSlotsSnapshot(current, runtime.loadSlotsSnapshotCtx);
+    if (!runtime.loadSlotsSnapshotResult ||
+        !runtime.loadSlotsSnapshotResult(current, runtime.loadSlotsSnapshotResultCtx)) {
+        server.send(503, "application/json", "{\"error\":\"Slot settings memory unavailable\",\"retryable\":true}");
+        return;
+    }
     const bool profileOwned = current.profileOwned;
     if (!form.has("slot") || !form.has("profile") || (!profileOwned && !form.has("mode"))) {
         server.send(400, "application/json", "{\"error\":\"Missing parameters\"}");

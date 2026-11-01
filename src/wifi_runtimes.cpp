@@ -34,30 +34,6 @@
 
 WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
     WifiAutoPushApiService::Runtime runtime{
-        [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void* ctx) {
-            const V1Settings& s = static_cast<WiFiManager*>(ctx)->settings_.get();
-            snapshot.enabled = s.autoPushEnabled;
-            snapshot.profileOwned = s.autoPushProfileSchemaVersion == V1_PROFILE_SCHEMA_VERSION;
-            snapshot.activeSlot = s.activeSlot;
-
-            for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
-                const V1Settings::ConstAutoPushSlotView slot = s.autoPushSlotView(slotIndex);
-                snapshot.slots[slotIndex].name = slot.name;
-                snapshot.slots[slotIndex].profile = slot.config.profileName;
-                snapshot.slots[slotIndex].mode = slot.config.mode;
-                snapshot.slots[slotIndex].color = slot.color;
-                snapshot.slots[slotIndex].volume = slot.volume;
-                snapshot.slots[slotIndex].muteVolume = slot.muteVolume;
-                snapshot.slots[slotIndex].volumeConfigured = snapshot.profileOwned
-                    ? slot.volumeOverride : slot.volume <= 9 && slot.muteVolume <= 9;
-                snapshot.slots[slotIndex].darkMode = slot.darkMode;
-                snapshot.slots[slotIndex].darkModeConfigured = slot.darkModeOverride;
-                snapshot.slots[slotIndex].muteToZero = slot.muteToZero;
-                snapshot.slots[slotIndex].alertPersist = slot.alertPersist;
-                snapshot.slots[slotIndex].priorityArrowOnly = slot.priorityArrow;
-            }
-        },
-        this,
         [](const WifiAutoPushApiService::SlotUpdateRequest& request, void* ctx) {
             AutoPushSlotUpdate update;
             update.slot = request.slot;

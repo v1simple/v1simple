@@ -88,8 +88,6 @@ struct OperationStartRequest {
 };
 
 struct Runtime {
-    void (*loadSlotsSnapshot)(SlotsSnapshot& snapshot, void* ctx) = nullptr;
-    void* loadSlotsSnapshotCtx = nullptr;
     bool (*applySlotUpdate)(const SlotUpdateRequest& request, void* ctx) = nullptr;
     void* applySlotUpdateCtx = nullptr;
     int (*getActiveSlot)(void* ctx) = nullptr;

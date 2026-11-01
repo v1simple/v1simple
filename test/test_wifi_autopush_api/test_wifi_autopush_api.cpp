@@ -19,6 +19,7 @@ namespace {
 struct FakeRuntime {
     WifiAutoPushApiService::SlotUpdateRequest update;
     int updateCalls = 0;
+    bool snapshotAvailable = true;
     WifiAutoPushApiService::ProfileAssignmentStatus profileStatus =
         WifiAutoPushApiService::ProfileAssignmentStatus::Success;
     bool persistResult = true;
@@ -38,8 +39,9 @@ struct FakeRuntime {
 
 WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
     WifiAutoPushApiService::Runtime runtime{};
-    runtime.loadSlotsSnapshot = [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void* ctx) {
+    runtime.loadSlotsSnapshotResult = [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void* ctx) {
         auto* state = static_cast<FakeRuntime*>(ctx);
+        if (!state->snapshotAvailable) return false;
         snapshot.profileOwned = state->profileOwned;
         snapshot.slots[0].volume = 0xFF;
         snapshot.slots[0].muteVolume = 0xFF;
@@ -53,8 +55,9 @@ WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
         snapshot.slots[0].profile = "ROAD";
         snapshot.slots[0].alertPersist = 3;
         snapshot.slots[0].priorityArrowOnly = true;
+        return true;
     };
-    runtime.loadSlotsSnapshotCtx = &fake;
+    runtime.loadSlotsSnapshotResultCtx = &fake;
     runtime.applySlotUpdate = [](const WifiAutoPushApiService::SlotUpdateRequest& request, void* ctx) {
         auto* state = static_cast<FakeRuntime*>(ctx);
         state->update = request;
@@ -719,11 +722,70 @@ void test_exact_slot_and_activation_rate_limit_prevents_mutation() {
     TEST_ASSERT_EQUAL_INT(0, fake.activationCalls);
 }
 
+void test_slot_save_rejects_unavailable_snapshot_without_mutation() {
+    for (bool profileOwned : {false, true}) {
+        WebServer server(80);
+        FakeRuntime fake;
+        fake.profileOwned = profileOwned;
+        fake.snapshotAvailable = false;
+        const char* body = profileOwned ? "slot=0&profile=ROAD&alertPersist=5"
+                                        : "slot=0&profile=ROAD&mode=2&alertPersist=5";
+
+        WifiAutoPushApiService::handleApiSlotSaveBody(
+            server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body), strlen(body),
+            alwaysAllow, nullptr);
+
+        TEST_ASSERT_EQUAL_INT(503, server.lastStatusCode);
+        TEST_ASSERT_EQUAL_STRING("application/json", server.lastContentType.c_str());
+        TEST_ASSERT_EQUAL_STRING(
+            "{\"error\":\"Slot settings memory unavailable\",\"retryable\":true}",
+            server.lastBody.c_str());
+        TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
+        TEST_ASSERT_EQUAL_INT(0, fake.activationCalls);
+        TEST_ASSERT_EQUAL_INT(0, fake.operationStartCalls);
+    }
+}
+
+void test_slot_save_requires_snapshot_callback_before_mutation() {
+    WebServer server(80);
+    FakeRuntime fake;
+    auto runtime = makeRuntime(fake);
+    runtime.loadSlotsSnapshotResult = nullptr;
+    const char* body = "slot=0&profile=ROAD&mode=2";
+
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        server, runtime, reinterpret_cast<const uint8_t*>(body), strlen(body), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(503, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
+}
+
+void test_slots_api_rejects_unavailable_snapshot_instead_of_empty_success() {
+    for (bool missingCallback : {false, true}) {
+        WebServer server(80);
+        FakeRuntime fake;
+        fake.snapshotAvailable = false;
+        auto runtime = makeRuntime(fake);
+        if (missingCallback) runtime.loadSlotsSnapshotResult = nullptr;
+
+        WifiAutoPushApiService::handleApiSlots(server, runtime);
+
+        TEST_ASSERT_EQUAL_INT(503, server.lastStatusCode);
+        TEST_ASSERT_EQUAL_STRING(
+            "{\"error\":\"Slot settings memory unavailable\",\"retryable\":true}",
+            server.lastBody.c_str());
+        TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_slot_clear_requires_explicit_token_and_never_clears_a_nonempty_profile);
     RUN_TEST(test_exact_slot_and_activation_rate_limit_prevents_mutation);
     RUN_TEST(test_slots_api_uses_explicit_volume_contract_and_never_emits_255);
+    RUN_TEST(test_slot_save_rejects_unavailable_snapshot_without_mutation);
+    RUN_TEST(test_slot_save_requires_snapshot_callback_before_mutation);
+    RUN_TEST(test_slots_api_rejects_unavailable_snapshot_instead_of_empty_success);
     RUN_TEST(test_slot_save_rejects_one_sided_volume_pair);
     RUN_TEST(test_slot_save_can_explicitly_disable_volume_pair);
     RUN_TEST(test_status_api_preserves_terminal_result);

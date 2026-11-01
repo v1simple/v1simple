@@ -55,13 +55,9 @@ void handleApiProfilesListQuery(WebServer& server, const Runtime& runtime,
 void handleApiProfileGetQuery(WebServer& server, const Runtime& runtime,
                               const uint8_t* query, size_t querySize);
 
-void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                          void* rateLimitCtx);
 void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const uint8_t* body, size_t bodySize,
                               bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
 
-void handleApiProfileDelete(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                            void* rateLimitCtx);
 void handleApiProfileDeleteBody(WebServer& server, const Runtime& runtime, const uint8_t* body, size_t bodySize,
                                 bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
 

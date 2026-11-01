@@ -600,17 +600,6 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
     }
 }
 
-void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                          void* rateLimitCtx) {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"error\":\"Missing request body\"}");
-        return;
-    }
-    const String body = server.arg("plain");
-    handleApiProfileSaveBody(server, runtime, reinterpret_cast<const uint8_t*>(body.c_str()), body.length(),
-                             checkRateLimit, rateLimitCtx);
-}
-
 void handleApiProfileDeleteBody(WebServer& server, const Runtime& runtime, const uint8_t* body,
                                 const size_t bodySize, bool (*checkRateLimit)(void* ctx),
                                 void* rateLimitCtx) {
@@ -684,17 +673,6 @@ void handleApiProfileDeleteBody(WebServer& server, const Runtime& runtime, const
     } else {
         server.send(500, "application/json", "{\"error\":\"Profile deletion failed\"}");
     }
-}
-
-void handleApiProfileDelete(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                            void* rateLimitCtx) {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"error\":\"Missing request body\"}");
-        return;
-    }
-    const String body = server.arg("plain");
-    handleApiProfileDeleteBody(server, runtime, reinterpret_cast<const uint8_t*>(body.c_str()), body.length(),
-                               checkRateLimit, rateLimitCtx);
 }
 
 void handleApiCurrentSettings(WebServer& server, const Runtime& runtime) {

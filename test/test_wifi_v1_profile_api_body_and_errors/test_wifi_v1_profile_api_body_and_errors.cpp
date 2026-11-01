@@ -1,6 +1,6 @@
 // Error responses must escape saveError, including quotes and control bytes.
-// WebServer buffers request bodies before dispatch, and arg() copies its String.
-// Pin payload caps and one named body binding per handler to avoid extra copies.
+// Exercise the same exact request-byte spans as production routes, including
+// payload caps and rejection of bytes outside the JSON document.
 
 #include <unity.h>
 
@@ -181,9 +181,11 @@ void test_save_error_with_quotes_and_backslashes_stays_valid_json() {
     FakeRuntime rt;
     rt.saveOk = false;
     rt.saveError = "open \"/profiles/a\\b.json\" failed";
-    server.setArg("plain", "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}");
+    const String requestBody = "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}";
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
 
@@ -199,9 +201,11 @@ void test_save_error_with_control_characters_stays_valid_json() {
     FakeRuntime rt;
     rt.saveOk = false;
     rt.saveError = "write failed\nretry \"once\"\ttab";
-    server.setArg("plain", "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}");
+    const String requestBody = "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}";
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
 
@@ -216,9 +220,11 @@ void test_plain_save_error_still_reports_error_field_verbatim() {
     FakeRuntime rt;
     rt.saveOk = false;
     rt.saveError = "disk full";
-    server.setArg("plain", "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}");
+    const String requestBody = "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}";
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "\"error\":\"disk full\""));
@@ -233,9 +239,11 @@ void test_delete_reports_storage_busy_instead_of_not_found() {
     WebServer server(80);
     FakeRuntime rt;
     rt.deleteStatus = WifiV1ProfileApiService::CatalogStatus::Busy;
-    server.setArg("plain", "{\"name\":\"RoadTrip\"}");
+    const String requestBody = "{\"name\":\"RoadTrip\"}";
 
-    WifiV1ProfileApiService::handleApiProfileDelete(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileDeleteBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "storage busy"));
@@ -246,9 +254,11 @@ void test_delete_persistence_failure_is_not_reported_as_success() {
     WebServer server(80);
     FakeRuntime rt;
     rt.deleteStatus = WifiV1ProfileApiService::CatalogStatus::IoError;
-    server.setArg("plain", "{\"name\":\"RoadTrip\"}");
+    const String requestBody = "{\"name\":\"RoadTrip\"}";
 
-    WifiV1ProfileApiService::handleApiProfileDelete(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileDeleteBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "Profile deletion failed"));
@@ -274,9 +284,11 @@ void test_delete_rejects_unknown_fields_before_storage_mutation() {
 void test_profile_save_rejects_oversize_payload_without_saving() {
     WebServer server(80);
     FakeRuntime rt;
-    server.setArg("plain", oversizeBody(V1_PROFILE_HTTP_SAVE_MAX_BYTES + 1u));
+    const String requestBody = oversizeBody(V1_PROFILE_HTTP_SAVE_MAX_BYTES + 1u);
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "Payload too large"));
@@ -287,9 +299,11 @@ void test_profile_save_rejects_oversize_payload_without_saving() {
 void test_profile_save_accepts_maximum_description() {
     WebServer server(80);
     FakeRuntime rt;
-    server.setArg("plain", oversizeBody(V1_PROFILE_DESCRIPTION_MAX_BYTES));
+    const String requestBody = oversizeBody(V1_PROFILE_DESCRIPTION_MAX_BYTES);
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, rt.saveCalls);
@@ -301,9 +315,11 @@ void test_profile_save_forwards_create_only_and_reports_existing_name_conflict()
         FakeRuntime rt;
         rt.saveOk = !alreadyExists;
         rt.saveError = "Profile already exists";
-        server.setArg("plain", "{\"name\":\"RoadTrip\",\"createOnly\":true,\"settings\":{\"xBand\":true}}");
+        const String requestBody = "{\"name\":\"RoadTrip\",\"createOnly\":true,\"settings\":{\"xBand\":true}}";
 
-        WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+        WifiV1ProfileApiService::handleApiProfileSaveBody(
+            server, makeRuntime(rt),
+            reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
         TEST_ASSERT_EQUAL_INT(alreadyExists ? 409 : 200, server.lastStatusCode);
         TEST_ASSERT_TRUE(rt.savedCreateOnly);
@@ -315,9 +331,11 @@ void test_profile_save_forwards_create_only_and_reports_existing_name_conflict()
 void test_profile_save_rejects_non_boolean_create_only() {
     WebServer server(80);
     FakeRuntime rt;
-    server.setArg("plain", "{\"name\":\"RoadTrip\",\"createOnly\":\"true\",\"settings\":{\"xBand\":true}}");
+    const String requestBody = "{\"name\":\"RoadTrip\",\"createOnly\":\"true\",\"settings\":{\"xBand\":true}}";
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(0, rt.saveCalls);
@@ -327,9 +345,11 @@ void test_profile_save_rejects_volume_policy_change_conflicting_with_assigned_sl
     WebServer server(80);
     FakeRuntime rt;
     rt.slotVolumeOverrideConflict = true;
-    server.setArg("plain", "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}");
+    const String requestBody = "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}";
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "volume override"));
@@ -340,9 +360,11 @@ void test_profile_save_rejects_volume_policy_change_conflicting_with_assigned_sl
 void test_profile_save_rejects_description_above_shared_limit_before_saving() {
     WebServer server(80);
     FakeRuntime rt;
-    server.setArg("plain", oversizeBody(V1_PROFILE_DESCRIPTION_MAX_BYTES + 1u));
+    const String requestBody = oversizeBody(V1_PROFILE_DESCRIPTION_MAX_BYTES + 1u);
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "Invalid profile metadata"));
@@ -359,9 +381,11 @@ void test_profile_save_preserves_omitted_existing_metadata() {
         "\"display\":\"off\",\"volume\":{\"policy\":\"temporary\",\"main\":7,\"muted\":2,"
         "\"feedback\":\"none\",\"disconnect\":\"restore_saved\"},"
         "\"bluetoothLed\":\"off\",\"customFrequencies\":{\"policy\":\"unchanged\"}},\"settings\":{}}";
-    server.setArg("plain", "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}");
+    const String requestBody = "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}";
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, rt.saveCalls);
@@ -377,15 +401,16 @@ void test_profile_save_preserves_omitted_existing_metadata() {
 void test_profile_save_accepts_explicit_metadata_without_resetting_it() {
     WebServer server(80);
     FakeRuntime rt;
-    server.setArg("plain",
-                  "{\"schemaVersion\":3,\"name\":\"RoadTrip\",\"description\":\"Edited\","
+    const String requestBody = "{\"schemaVersion\":3,\"name\":\"RoadTrip\",\"description\":\"Edited\","
                   "\"detector\":{\"userSettings\":\"unchanged\",\"mode\":{\"policy\":\"unchanged\"},"
                   "\"display\":\"off\",\"volume\":{\"policy\":\"saved\",\"main\":8,\"muted\":3,"
                   "\"feedback\":\"always\",\"disconnect\":\"restore_saved\"},"
                   "\"bluetoothLed\":\"on\",\"customFrequencies\":{\"policy\":\"unchanged\"}},"
-                  "\"settings\":{\"xBand\":true}}");
+                  "\"settings\":{\"xBand\":true}}";
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_STRING("Edited", rt.savedDescription.c_str());
@@ -443,9 +468,10 @@ void test_profile_save_accepts_complete_64_definition_profile_above_old_cap() {
     TEST_ASSERT_EQUAL_UINT(12772, body.length());
     TEST_ASSERT_EQUAL_UINT(3612, V1_PROFILE_HTTP_SAVE_MAX_BYTES - body.length());
     TEST_ASSERT_LESS_THAN(V1_PROFILE_HTTP_SAVE_MAX_BYTES, body.length());
-    server.setArg("plain", body);
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(body.c_str()), body.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, rt.saveCalls);
@@ -457,9 +483,11 @@ void test_profile_save_accepts_complete_64_definition_profile_above_old_cap() {
 void test_profile_save_rejects_invalid_volume_metadata() {
     WebServer server(80);
     FakeRuntime rt;
-    server.setArg("plain", "{\"name\":\"RoadTrip\",\"mainVolume\":10,\"settings\":{\"byte0\":3}}");
+    const String requestBody = "{\"name\":\"RoadTrip\",\"mainVolume\":10,\"settings\":{\"byte0\":3}}";
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(0, rt.saveCalls);
@@ -482,9 +510,10 @@ void test_profile_save_rejects_half_zero_custom_definition_without_saving() {
     request["settings"]["xBand"] = true;
     String body;
     serializeJson(request, body);
-    server.setArg("plain", body);
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(body.c_str()), body.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(0, rt.saveCalls);
@@ -510,9 +539,11 @@ void test_profile_save_is_read_only_until_durable_profile_ownership_commits() {
     WebServer server(80);
     FakeRuntime rt;
     rt.profileSchemaReady = false;
-    server.setArg("plain", "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}");
+    const String requestBody = "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}";
 
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "migration is pending"));
@@ -524,9 +555,11 @@ void test_profile_delete_remains_available_to_prune_a_catalog_while_migration_is
     WebServer server(80);
     FakeRuntime rt;
     rt.profileSchemaReady = false;
-    server.setArg("plain", "{\"name\":\"RoadTrip\"}");
+    const String requestBody = "{\"name\":\"RoadTrip\"}";
 
-    WifiV1ProfileApiService::handleApiProfileDelete(server, makeRuntime(rt), alwaysAllow, nullptr);
+    WifiV1ProfileApiService::handleApiProfileDeleteBody(
+        server, makeRuntime(rt),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, rt.deleteCalls);
@@ -682,37 +715,33 @@ void test_profile_get_rejects_duplicate_unknown_or_truncated_query_before_lookup
     }
 }
 
-// Request-body allocation contract
-
-// WebServer::arg() returns String by value, so every call allocates a full body
-// copy. Each handler must bind the result once and reuse that binding.
-void test_post_handlers_bind_the_request_body_exactly_once_per_handler() {
-    struct Expectation {
-        const char* path;
-        int maxArgCalls; // one per handler that reads a body
-    };
-    const Expectation sources[] = {
-        // save and delete
-        {"src/modules/wifi/wifi_v1_profile_api_service.cpp", 2},
-        // restore (backup-now takes no body)
-        {"src/modules/wifi/backup_api_service.cpp", 1},
-    };
-
-    for (const Expectation& expected : sources) {
-        const std::string source = readProjectFile(expected.path);
-        TEST_ASSERT_FALSE_MESSAGE(source.empty(), expected.path);
-
-        int argCalls = 0;
-        const std::string needle = "server.arg(\"plain\")";
-        for (size_t at = source.find(needle); at != std::string::npos; at = source.find(needle, at + 1)) {
-            ++argCalls;
+// Explicit span length must control parsing even when the buffer contains more bytes.
+void test_post_handlers_consume_exact_body_span_without_arg_copies() {
+    const std::string save = "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}";
+    const std::string erase = "{\"name\":\"RoadTrip\"}";
+    for (const bool deleting : {false, true}) {
+        const std::string& valid = deleting ? erase : save;
+        for (const std::string suffix : {std::string("junk"), std::string("\0hidden", 7)}) {
+            const std::string bytes = valid + suffix;
+            for (const bool includeSuffix : {false, true}) {
+                WebServer server(80);
+                FakeRuntime rt;
+                server.setArg("plain", "must not be read");
+                const size_t size = includeSuffix ? bytes.size() : valid.size();
+                const auto* body = reinterpret_cast<const uint8_t*>(bytes.data());
+                if (deleting) {
+                    WifiV1ProfileApiService::handleApiProfileDeleteBody(
+                        server, makeRuntime(rt), body, size, alwaysAllow, nullptr);
+                } else {
+                    WifiV1ProfileApiService::handleApiProfileSaveBody(
+                        server, makeRuntime(rt), body, size, alwaysAllow, nullptr);
+                }
+                TEST_ASSERT_EQUAL_INT(includeSuffix ? 400 : 200, server.lastStatusCode);
+                TEST_ASSERT_EQUAL_INT(!includeSuffix && !deleting ? 1 : 0, rt.saveCalls);
+                TEST_ASSERT_EQUAL_INT(!includeSuffix && deleting ? 1 : 0, rt.deleteCalls);
+                TEST_ASSERT_EQUAL_INT(includeSuffix ? 0 : 1, rt.backupCalls);
+            }
         }
-        TEST_ASSERT_EQUAL_INT_MESSAGE(expected.maxArgCalls, argCalls, expected.path);
-
-        // Require a named binding rather than repeated inline temporaries.
-        TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos,
-                                      source.find("const String body = server.arg(\"plain\")"),
-                                      expected.path);
     }
 }
 
@@ -748,8 +777,10 @@ void test_in_the_box_http_save_forwards_policy_and_preserves_omitted_legacy_meta
     String body;
     serializeJson(request, body);
     WebServer server(80);
-    server.setArg("plain", body);
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(runtime), alwaysAllow, nullptr);
+
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(runtime),
+        reinterpret_cast<const uint8_t*>(body.c_str()), body.length(), alwaysAllow, nullptr);
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(policy, runtime.savedInTheBox));
     runtime.existingProfileJson = body;
@@ -758,15 +789,19 @@ void test_in_the_box_http_save_forwards_policy_and_preserves_omitted_legacy_meta
     request.remove("inTheBox");
     body = "";
     serializeJson(request, body);
-    server.setArg("plain", body);
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(runtime), alwaysAllow, nullptr);
+
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(runtime),
+        reinterpret_cast<const uint8_t*>(body.c_str()), body.length(), alwaysAllow, nullptr);
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(policy, runtime.savedInTheBox));
     request["schemaVersion"] = 4;
     body = "";
     serializeJson(request, body);
-    server.setArg("plain", body);
-    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(runtime), alwaysAllow, nullptr);
+
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, makeRuntime(runtime),
+        reinterpret_cast<const uint8_t*>(body.c_str()), body.length(), alwaysAllow, nullptr);
     TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(2, runtime.saveCalls);
 }
@@ -956,7 +991,7 @@ int main() {
     RUN_TEST(test_current_endpoint_reports_storage_unavailable_instead_of_not_captured);
     RUN_TEST(test_profile_get_uses_exact_query_bytes_and_decodes_one_name);
     RUN_TEST(test_profile_get_rejects_duplicate_unknown_or_truncated_query_before_lookup);
-    RUN_TEST(test_post_handlers_bind_the_request_body_exactly_once_per_handler);
+    RUN_TEST(test_post_handlers_consume_exact_body_span_without_arg_copies);
     RUN_TEST(test_body_caps_are_backstopped_by_socket_preflight_before_framework_parser);
     return UNITY_END();
 }

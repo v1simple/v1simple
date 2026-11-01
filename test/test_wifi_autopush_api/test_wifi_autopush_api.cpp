@@ -116,12 +116,6 @@ bool contains(const String& body, const char* text) {
     return body.indexOf(text) >= 0;
 }
 
-void setRequiredSlotArgs(WebServer& server) {
-    server.setArg("slot", "0");
-    server.setArg("profile", "ROAD");
-    server.setArg("mode", "2");
-}
-
 } // namespace
 
 void setUp() {}
@@ -142,10 +136,11 @@ void test_slots_api_uses_explicit_volume_contract_and_never_emits_255() {
 void test_slot_save_rejects_one_sided_volume_pair() {
     WebServer server(80);
     FakeRuntime fake;
-    setRequiredSlotArgs(server);
-    server.setArg("volume", "7");
+    String body = "slot=0&profile=ROAD&mode=2&volume=7";
 
-    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+        body.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
@@ -154,10 +149,11 @@ void test_slot_save_rejects_one_sided_volume_pair() {
 void test_slot_save_can_explicitly_disable_volume_pair() {
     WebServer server(80);
     FakeRuntime fake;
-    setRequiredSlotArgs(server);
-    server.setArg("volumeConfigured", "false");
+    String body = "slot=0&profile=ROAD&mode=2&volumeConfigured=false";
 
-    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+        body.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, fake.updateCalls);
@@ -177,7 +173,7 @@ void test_status_api_preserves_terminal_result() {
     fake.operation.kind = V1SettingsOperationStore::Kind::ApplyProfile;
     fake.operation.state = V1SettingsOperationStore::State::Partial;
     fake.operation.reason = V1SettingsOperationStore::Reason::ApplyPartial;
-    WifiAutoPushApiService::handleApiStatus(server, makeOperationRuntime(fake));
+    WifiAutoPushApiService::handleApiStatusQuery(server, makeOperationRuntime(fake), nullptr, 0);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_TRUE(contains(server.lastBody, "\"state\":\"partial\""));
@@ -306,14 +302,11 @@ void test_profile_owned_slot_save_accepts_only_assignment_and_slot_overlays() {
     WebServer server(80);
     FakeRuntime fake;
     fake.profileOwned = true;
-    server.setArg("slot", "0");
-    server.setArg("profile", "ROAD");
-    server.setArg("name", "COMMUTE");
-    server.setArg("color", "1234");
-    server.setArg("alertPersist", "4");
-    server.setArg("priorityArrowOnly", "true");
+    String body = "slot=0&profile=ROAD&name=COMMUTE&color=1234&alertPersist=4&priorityArrowOnly=true";
 
-    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+        body.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, fake.updateCalls);
@@ -334,15 +327,11 @@ void test_profile_owned_slot_save_accepts_explicit_volume_and_dark_modifiers() {
     WebServer server(80);
     FakeRuntime fake;
     fake.profileOwned = true;
-    server.setArg("slot", "0");
-    server.setArg("profile", "ROAD");
-    server.setArg("volumeConfigured", "true");
-    server.setArg("volume", "8");
-    server.setArg("muteVol", "2");
-    server.setArg("darkModeConfigured", "true");
-    server.setArg("darkMode", "true");
+    String body = "slot=0&profile=ROAD&volumeConfigured=true&volume=8&muteVol=2&darkModeConfigured=true&darkMode=true";
 
-    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+        body.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, fake.updateCalls);
@@ -361,15 +350,17 @@ void test_profile_owned_slot_save_rejects_volume_override_without_profile_policy
         FakeRuntime fake;
         fake.profileOwned = true;
         fake.profileHasVolumePolicy = false;
-        server.setArg("slot", overrideAlreadyEnabled ? "1" : "0");
-        server.setArg("profile", "ROAD");
+        String body = String("slot=") + (overrideAlreadyEnabled ? "1" : "0");
+        body += "&profile=ROAD";
         if (!overrideAlreadyEnabled) {
-            server.setArg("volumeConfigured", "true");
-            server.setArg("volume", "8");
-            server.setArg("muteVol", "2");
+            body += "&volumeConfigured=true";
+            body += "&volume=8";
+            body += "&muteVol=2";
         }
 
-        WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+        WifiAutoPushApiService::handleApiSlotSaveBody(
+            server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+            body.length(), alwaysAllow, nullptr);
 
         TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
         TEST_ASSERT_TRUE(contains(server.lastBody, "Volume override requires"));
@@ -382,10 +373,11 @@ void test_profile_owned_slot_save_rejects_incomplete_modifiers_without_mutation(
         WebServer server(80);
         FakeRuntime fake;
         fake.profileOwned = true;
-        server.setArg("slot", "0");
-        server.setArg("profile", "ROAD");
-        server.setArg(field, "true");
-        WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+        String body = "slot=0&profile=ROAD";
+        body += String("&") + field + "=true";
+        WifiAutoPushApiService::handleApiSlotSaveBody(
+            server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+            body.length(), alwaysAllow, nullptr);
         TEST_ASSERT_EQUAL_INT_MESSAGE(400, server.lastStatusCode, field);
         TEST_ASSERT_EQUAL_INT_MESSAGE(0, fake.updateCalls, field);
     }
@@ -395,11 +387,10 @@ void test_profile_owned_slot_save_clears_disabled_modifiers() {
     WebServer server(80);
     FakeRuntime fake;
     fake.profileOwned = true;
-    server.setArg("slot", "0");
-    server.setArg("profile", "ROAD");
-    server.setArg("volumeConfigured", "false");
-    server.setArg("darkModeConfigured", "false");
-    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+    String body = "slot=0&profile=ROAD&volumeConfigured=false&darkModeConfigured=false";
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+        body.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_TRUE(fake.update.hasVolume);
@@ -417,27 +408,27 @@ void test_slot_save_rejects_non_roundtrippable_display_name_without_mutation() {
         WebServer server(80);
         FakeRuntime fake;
         fake.profileOwned = true;
-        server.setArg("slot", "0");
-        server.setArg("profile", "ROAD");
+        String body = "slot=0&profile=ROAD";
         String invalid("BAD");
         invalid += static_cast<char>(byte);
-        server.setArg("name", invalid);
+        body += String("&name=") + invalid;
 
-        WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+        WifiAutoPushApiService::handleApiSlotSaveBody(
+            server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+            body.length(), alwaysAllow, nullptr);
 
         TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
         TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
-        TEST_ASSERT_TRUE(contains(server.lastBody, "Invalid slot name"));
+        TEST_ASSERT_TRUE(contains(server.lastBody, "Invalid form body"));
     }
 
     WebServer lowercaseServer(80);
     FakeRuntime lowercaseFake;
     lowercaseFake.profileOwned = true;
-    lowercaseServer.setArg("slot", "0");
-    lowercaseServer.setArg("profile", "ROAD");
-    lowercaseServer.setArg("name", "Commute");
-    WifiAutoPushApiService::handleApiSlotSave(
-        lowercaseServer, makeRuntime(lowercaseFake), alwaysAllow, nullptr);
+    String lowercaseBody = "slot=0&profile=ROAD&name=Commute";
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        lowercaseServer, makeRuntime(lowercaseFake), reinterpret_cast<const uint8_t*>(lowercaseBody.c_str()),
+        lowercaseBody.length(), alwaysAllow, nullptr);
     TEST_ASSERT_EQUAL_INT(400, lowercaseServer.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(0, lowercaseFake.updateCalls);
 }
@@ -450,15 +441,18 @@ void test_profile_owned_slot_save_rejects_detector_overrides_atomically() {
         WebServer server(80);
         FakeRuntime fake;
         fake.profileOwned = true;
-        server.setArg("slot", "0");
-        server.setArg("profile", "ROAD");
-        server.setArg(field, "1");
+        String body = "slot=0&profile=ROAD";
+        body += String("&") + field + "=1";
 
-        WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+        WifiAutoPushApiService::handleApiSlotSaveBody(
+            server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+            body.length(), alwaysAllow, nullptr);
 
         TEST_ASSERT_EQUAL_INT_MESSAGE(400, server.lastStatusCode, field);
         TEST_ASSERT_EQUAL_INT_MESSAGE(0, fake.updateCalls, field);
-        TEST_ASSERT_TRUE(contains(server.lastBody, "belong to the selected profile"));
+        TEST_ASSERT_TRUE(contains(server.lastBody,
+            std::strcmp(field, "mode") == 0 || std::strcmp(field, "muteToZero") == 0
+                ? "belong to the selected profile" : "Invalid form body"));
     }
 }
 
@@ -466,9 +460,11 @@ void test_slot_save_rejects_nonexistent_profile_without_mutating_settings() {
     WebServer server(80);
     FakeRuntime fake;
     fake.profileStatus = WifiAutoPushApiService::ProfileAssignmentStatus::NotFound;
-    setRequiredSlotArgs(server);
+    String body = "slot=0&profile=ROAD&mode=2";
 
-    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+        body.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
@@ -479,9 +475,11 @@ void test_slot_save_reports_busy_for_temporarily_unreadable_profile() {
     WebServer server(80);
     FakeRuntime fake;
     fake.profileStatus = WifiAutoPushApiService::ProfileAssignmentStatus::Busy;
-    setRequiredSlotArgs(server);
+    String body = "slot=0&profile=ROAD&mode=2";
 
-    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+        body.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
@@ -490,15 +488,19 @@ void test_slot_save_reports_busy_for_temporarily_unreadable_profile() {
 void test_slot_save_requires_persistence_but_accepts_noop_success() {
     WebServer server(80);
     FakeRuntime fake;
-    setRequiredSlotArgs(server);
+    String body = "slot=0&profile=ROAD&mode=2";
     fake.persistResult = false;
-    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+        body.length(), alwaysAllow, nullptr);
     TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
 
     WebServer noopServer(80);
-    setRequiredSlotArgs(noopServer);
+    String noopBody = "slot=0&profile=ROAD&mode=2";
     fake.persistResult = true; // runtime defines this as durable success, changed or no-op
-    WifiAutoPushApiService::handleApiSlotSave(noopServer, makeRuntime(fake), alwaysAllow, nullptr);
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        noopServer, makeRuntime(fake), reinterpret_cast<const uint8_t*>(noopBody.c_str()),
+        noopBody.length(), alwaysAllow, nullptr);
     TEST_ASSERT_EQUAL_INT(200, noopServer.lastStatusCode);
 }
 
@@ -506,10 +508,11 @@ void test_activate_reports_persistence_failure_instead_of_success() {
     WebServer server(80);
     FakeRuntime fake;
     fake.persistResult = false;
-    server.setArg("slot", "2");
-    server.setArg("enable", "true");
+    String body = "slot=2&enable=true";
 
-    WifiAutoPushApiService::handleApiActivate(server, makeRuntime(fake), alwaysAllow, nullptr);
+    WifiAutoPushApiService::handleApiActivateBody(
+        server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(body.c_str()),
+        body.length(), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, fake.activationCalls);
@@ -525,16 +528,19 @@ void test_slot_save_and_activation_require_persistence_callbacks() {
     runtime.applyActivation = nullptr;
 
     WebServer slotServer(80);
-    setRequiredSlotArgs(slotServer);
-    WifiAutoPushApiService::handleApiSlotSave(slotServer, runtime, alwaysAllow, nullptr);
+    String slotBody = "slot=0&profile=ROAD&mode=2";
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        slotServer, runtime, reinterpret_cast<const uint8_t*>(slotBody.c_str()),
+        slotBody.length(), alwaysAllow, nullptr);
     TEST_ASSERT_EQUAL_INT(500, slotServer.lastStatusCode);
     TEST_ASSERT_EQUAL_STRING("{\"error\":\"Slot persistence failed\"}", slotServer.lastBody.c_str());
     TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
 
     WebServer activationServer(80);
-    activationServer.setArg("slot", "2");
-    activationServer.setArg("enable", "true");
-    WifiAutoPushApiService::handleApiActivate(activationServer, runtime, alwaysAllow, nullptr);
+    String activationBody = "slot=2&enable=true";
+    WifiAutoPushApiService::handleApiActivateBody(
+        activationServer, runtime, reinterpret_cast<const uint8_t*>(activationBody.c_str()),
+        activationBody.length(), alwaysAllow, nullptr);
     TEST_ASSERT_EQUAL_INT(500, activationServer.lastStatusCode);
     TEST_ASSERT_EQUAL_STRING("{\"success\":false,\"error\":\"settings_persist_failed\"}",
                              activationServer.lastBody.c_str());
@@ -672,8 +678,51 @@ void test_shipped_ui_multipart_slot_and_activation_forms_remain_compatible() {
     TEST_ASSERT_FALSE(activateFake.activation.enable);
 }
 
+void test_slot_clear_requires_explicit_token_and_never_clears_a_nonempty_profile() {
+    struct Case { const char* body; int status; bool clears; };
+    const Case cases[] = {
+        {"slot=0&profile=", 503, false},
+        {"slot=0&profile=&clearProfile=false", 503, false},
+        {"slot=0&profile=&clearProfile=true", 200, true},
+        {"slot=0&profile=ROAD&clearProfile=true", 400, false},
+    };
+    for (const Case& item : cases) {
+        WebServer server(80);
+        FakeRuntime fake;
+        fake.profileOwned = true;
+        WifiAutoPushApiService::handleApiSlotSaveBody(
+            server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(item.body),
+            std::strlen(item.body), alwaysAllow, nullptr);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(item.status, server.lastStatusCode, item.body);
+        TEST_ASSERT_EQUAL_INT(item.clears ? 1 : 0, fake.updateCalls);
+        if (item.clears) {
+            TEST_ASSERT_EQUAL_INT(0, fake.update.slot);
+            TEST_ASSERT_EQUAL_STRING("", fake.update.profile.c_str());
+        }
+    }
+}
+
+void test_exact_slot_and_activation_rate_limit_prevents_mutation() {
+    const char slotBody[] = "slot=0&profile=ROAD&mode=2";
+    const char activationBody[] = "slot=0&enable=true";
+    WebServer server(80);
+    FakeRuntime fake;
+    const auto deny = [](void*) { return false; };
+    WifiAutoPushApiService::handleApiSlotSaveBody(
+        server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(slotBody),
+        sizeof(slotBody) - 1u, deny, nullptr);
+    WifiAutoPushApiService::handleApiActivateBody(
+        server, makeRuntime(fake), reinterpret_cast<const uint8_t*>(activationBody),
+        sizeof(activationBody) - 1u, deny, nullptr);
+    TEST_ASSERT_EQUAL_INT(0, server.sendCount);
+    TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
+    TEST_ASSERT_EQUAL_INT(0, fake.activationCalls);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_slot_clear_requires_explicit_token_and_never_clears_a_nonempty_profile);
+    RUN_TEST(test_exact_slot_and_activation_rate_limit_prevents_mutation);
     RUN_TEST(test_slots_api_uses_explicit_volume_contract_and_never_emits_255);
     RUN_TEST(test_slot_save_rejects_one_sided_volume_pair);
     RUN_TEST(test_slot_save_can_explicitly_disable_volume_pair);

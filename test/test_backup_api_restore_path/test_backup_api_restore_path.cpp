@@ -151,18 +151,48 @@ void test_backup_legacy_include_passwords_query_still_returns_sanitized_cached_e
 }
 
 void test_restore_missing_body_returns_400_without_apply_or_sync() {
+    for (const size_t size : {size_t{0}, size_t{1}}) {
+        WebServer server(80);
+        FakeRuntime runtime;
+        BackupApiService::handleApiRestoreBody(
+            server, makeRuntime(runtime), nullptr, size, nullptr, nullptr, nullptr, nullptr);
+
+        TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+        TEST_ASSERT_TRUE(responseContains(server, size == 0 ? "Invalid JSON" : "No JSON body provided"));
+        TEST_ASSERT_EQUAL_INT(0, runtime.applyBackupCalls);
+        TEST_ASSERT_EQUAL_INT(0, runtime.syncAfterRestoreCalls);
+    }
+}
+
+void test_restore_exact_span_rejects_nul_and_suffix_without_mutation() {
+    const std::string valid = "{\"_type\":\"v1simple_backup\",\"brightness\":77}";
+    for (const std::string suffix : {std::string("junk"), std::string("\0hidden", 7)}) {
+        const std::string bytes = valid + suffix;
+        for (const bool includeSuffix : {false, true}) {
+            WebServer server(80);
+            FakeRuntime runtime;
+            server.setArg("plain", "must not be read");
+            BackupApiService::handleApiRestoreBody(
+                server, makeRuntime(runtime), reinterpret_cast<const uint8_t*>(bytes.data()),
+                includeSuffix ? bytes.size() : valid.size(), nullptr, nullptr, nullptr, nullptr);
+            TEST_ASSERT_EQUAL_INT(includeSuffix ? 400 : 200, server.lastStatusCode);
+            TEST_ASSERT_EQUAL_INT(includeSuffix ? 0 : 1, runtime.applyBackupCalls);
+            TEST_ASSERT_EQUAL_INT(includeSuffix ? 0 : 1, runtime.syncAfterRestoreCalls);
+        }
+    }
+}
+
+void test_restore_rate_limit_rejects_before_ui_activity_or_mutation() {
     WebServer server(80);
     FakeRuntime runtime;
-
-    BackupApiService::handleApiRestore(server,
-                                       makeRuntime(runtime),
-                                       nullptr,
-                                       nullptr,
-                                       nullptr,
-                                       nullptr);
-
-    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
-    TEST_ASSERT_TRUE(responseContains(server, "No JSON body provided"));
+    const char body[] = "{\"_type\":\"v1simple_backup\",\"brightness\":77}";
+    int activityCalls = 0;
+    BackupApiService::handleApiRestoreBody(
+        server, makeRuntime(runtime), reinterpret_cast<const uint8_t*>(body), sizeof(body) - 1u,
+        [](void*) { return false; }, nullptr,
+        [](void* ctx) { ++*static_cast<int*>(ctx); }, &activityCalls);
+    TEST_ASSERT_EQUAL_INT(0, server.sendCount);
+    TEST_ASSERT_EQUAL_INT(0, activityCalls);
     TEST_ASSERT_EQUAL_INT(0, runtime.applyBackupCalls);
     TEST_ASSERT_EQUAL_INT(0, runtime.syncAfterRestoreCalls);
 }
@@ -177,14 +207,11 @@ void test_restore_oversize_body_returns_413_without_parse_apply_or_sync() {
     std::string body = "{\"_type\":\"v1simple_backup\",\"pad\":\"";
     body.append(128 * 1024, 'x');
     body += "\"}";
-    server.setArg("plain", String(body.c_str()));
+    const String requestBody = String(body.c_str());
 
-    BackupApiService::handleApiRestore(server,
-                                       makeRuntime(runtime),
-                                       nullptr,
-                                       nullptr,
-                                       nullptr,
-                                       nullptr);
+    BackupApiService::handleApiRestoreBody(
+        server, makeRuntime(runtime),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), nullptr, nullptr, nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(413, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "Body too large"));
@@ -218,14 +245,11 @@ void test_restore_body_exactly_at_cap_still_applies() {
     body += "}";
 
     TEST_ASSERT_EQUAL_UINT32(128u * 1024u, static_cast<uint32_t>(body.size()));
-    server.setArg("plain", String(body.c_str()));
+    const String requestBody = String(body.c_str());
 
-    BackupApiService::handleApiRestore(server,
-                                       makeRuntime(runtime),
-                                       nullptr,
-                                       nullptr,
-                                       nullptr,
-                                       nullptr);
+    BackupApiService::handleApiRestoreBody(
+        server, makeRuntime(runtime),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), nullptr, nullptr, nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, runtime.applyBackupCalls);
@@ -235,14 +259,11 @@ void test_restore_body_exactly_at_cap_still_applies() {
 void test_restore_invalid_json_returns_400_without_apply_or_sync() {
     WebServer server(80);
     FakeRuntime runtime;
-    server.setArg("plain", "{bad");
+    const String requestBody = "{bad";
 
-    BackupApiService::handleApiRestore(server,
-                                       makeRuntime(runtime),
-                                       nullptr,
-                                       nullptr,
-                                       nullptr,
-                                       nullptr);
+    BackupApiService::handleApiRestoreBody(
+        server, makeRuntime(runtime),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), nullptr, nullptr, nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "Invalid JSON"));
@@ -253,14 +274,11 @@ void test_restore_invalid_json_returns_400_without_apply_or_sync() {
 void test_restore_invalid_backup_type_returns_400_without_apply_or_sync() {
     WebServer server(80);
     FakeRuntime runtime;
-    server.setArg("plain", "{\"_type\":\"unsupported\",\"brightness\":77}");
+    const String requestBody = "{\"_type\":\"unsupported\",\"brightness\":77}";
 
-    BackupApiService::handleApiRestore(server,
-                                       makeRuntime(runtime),
-                                       nullptr,
-                                       nullptr,
-                                       nullptr,
-                                       nullptr);
+    BackupApiService::handleApiRestoreBody(
+        server, makeRuntime(runtime),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), nullptr, nullptr, nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "Invalid backup format"));
@@ -271,9 +289,11 @@ void test_restore_invalid_backup_type_returns_400_without_apply_or_sync() {
 void test_restore_crc_mismatch_returns_400_without_delegating_apply() {
     WebServer server(80);
     FakeRuntime runtime;
-    server.setArg("plain", "{\"_type\":\"v1simple_backup\",\"_crc32\":1,\"brightness\":77}");
+    const String requestBody = "{\"_type\":\"v1simple_backup\",\"_crc32\":1,\"brightness\":77}";
 
-    BackupApiService::handleApiRestore(server, makeRuntime(runtime), nullptr, nullptr, nullptr, nullptr);
+    BackupApiService::handleApiRestoreBody(
+        server, makeRuntime(runtime),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), nullptr, nullptr, nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "checksum mismatch"));
@@ -299,8 +319,10 @@ void test_restore_present_markers_never_downgrade_to_legacy_absence() {
     for (const char* body : invalidBodies) {
         WebServer server(80);
         FakeRuntime runtime;
-        server.setArg("plain", body);
-        BackupApiService::handleApiRestore(server, makeRuntime(runtime), nullptr, nullptr, nullptr, nullptr);
+        const String requestBody = body;
+        BackupApiService::handleApiRestoreBody(
+            server, makeRuntime(runtime),
+            reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), nullptr, nullptr, nullptr, nullptr);
         TEST_ASSERT_EQUAL_INT_MESSAGE(400, server.lastStatusCode, body);
         TEST_ASSERT_EQUAL_INT_MESSAGE(0, runtime.applyBackupCalls, body);
         TEST_ASSERT_EQUAL_INT_MESSAGE(0, runtime.syncAfterRestoreCalls, body);
@@ -311,14 +333,11 @@ void test_restore_apply_failure_returns_500_and_skips_sync() {
     WebServer server(80);
     FakeRuntime runtime;
     runtime.applyBackupReturn = false;
-    server.setArg("plain", "{\"_type\":\"v1simple_backup\",\"brightness\":77}");
+    const String requestBody = "{\"_type\":\"v1simple_backup\",\"brightness\":77}";
 
-    BackupApiService::handleApiRestore(server,
-                                       makeRuntime(runtime),
-                                       nullptr,
-                                       nullptr,
-                                       nullptr,
-                                       nullptr);
+    BackupApiService::handleApiRestoreBody(
+        server, makeRuntime(runtime),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), nullptr, nullptr, nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "Failed to persist restored settings"));
@@ -332,14 +351,11 @@ void test_restore_success_syncs_runtime_and_reports_profiles_restored() {
     WebServer server(80);
     FakeRuntime runtime;
     runtime.profilesRestored = 2;
-    server.setArg("plain", "{\"_type\":\"v1simple_backup\",\"brightness\":77}");
+    const String requestBody = "{\"_type\":\"v1simple_backup\",\"brightness\":77}";
 
-    BackupApiService::handleApiRestore(server,
-                                       makeRuntime(runtime),
-                                       nullptr,
-                                       nullptr,
-                                       nullptr,
-                                       nullptr);
+    BackupApiService::handleApiRestoreBody(
+        server, makeRuntime(runtime),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), nullptr, nullptr, nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_TRUE(responseContains(server, "\"success\":true"));
@@ -353,19 +369,14 @@ void test_restore_success_syncs_runtime_and_reports_profiles_restored() {
 void test_restore_success_uses_psram_only_json_allocator() {
     WebServer server(80);
     FakeRuntime runtime;
-    server.setArg(
-        "plain",
-        "{\"_type\":\"v1simple_backup\",\"profiles\":["
+    const String requestBody = "{\"_type\":\"v1simple_backup\",\"profiles\":["
         "{\"name\":\"A\",\"settings\":{\"byte0\":1}},"
-        "{\"name\":\"B\",\"settings\":{\"byte0\":2}}]}");
+        "{\"name\":\"B\",\"settings\":{\"byte0\":2}}]}";
 
     mock_reset_heap_caps_tracking();
-    BackupApiService::handleApiRestore(server,
-                                       makeRuntime(runtime),
-                                       nullptr,
-                                       nullptr,
-                                       nullptr,
-                                       nullptr);
+    BackupApiService::handleApiRestoreBody(
+        server, makeRuntime(runtime),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), nullptr, nullptr, nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, runtime.applyBackupCalls);
@@ -377,15 +388,12 @@ void test_restore_success_uses_psram_only_json_allocator() {
 void test_restore_psram_exhaustion_returns_503_without_apply_or_sync() {
     WebServer server(80);
     FakeRuntime runtime;
-    server.setArg("plain", "{\"_type\":\"v1simple_backup\",\"brightness\":77}");
+    const String requestBody = "{\"_type\":\"v1simple_backup\",\"brightness\":77}";
 
     g_mock_heap_caps_fail_all_allocations = true;
-    BackupApiService::handleApiRestore(server,
-                                       makeRuntime(runtime),
-                                       nullptr,
-                                       nullptr,
-                                       nullptr,
-                                       nullptr);
+    BackupApiService::handleApiRestoreBody(
+        server, makeRuntime(runtime),
+        reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), nullptr, nullptr, nullptr, nullptr);
     g_mock_heap_caps_fail_all_allocations = false;
 
     TEST_ASSERT_EQUAL_INT(503, server.lastStatusCode);
@@ -443,6 +451,8 @@ int main() {
     RUN_TEST(test_backup_default_uses_cached_snapshot_without_passwords);
     RUN_TEST(test_backup_legacy_include_passwords_query_still_returns_sanitized_cached_export);
     RUN_TEST(test_restore_missing_body_returns_400_without_apply_or_sync);
+    RUN_TEST(test_restore_exact_span_rejects_nul_and_suffix_without_mutation);
+    RUN_TEST(test_restore_rate_limit_rejects_before_ui_activity_or_mutation);
     RUN_TEST(test_restore_oversize_body_returns_413_without_parse_apply_or_sync);
     RUN_TEST(test_restore_body_exactly_at_cap_still_applies);
     RUN_TEST(test_restore_invalid_json_returns_400_without_apply_or_sync);

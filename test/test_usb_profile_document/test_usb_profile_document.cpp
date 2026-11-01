@@ -1098,8 +1098,10 @@ void test_http_profile_metadata_round_trips_storage_usb_and_backup_without_trunc
         appendV1DetectorConfiguration(request["detector"].to<JsonObject>(), detector);
         request["settings"]["xBand"] = true;
         WebServer server(80);
-        server.setArg("plain", jsonText(request));
-        WifiV1ProfileApiService::handleApiProfileSave(server, runtime, nullptr, nullptr);
+        const String requestBody = jsonText(request);
+        WifiV1ProfileApiService::handleApiProfileSaveBody(
+            server, runtime,
+            reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), nullptr, nullptr);
         TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
         reboot();
         V1Profile stored;

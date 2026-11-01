@@ -197,17 +197,6 @@ static void handleRestoreBody(WebServer& server, const BackupRuntime& runtime, c
     server.send(200, "application/json", response);
 }
 
-void handleApiRestore(WebServer& server, const BackupRuntime& runtime, bool (*checkRateLimit)(void* ctx),
-                      void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"success\":false,\"error\":\"No JSON body provided\"}");
-        return;
-    }
-    const String body = server.arg("plain");
-    handleApiRestoreBody(server, runtime, reinterpret_cast<const uint8_t*>(body.c_str()), body.length(),
-                         checkRateLimit, rateLimitCtx, markUiActivity, uiActivityCtx);
-}
-
 void handleApiRestoreBody(WebServer& server, const BackupRuntime& runtime, const uint8_t* body,
                           const size_t bodySize, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
                           void (*markUiActivity)(void* ctx), void* uiActivityCtx) {

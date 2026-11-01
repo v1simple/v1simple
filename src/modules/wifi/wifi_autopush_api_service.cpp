@@ -20,39 +20,14 @@ namespace WifiAutoPushApiService {
 
 namespace {
 
-struct WebServerForm {
-    WebServer& server;
-    bool has(const char* key) const { return server.hasArg(key); }
-    bool read(const char* key, String& value, bool allowEmpty = false) const {
-        if (!server.hasArg(key)) return false;
-        const String& parsed = server.arg(key);
-        value = parsed;
-        if (value.length() != parsed.length() ||
-            (value.length() != 0 && std::memcmp(value.c_str(), parsed.c_str(), value.length()) != 0)) return false;
-        if ((!allowEmpty && value.length() == 0) ||
-            !ExactJsonInput::validSemanticString(value.c_str(), value.length())) return false;
-        return true;
-    }
-};
-
-struct ExactBodyForm {
-    const ExactUrlEncodedForm& form;
-    bool has(const char* key) const { return form.has(key); }
-    bool read(const char* key, String& value, bool allowEmpty = false) const {
-        return form.read(key, value, allowEmpty);
-    }
-};
-
-template <typename Form>
-bool readPresentArg(const Form& form, const char* key, String& value, bool allowEmpty = false) {
+bool readPresentArg(const ExactUrlEncodedForm& form, const char* key, String& value, bool allowEmpty = false) {
     if (!form.has(key) || !form.read(key, value, allowEmpty)) return false;
     if ((!allowEmpty && value.length() == 0) ||
         !ExactJsonInput::validSemanticString(value.c_str(), value.length())) return false;
     return true;
 }
 
-template <typename Form>
-bool parseIntArg(const Form& form, const char* key, int& value, bool required = false) {
+bool parseIntArg(const ExactUrlEncodedForm& form, const char* key, int& value, bool required = false) {
     if (!form.has(key)) return !required;
     String raw;
     if (!readPresentArg(form, key, raw)) return false;
@@ -64,8 +39,7 @@ bool parseIntArg(const Form& form, const char* key, int& value, bool required = 
     return true;
 }
 
-template <typename Form>
-bool parseBoolArg(const Form& form, const char* key, bool& value, bool required = false) {
+bool parseBoolArg(const ExactUrlEncodedForm& form, const char* key, bool& value, bool required = false) {
     if (!form.has(key)) return !required;
     String raw;
     if (!readPresentArg(form, key, raw)) return false;
@@ -75,8 +49,7 @@ bool parseBoolArg(const Form& form, const char* key, bool& value, bool required 
     return true;
 }
 
-template <typename Form>
-bool parseUint32Arg(const Form& form, const char* key, uint32_t& value, bool required = false) {
+bool parseUint32Arg(const ExactUrlEncodedForm& form, const char* key, uint32_t& value, bool required = false) {
     if (!form.has(key)) return !required;
     String raw;
     if (!readPresentArg(form, key, raw)) return false;
@@ -263,10 +236,6 @@ void handleApiSlots(WebServer& server, const Runtime& runtime) {
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiStatus(WebServer& server, const Runtime& runtime) {
-    handleApiStatusQuery(server, runtime, nullptr, 0);
-}
-
 void handleApiStatusQuery(WebServer& server, const Runtime& runtime,
                           const uint8_t* query, size_t querySize) {
     uint32_t requestedOperationId = 0;
@@ -403,8 +372,7 @@ void handleApiFactoryResetBody(WebServer& server, const Runtime& runtime,
     sendStartedOperation(server, runtime, request);
 }
 
-template <typename Form>
-void handleApiSlotSaveImpl(WebServer& server, const Runtime& runtime, const Form& form,
+void handleApiSlotSaveImpl(WebServer& server, const Runtime& runtime, const ExactUrlEncodedForm& form,
                            bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
     if (checkRateLimit && !checkRateLimit(rateLimitCtx))
         return;
@@ -435,9 +403,8 @@ void handleApiSlotSaveImpl(WebServer& server, const Runtime& runtime, const Form
         return;
     }
     // Empty is a real operation (unassign), so require an explicit companion
-    // token. If WebServer::arg() cannot allocate a non-empty profile value, it
-    // becomes empty; without this token that failure must not be mistaken for
-    // a successful unassignment.
+    // token so a missing profile value cannot be mistaken for a successful
+    // unassignment. Exact form reads already reject failed string copies.
     if (profile.length() == 0 && !clearProfile) {
         server.send(503, "application/json", "{\"error\":\"Profile parameter unavailable\",\"retryable\":true}");
         return;
@@ -612,8 +579,7 @@ void handleApiSlotSaveImpl(WebServer& server, const Runtime& runtime, const Form
     server.send(200, "application/json", "{\"success\":true}");
 }
 
-template <typename Form>
-void handleApiActivateImpl(WebServer& server, const Runtime& runtime, const Form& form,
+void handleApiActivateImpl(WebServer& server, const Runtime& runtime, const ExactUrlEncodedForm& form,
                            bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
     if (checkRateLimit && !checkRateLimit(rateLimitCtx))
         return;
@@ -647,12 +613,6 @@ void handleApiActivateImpl(WebServer& server, const Runtime& runtime, const Form
     server.send(200, "application/json", "{\"success\":true}");
 }
 
-void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                       void* rateLimitCtx) {
-    const WebServerForm form{server};
-    handleApiSlotSaveImpl(server, runtime, form, checkRateLimit, rateLimitCtx);
-}
-
 void handleApiSlotSaveBody(WebServer& server, const Runtime& runtime, const uint8_t* body, size_t bodySize,
                            bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
                            const char* multipartBoundary, size_t multipartBoundarySize) {
@@ -667,14 +627,7 @@ void handleApiSlotSaveBody(WebServer& server, const Runtime& runtime, const uint
         server.send(400, "application/json", "{\"error\":\"Invalid form body\"}");
         return;
     }
-    const ExactBodyForm form{parsed};
-    handleApiSlotSaveImpl(server, runtime, form, checkRateLimit, rateLimitCtx);
-}
-
-void handleApiActivate(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                       void* rateLimitCtx) {
-    const WebServerForm form{server};
-    handleApiActivateImpl(server, runtime, form, checkRateLimit, rateLimitCtx);
+    handleApiSlotSaveImpl(server, runtime, parsed, checkRateLimit, rateLimitCtx);
 }
 
 void handleApiActivateBody(WebServer& server, const Runtime& runtime, const uint8_t* body, size_t bodySize,
@@ -688,8 +641,7 @@ void handleApiActivateBody(WebServer& server, const Runtime& runtime, const uint
         server.send(400, "application/json", "{\"error\":\"Invalid form body\"}");
         return;
     }
-    const ExactBodyForm form{parsed};
-    handleApiActivateImpl(server, runtime, form, checkRateLimit, rateLimitCtx);
+    handleApiActivateImpl(server, runtime, parsed, checkRateLimit, rateLimitCtx);
 }
 
 } // namespace WifiAutoPushApiService

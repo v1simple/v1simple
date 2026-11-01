@@ -5521,8 +5521,9 @@ int restoreHttpBackup(SettingsManager& manager, const JsonDocument& backup) {
     String body;
     serializeJson(backup, body);
     WebServer upload(80);
-    upload.setArg("plain", body);
-    BackupApiService::handleApiRestore(upload, actualBackupRuntime(manager), nullptr, nullptr, nullptr, nullptr);
+    BackupApiService::handleApiRestoreBody(
+        upload, actualBackupRuntime(manager), reinterpret_cast<const uint8_t*>(body.c_str()),
+        body.length(), nullptr, nullptr, nullptr, nullptr);
     return upload.lastStatusCode;
 }
 
@@ -6043,8 +6044,9 @@ void assert_generated_http_backup_round_trip(bool sd) {
 
     SettingsManager target(storage, profiles);
     WebServer upload(80);
-    upload.setArg("plain", download.lastBody);
-    BackupApiService::handleApiRestore(upload, actualBackupRuntime(target), nullptr, nullptr, nullptr, nullptr);
+    BackupApiService::handleApiRestoreBody(
+        upload, actualBackupRuntime(target), reinterpret_cast<const uint8_t*>(download.lastBody.c_str()),
+        download.lastBody.length(), nullptr, nullptr, nullptr, nullptr);
     TEST_ASSERT_EQUAL_INT(200, upload.lastStatusCode);
     TEST_ASSERT_EQUAL_UINT8(61, target.get().brightness);
     SettingsManager rebooted(storage, profiles);
@@ -6499,8 +6501,9 @@ void assertHttpRestoreRejectsWrongProfileCase(bool includesProfiles) {
         String body;
         serializeJson(doc, body);
         WebServer server(80);
-        server.setArg("plain", body);
-        BackupApiService::handleApiRestore(server, actualBackupRuntime(manager), nullptr, nullptr, nullptr, nullptr);
+        BackupApiService::handleApiRestoreBody(
+            server, actualBackupRuntime(manager), reinterpret_cast<const uint8_t*>(body.c_str()),
+            body.length(), nullptr, nullptr, nullptr, nullptr);
         return server.lastStatusCode;
     };
     TEST_ASSERT_EQUAL_INT(200, upload()); // Exact spelling remains a valid restore.

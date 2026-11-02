@@ -64,12 +64,15 @@
 
     async function loadOperatingMode(preserveProxyName = false) {
         modeLoading = true;
+        modeLoaded = false;
         try {
             const [deviceSettings, obdRes] = await Promise.all([
                 refreshDeviceSettings(),
                 fetchJsonWithTimeout('/api/obd/config')
             ]);
-            if (!deviceSettings || !obdRes.ok) {
+            if (!deviceSettings || typeof deviceSettings.proxy_ble !== 'boolean' ||
+                typeof deviceSettings.proxy_name !== 'string' || !obdRes.ok ||
+                typeof obdRes.data?.enabled !== 'boolean') {
                 throw new Error('mode fetch failed');
             }
             const obdSettings = obdRes.data;
@@ -80,6 +83,7 @@
             selectedMode = resolveMode(proxyEnabled, obdEnabled);
             pendingMode = selectedMode;
             modeLoaded = true;
+            if (modeMessage?.text === 'Failed to load operating mode.') modeMessage = null;
         } catch (error) {
             console.error('Failed to load operating mode', error);
             modeMessage = { type: 'error', text: 'Failed to load operating mode.' };
@@ -130,13 +134,13 @@
     }
 
     function selectOperatingMode(mode) {
-        if (modeLoading || modeSaving || pendingMode === mode) return;
+        if (!modeLoaded || modeLoading || modeSaving || pendingMode === mode) return;
         pendingMode = mode;
         modeMessage = null;
     }
 
     async function saveOperatingMode() {
-        if (modeLoading || modeSaving || !modeIsDirty()) return;
+        if (!modeLoaded || modeLoading || modeSaving || !modeIsDirty()) return;
 
         const modeToSave = pendingMode;
         modeSaving = true;
@@ -178,7 +182,7 @@
     }
 
     async function saveProxyName() {
-        if (modeLoading || modeSaving || proxyNameSaving || !proxyName.trim()) return;
+        if (!modeLoaded || modeLoading || modeSaving || proxyNameSaving || !proxyName.trim()) return;
 
         proxyNameSaving = true;
         modeMessage = null;
@@ -331,6 +335,11 @@
                 {/if}
             </div>
 
+            {#if !modeLoaded && !modeLoading}
+                <button class="btn btn-outline self-start" disabled={modeSaving || proxyNameSaving}
+                    onclick={() => loadOperatingMode()}>Retry operating mode</button>
+            {/if}
+
             <div class="grid grid-cols-1 gap-3 lg:grid-cols-3">
                 <button
                     type="button"
@@ -339,7 +348,7 @@
                     class:bg-base-200={pendingMode === 'standalone'}
                     aria-pressed={pendingMode === 'standalone'}
                     onclick={() => selectOperatingMode('standalone')}
-                    disabled={modeLoading || modeSaving}
+                    disabled={!modeLoaded || modeLoading || modeSaving}
                 >
                     <div class="flex items-center justify-between gap-2">
                         <div class="font-semibold">Display only</div>
@@ -367,7 +376,7 @@
                     class:bg-base-200={pendingMode === 'obd'}
                     aria-pressed={pendingMode === 'obd'}
                     onclick={() => selectOperatingMode('obd')}
-                    disabled={modeLoading || modeSaving}
+                    disabled={!modeLoaded || modeLoading || modeSaving}
                 >
                     <div class="flex items-center justify-between gap-2">
                         <div class="font-semibold">OBD</div>
@@ -396,7 +405,7 @@
                     class:bg-base-200={pendingMode === 'proxy'}
                     aria-pressed={pendingMode === 'proxy'}
                     onclick={() => selectOperatingMode('proxy')}
-                    disabled={modeLoading || modeSaving}
+                    disabled={!modeLoaded || modeLoading || modeSaving}
                 >
                     <div class="flex items-center justify-between gap-2">
                         <div class="font-semibold">Proxy / App</div>
@@ -423,7 +432,7 @@
                     type="button"
                     class="btn btn-primary"
                     onclick={saveOperatingMode}
-                    disabled={modeLoading || modeSaving || !modeIsDirty()}
+                    disabled={!modeLoaded || modeLoading || modeSaving || !modeIsDirty()}
                 >
                     {#if modeSaving}
                         <span class="loading loading-sm loading-spinner"></span>
@@ -456,13 +465,13 @@
                         class="input flex-1"
                         bind:value={proxyName}
                         placeholder="V1C-LE-S3"
-                        disabled={modeLoading || modeSaving || proxyNameSaving}
+                        disabled={!modeLoaded || modeLoading || modeSaving || proxyNameSaving}
                     />
                     <button
                         type="button"
                         class="btn btn-outline"
                         onclick={saveProxyName}
-                        disabled={modeLoading || modeSaving || proxyNameSaving || !proxyName.trim()}
+                        disabled={!modeLoaded || modeLoading || modeSaving || proxyNameSaving || !proxyName.trim()}
                     >
                         {#if proxyNameSaving}
                             <span class="loading loading-sm loading-spinner"></span>

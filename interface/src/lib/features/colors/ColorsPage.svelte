@@ -48,7 +48,7 @@
 
     function sectionSummary(id) {
         if (id === 'screen') {
-            return `${Math.max(1, Math.round((colors.brightness / 255) * 100))}% brightness · Quiet screen ${stealthEnabled ? 'on' : 'off'}`;
+            return `${Math.max(1, Math.round((colors.brightness / 255) * 100))}% brightness · Quiet screen ${stealthLoaded ? (stealthEnabled ? 'on' : 'off') : 'unavailable'}`;
         }
         if (id === 'status') {
             const enabled = VISIBILITY_TOGGLES.filter((toggle) => toggle.inverted && !colors[toggle.key]).length;
@@ -71,6 +71,8 @@
     ];
     let barEditor = $state({ mode: 'advanced', bottom: 0x07e0, middle: 0xffe0, top: 0xf800 });
     let stealthEnabled = $state(false);
+    let stealthLoaded = $state(false);
+    let disposed = false;
     let loading = $state(true);
     let colorsLoaded = $state(false);
     let saving = $state(false);
@@ -84,8 +86,9 @@
     let pickerG = $state(0);
     let pickerB = $state(0);
 
-    onMount(async () => {
-        await fetchColors({ detectMode: true });
+    onMount(() => {
+        void fetchColors({ detectMode: true });
+        return () => { disposed = true; };
     });
 
     function stopPropForKey(key) {
@@ -176,17 +179,7 @@
         } catch (_) {
             message = { type: 'error', text: 'Failed to load colors' };
         }
-        if (refreshed) {
-            try {
-                const quietRes = await fetchJsonWithTimeout(QUIET_SETTINGS_ENDPOINT);
-                if (quietRes.ok) {
-                    const quietData = quietRes.data;
-                    stealthEnabled = quietData.stealthEnabled ?? false;
-                }
-            } catch (_) {
-                message = { type: 'error', text: 'Failed to load stealth setting' };
-            }
-        }
+        if (refreshed) await fetchStealthEnabled();
         loading = false;
         return refreshed;
     }
@@ -218,7 +211,7 @@
                 message = { type: 'error', text: 'Failed to save colors' };
                 return;
             }
-            if (await fetchColors({ submitted })) {
+            if (await fetchColors({ submitted }) && message === null) {
                 message = { type: 'success', text: 'Colors saved! Previewing on display...' };
             }
             // Firmware owns the save preview's 5.5s hold and expiration.
@@ -252,7 +245,7 @@
                 message = { type: 'error', text: 'Failed to reset' };
                 return;
             }
-            if (await fetchColors({ submitted })) {
+            if (await fetchColors({ submitted }) && message === null) {
                 message = { type: 'success', text: 'Colors reset to defaults!' };
             }
         } catch (_) {
@@ -266,8 +259,37 @@
         colors[key] = checked;
     }
 
+    async function fetchStealthEnabled() {
+        if (disposed) return false;
+        stealthLoaded = false;
+        try {
+            const res = await fetchJsonWithTimeout(QUIET_SETTINGS_ENDPOINT);
+            if (disposed) return false;
+            if (!res.ok || typeof res.data?.stealthEnabled !== 'boolean') {
+                throw new Error('Quiet screen setting unavailable');
+            }
+            stealthEnabled = res.data.stealthEnabled;
+            stealthLoaded = true;
+            return true;
+        } catch (_) {
+            if (!disposed) message = { type: 'error', text: 'Failed to load quiet screen setting. Retry before changing it.' };
+            return false;
+        }
+    }
+
+    async function retryStealthEnabled() {
+        if (disposed || stealthSaving || saving || loading) return;
+        stealthSaving = true;
+        message = null;
+        try {
+            await fetchStealthEnabled();
+        } finally {
+            stealthSaving = false;
+        }
+    }
+
     async function saveStealthEnabled(checked) {
-        if (stealthSaving || saving || loading) return;
+        if (disposed || stealthSaving || saving || loading || !stealthLoaded) return;
         const previous = stealthEnabled;
         stealthSaving = true;
         stealthEnabled = checked;
@@ -281,17 +303,24 @@
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body
             });
+            if (disposed) return;
             if (!res.ok) {
-                throw new Error('Failed to save stealth setting');
+                stealthEnabled = previous;
+                message = { type: 'error', text: 'Failed to save stealth setting' };
+                return;
             }
             message = { type: 'success', text: 'Stealth setting saved' };
         } catch (_) {
-            stealthEnabled = previous;
-            message = { type: 'error', text: 'Failed to save stealth setting' };
+            // The device may have committed before the response was lost.
+            // Only fresh readback can resolve this state; never repeat the write.
+            if (await fetchStealthEnabled()) {
+                message = { type: 'warning', text: 'Quiet screen response was lost. The current setting has been reloaded.' };
+            }
         } finally {
             stealthSaving = false;
         }
     }
+
 </script>
 
 <div class="page-stack">
@@ -397,9 +426,13 @@
                             title="Quiet screen between alerts"
                             description="Stealth mode shows only OBD speed between alerts (-- when unavailable). Alerts display normally."
                             checked={stealthEnabled}
-                            disabled={saving || stealthSaving}
+                            disabled={saving || stealthSaving || !stealthLoaded}
                             onChange={saveStealthEnabled}
                         />
+                        {#if !stealthLoaded}
+                            <button class="btn btn-outline btn-sm" disabled={saving || stealthSaving}
+                                onclick={retryStealthEnabled}>Retry quiet screen setting</button>
+                        {/if}
                         <p class="copy-caption">Saves immediately. You can also double-press BOOT to toggle this setting.</p>
                     </div>
                 </div>

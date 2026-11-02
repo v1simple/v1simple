@@ -57,6 +57,8 @@
     });
     let savedWifiSlots = $state([]);
     let wifiNetworksLoading = $state(false);
+    let wifiNetworksReadbackRequired = $state(false);
+    const wifiControlsDisabled = $derived(restoring || wifiNetworksReadbackRequired);
     let wifiNetworkActionsInFlight = $state(0);
     const wifiNetworkActionInFlight = $derived(wifiNetworkActionsInFlight > 0);
     let wifiNetworksRunId = 0;
@@ -71,6 +73,8 @@
     let wifiToggleRunId = 0;
     let componentMounted = false;
     let wifiTestRunId = 0;
+    const wifiSavedMutationBusy = $derived(wifiToggleInFlight || wifiNetworkActionInFlight ||
+        wifiOrdering || wifiScan.saving || wifiTestingIndex !== null);
     let SettingsWifiModalComponent = $state(null);
     let wifiModalLoading = $state(false);
     const WIFI_STATUS_ERROR_TEXT = 'Failed to load WiFi status';
@@ -253,9 +257,9 @@
         }
     }
 
-    async function refreshWifiAfterMutation({ includeNetworks = true } = {}) {
+    async function refreshWifiAfterMutation({ includeNetworks = true, afterRestore = false } = {}) {
         const refreshes = [fetchWifiStatus({ forceFresh: true })];
-        if (includeNetworks) refreshes.push(fetchSavedWifiNetworks());
+        if (includeNetworks) refreshes.push(fetchSavedWifiNetworks({ afterRestore }));
         await Promise.all(refreshes);
     }
 
@@ -285,19 +289,37 @@
         wifiNetworksRunId += 1;
     }
 
-    async function fetchSavedWifiNetworks() {
+    function retireSavedWifiNetworks() {
+        wifiNetworksReadbackRequired = true;
+        closeWifiEditor({ force: true });
+        closeWifiModal();
+    }
+
+    function validWifiSlots(slots) {
+        return Array.isArray(slots) && slots.length <= 4 &&
+            slots.every((slot) => slot && Number.isInteger(slot.index) &&
+                slot.index >= 0 && slot.index < 4 && typeof slot.ssid === 'string') &&
+            new Set(slots.map((slot) => slot.index)).size === slots.length;
+    }
+
+    async function retrySavedWifiNetworks() {
+        if (restoring || wifiNetworksLoading || wifiSavedMutationBusy) return;
+        await refreshWifiAfterMutation();
+    }
+
+    async function fetchSavedWifiNetworks({ afterRestore = false } = {}) {
         if (!componentMounted) return;
         const runId = ++wifiNetworksRunId;
         const isCurrent = () => componentMounted && runId === wifiNetworksRunId;
+        const canResolveRestore = !restoring || afterRestore;
         wifiNetworksLoading = true;
         try {
             const res = await fetchJsonWithTimeout('/api/wifi/networks');
             if (!isCurrent()) return;
-            if (res.ok) {
+            if (res.ok && validWifiSlots(res.data?.slots)) {
                 const data = res.data;
-                savedWifiSlots = Array.isArray(data.slots)
-                    ? data.slots.map((slot, index) => normalizeWifiSlot(slot, index))
-                    : [];
+                savedWifiSlots = data.slots.map((slot, index) => normalizeWifiSlot(slot, index));
+                if (canResolveRestore) wifiNetworksReadbackRequired = false;
                 clearMessageText(WIFI_NETWORKS_ERROR_TEXT);
                 return true;
             } else {
@@ -397,6 +419,7 @@
     }
 
     async function startWifiScan(targetIndex = wifiScan.targetIndex) {
+        if (wifiControlsDisabled) return;
         wifiScan = beginWifiScan(wifiScan, targetIndex);
         const runId = wifiScan.runId;
         stopWifiPoll();
@@ -479,6 +502,7 @@
 
     async function saveSelectedScanNetwork() {
         if (
+            wifiControlsDisabled ||
             !wifiScan.selectedNetwork ||
             wifiScan.saving ||
             (wifiScan.selectedNetwork.secure && !wifiScan.password)
@@ -530,6 +554,7 @@
     }
 
     async function disconnectWifi() {
+        if (wifiControlsDisabled) return;
         try {
             const res = await fetchWithTimeout('/api/wifi/disconnect', { method: 'POST' });
             if (!componentMounted) return;
@@ -552,7 +577,7 @@
     }
 
     async function toggleWifiClient(enabled) {
-        if (wifiToggleInFlight) return;
+        if (wifiControlsDisabled || wifiToggleInFlight) return;
 
         const runId = ++wifiToggleRunId;
         let response = null;
@@ -612,6 +637,7 @@
     }
 
     function openWifiEditor(slotIndex = null, seed = {}) {
+        if (wifiControlsDisabled) return;
         wifiEditor = openWifiEditorState(slotIndex, seed, nextWifiPriority());
     }
 
@@ -637,7 +663,7 @@
 
     async function saveWifiEditor() {
         const body = buildWifiEditorRequest(wifiEditor);
-        if (!body || wifiNetworkActionInFlight) return;
+        if (wifiControlsDisabled || !body || wifiNetworkActionInFlight) return;
 
         const submittedDraft = JSON.stringify(wifiEditor);
         wifiNetworkActionsInFlight += 1;
@@ -664,6 +690,7 @@
     }
 
     async function deleteWifiSlot(slot) {
+        if (wifiControlsDisabled) return;
         if (!confirm(`Delete saved WiFi network "${slot.ssid}"?`)) return;
 
         wifiNetworkActionsInFlight += 1;
@@ -689,7 +716,7 @@
     }
 
     async function testWifiSlot(slot) {
-        if (wifiTestingIndex !== null) return;
+        if (wifiControlsDisabled || wifiTestingIndex !== null) return;
 
         const runId = ++wifiTestRunId;
         const deadlineMs = Date.now() + WIFI_TEST_TIMEOUT_MS;
@@ -773,6 +800,7 @@
     }
 
     async function moveWifiSlot(slot, direction) {
+        if (wifiControlsDisabled) return;
         const configured = sortedConfiguredWifiSlots();
         const position = configured.findIndex((candidate) => candidate.index === slot.index);
         const targetPosition = position + direction;
@@ -925,7 +953,7 @@
     }
 
     async function restoreBackup() {
-        if (!componentMounted || restoring || saving) return;
+        if (!componentMounted || restoring || saving || wifiSavedMutationBusy) return;
         if (!restoreFile) {
             message = { type: 'error', text: 'Please select a backup file first' };
             return;
@@ -963,6 +991,12 @@
             settingsLoaded = false;
             restoreReadbackRequired = true;
             invalidateSavedWifiNetworks();
+            // The restore replaces slot identities. Neither old drafts nor a
+            // pre-restore Test/status response may authorize or describe them.
+            retireSavedWifiNetworks();
+            wifiStatusRunId += 1;
+            wifiTestRunId += 1;
+            wifiTestingIndex = null;
             const res = await fetchWithTimeout(
                 '/api/settings/restore',
                 {
@@ -999,9 +1033,10 @@
             if (restoreSubmitted && componentMounted) {
                 const [settingsReloaded] = await Promise.all([
                     fetchSettings({ force: true }),
-                    refreshWifiAfterMutation()
+                    refreshWifiAfterMutation({ afterRestore: true })
                 ]);
-                if (componentMounted && restoreSucceeded && settingsReloaded && message === null) {
+                if (componentMounted && restoreSucceeded && settingsReloaded &&
+                    !wifiNetworksReadbackRequired && message === null) {
                     message = { type: 'success', text: 'Settings restored and reloaded.' };
                 }
             }
@@ -1066,7 +1101,17 @@
             </div>
         </fieldset>
 
-        <div class="surface-card">
+        {#if wifiNetworksReadbackRequired}
+            <div class="surface-note space-y-2" role="status">
+                <p>Saved network controls are read-only until the current networks can be loaded.</p>
+                <button class="btn btn-outline btn-sm" onclick={retrySavedWifiNetworks}
+                    disabled={restoring || wifiNetworksLoading || wifiSavedMutationBusy}>
+                    {wifiNetworksLoading ? 'Loading saved networks…' : 'Retry saved networks'}
+                </button>
+            </div>
+        {/if}
+
+        <fieldset class="surface-card" disabled={wifiControlsDisabled}>
             <div class="card-body space-y-4">
                 <CardSectionHead
                     title="WiFi Client"
@@ -1258,7 +1303,7 @@
                     </div>
                 {/if}
             </div>
-        </div>
+        </fieldset>
 
         {#if wifiScan.open}
             {#if SettingsWifiModalComponent}
@@ -1389,7 +1434,7 @@
                         <button
                             class="btn btn-primary"
                             onclick={saveWifiEditor}
-                            disabled={wifiNetworkActionInFlight || !wifiEditor.ssid}
+                            disabled={wifiControlsDisabled || wifiNetworkActionInFlight || !wifiEditor.ssid}
                         >
                             {#if wifiNetworkActionInFlight}
                                 <span class="loading loading-sm loading-spinner"></span>
@@ -1431,7 +1476,7 @@
             ondownloadBackup={downloadBackup}
             {restoreFile}
             {restoring}
-            restoreDisabled={saving}
+            restoreDisabled={saving || wifiSavedMutationBusy}
             onfileSelect={handleFileSelect}
             onrestoreBackup={restoreBackup}
         />

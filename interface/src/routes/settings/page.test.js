@@ -783,7 +783,7 @@ describe('settings route page', () => {
         } finally { unmount(); }
     });
 
-    it.each(['manual save', 'scan save', 'reorder', 'restore', 'toggle'])(
+    it.each(['manual save', 'scan save', 'reorder', 'toggle'])(
         'protects the saved-network refresh from %s against a stale sibling read',
         async (operation) => {
             const oldRead = createDeferred();
@@ -989,12 +989,17 @@ describe('settings route page', () => {
 
     it.each(wifiStatusMutationPaths.flatMap((operation) =>
         ['success', 'HTTP error', 'transport error'].map((outcome) => [operation, outcome])
-    ))('reconciles %s after %s without reusing a pre-mutation Test status', async (operation, outcome) => {
+    ))('reconciles %s after %s without reusing a pre-mutation status', async (operation, outcome) => {
+        if (operation === 'restore') vi.useFakeTimers();
         const { oldStatus, state } = installWifiStatusMutationFetch(operation, { pendingStatus: true, outcome });
         const { unmount } = render(Page);
         try {
             await screen.findByText(/Connected to HomeWifi • Slot 1/);
-            await fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[0]);
+            if (operation === 'restore') {
+                // A background read can overlap restore; an active Test now
+                // blocks it because Test itself addresses a saved slot index.
+                await vi.advanceTimersByTimeAsync(3000);
+            } else await fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[0]);
             await waitFor(() => expect(state.statusReads).toBe(2));
             await performWifiStatusMutation(operation);
             await waitFor(() => expect(state.committed).toBe(true));
@@ -1023,7 +1028,7 @@ describe('settings route page', () => {
         } finally { unmount(); }
     });
 
-    it.each(wifiStatusMutationPaths)(
+    it.each(wifiStatusMutationPaths.filter((operation) => operation !== 'restore'))(
         'reads status after Test when %s has an older status request pending',
         async (operation) => {
             const testStatus = createDeferred();
@@ -1084,7 +1089,7 @@ describe('settings route page', () => {
         }
     );
 
-    it.each(wifiStatusMutationPaths)(
+    it.each(wifiStatusMutationPaths.filter((operation) => operation !== 'restore'))(
         'finishes Test from current status when %s supersedes its pending reply',
         async (operation) => {
             vi.useFakeTimers();
@@ -1106,9 +1111,7 @@ describe('settings route page', () => {
                 expect(screen.queryByText('Connected to HomeWifi')).not.toBeInTheDocument();
                 await vi.advanceTimersByTimeAsync(1000);
                 await screen.findByText('Could not connect to HomeWifi');
-                if (operation !== 'restore') {
-                    expect(screen.getAllByRole('button', { name: 'Test' }).every((button) => !button.disabled)).toBe(true);
-                }
+                expect(screen.getAllByRole('button', { name: 'Test' }).every((button) => !button.disabled)).toBe(true);
                 expect(state.statusReads).toBe(4);
             } finally { unmount(); }
         }
@@ -1246,14 +1249,14 @@ describe('settings route page', () => {
     );
 
     it.each([0, 1, 24])(
-        'keeps restore status authoritative across enable-confirmation settlement gap %i',
+        'waits for enable confirmation before admitting restore across settlement gap %i',
         async (microtaskGap) => {
             const toggleStatus = createDeferred();
             const oldNetworks = createDeferred();
             const restore = createDeferred();
             let statusReads = 0;
             let networkReads = 0;
-            installDefaultFetch([
+            const fetchMock = installDefaultFetch([
                 { method: 'GET', match: '/api/wifi/status', respond: () => {
                     statusReads += 1;
                     return statusReads === 2 ? toggleStatus.promise
@@ -1273,12 +1276,18 @@ describe('settings route page', () => {
                 await fireEvent.click(toggle);
                 await waitFor(() => expect(statusReads).toBe(2));
                 await startRestore(JSON.stringify({ _type: 'v1simple_backup', _version: 1, wifiClientEnabled: false }));
+                const restoreButton = screen.getByRole('button', { name: /restore from backup/i });
+                expect(restoreButton).toBeDisabled();
+                expect(fetchMock.mock.calls.some(([url]) => url === '/api/settings/restore')).toBe(false);
                 toggleStatus.resolve(jsonResponse({ enabled: true, state: 'connecting', savedSSID: 'HomeWifi' }));
                 await waitFor(() => expect(networkReads).toBe(2));
+                expect(restoreButton).toBeDisabled();
                 oldNetworks.resolve(jsonResponse({ slots: defaultSlots }));
-                // The enable caller awaits its list refresh after reading status.
-                // A restore settling in that gap supersedes its confirmation too.
+                // Restore cannot overtake the older mutation or its readback.
                 for (let i = 0; i < microtaskGap; i += 1) await Promise.resolve();
+                await waitFor(() => expect(restoreButton).toBeEnabled());
+                await fireEvent.click(restoreButton);
+                await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === '/api/settings/restore')).toBe(true));
                 restore.resolve(jsonResponse({ success: true }));
                 await waitFor(() => expect(statusReads).toBe(3));
                 await waitFor(() => expect(networkReads).toBe(3));
@@ -2817,6 +2826,227 @@ describe('settings route page', () => {
         } finally {
             restoreResponse.resolve(jsonResponse({ success: true }));
             settingsResponse.resolve(jsonResponse(current));
+            unmount();
+        }
+    });
+
+    it.each(['pending response', 'failed readback', 'missing slots', 'duplicate indexes', 'invalid index', 'invalid SSID'])(
+        'retires saved-network authority across restore %s and recovers through fresh readback',
+        async (scenario) => {
+            const restoreResponse = createDeferred();
+            const networkResponse = createDeferred();
+            const restoredSlots = defaultSlots.map((slot) => slot.index === 0
+                ? { ...slot, ssid: 'RestoredWifi', label: 'Restored network' } : slot);
+            let restored = false;
+            let retry = false;
+            let reads = 0;
+            const fetchMock = installDefaultFetch([
+                { method: 'POST', match: '/api/settings/restore', respond: () => {
+                    restored = true;
+                    return restoreResponse.promise;
+                } },
+                { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                    reads += 1;
+                    if (!restored) return jsonResponse({ slots: defaultSlots });
+                    if (retry) return jsonResponse({ slots: restoredSlots });
+                    if (scenario === 'pending response') return networkResponse.promise;
+                    if (scenario === 'failed readback') return jsonResponse({ error: 'unavailable' }, 503);
+                    const invalid = {
+                        'missing slots': {},
+                        'duplicate indexes': { slots: [{ index: 0, ssid: 'One' }, { index: 0, ssid: 'Two' }] },
+                        'invalid index': { slots: [{ index: 4, ssid: 'Outside slots' }] },
+                        'invalid SSID': { slots: [{ index: 0 }] }
+                    };
+                    return jsonResponse(invalid[scenario]);
+                } }
+            ]);
+            vi.stubGlobal('confirm', vi.fn(() => true));
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText('Garage');
+                await startRestore(JSON.stringify({ _type: 'v1simple_backup', _version: 1,
+                    wifiClientEnabled: true, wifiStaSlots: [{ index: 0, ssid: 'RestoredWifi',
+                        label: 'Restored network', priority: 0 }] }));
+                await waitFor(() => expect(restored).toBe(true));
+                const controls = [wifiClientToggle(), ...screen.getAllByRole('button', { name: /^(Edit|Delete|Test|Enter manually|Pick from scan)$/ }),
+                    screen.getByRole('button', { name: 'Move PhoneHotspot up' })];
+                for (const control of controls) expect(control).toBeDisabled();
+                for (const control of controls) await fireEvent.click(control);
+                expect(fetchMock.mock.calls.filter(([url, init]) =>
+                    String(url).startsWith('/api/wifi/') && init?.method === 'POST')).toHaveLength(0);
+                expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+                restoreResponse.resolve(jsonResponse({ success: true }));
+                await waitFor(() => expect(reads).toBe(2));
+                if (scenario === 'pending response') {
+                    for (const control of controls) expect(control).toBeDisabled();
+                    networkResponse.resolve(jsonResponse({ slots: restoredSlots }));
+                    await screen.findByText('Settings restored and reloaded.');
+                } else {
+                    await screen.findByText('Failed to load saved WiFi networks');
+                    await waitFor(() => expect(screen.getByRole('button', { name: 'Retry saved networks' })).toBeEnabled());
+                    for (const control of controls) expect(control).toBeDisabled();
+                    expect(screen.getByText(/Saved network controls are read-only/)).toBeInTheDocument();
+                    retry = true;
+                    await fireEvent.click(screen.getByRole('button', { name: 'Retry saved networks' }));
+                }
+                await screen.findByText('Restored network');
+                expect(screen.queryByText('Garage')).not.toBeInTheDocument();
+                const deletes = screen.getAllByRole('button', { name: 'Delete' });
+                await waitFor(() => expect(deletes[0]).toBeEnabled());
+                await fireEvent.click(deletes[0]);
+                expect(confirm).toHaveBeenLastCalledWith('Delete saved WiFi network "RestoredWifi"?');
+                expect(jsonBodies(fetchMock, '/api/wifi/networks/delete')).toEqual([{ index: 0 }]);
+            } finally {
+                restoreResponse.resolve(jsonResponse({ success: true }));
+                networkResponse.resolve(jsonResponse({ slots: restoredSlots }));
+                unmount();
+            }
+        }
+    );
+
+    it.each(['manual save', 'scan save', 'delete', 'reorder', 'test'])(
+        'does not let restore overtake an already submitted WiFi %s', async (operation) => {
+            const pending = createDeferred();
+            const path = {
+                'manual save': '/api/wifi/networks', 'scan save': '/api/wifi/networks',
+                delete: '/api/wifi/networks/delete', reorder: '/api/wifi/networks/priorities',
+                test: '/api/wifi/networks/test'
+            }[operation];
+            const fetchMock = installDefaultFetch([
+                { method: 'POST', match: path, respond: () => pending.promise },
+                { method: 'POST', match: '/api/wifi/scan', respond: jsonResponse({ scanning: false,
+                    networks: [{ ssid: 'Open network', secure: false, rssi: -30 }] }) },
+                { method: 'POST', match: '/api/settings/restore', respond: jsonResponse({ success: true }) }
+            ]);
+            vi.stubGlobal('confirm', vi.fn(() => true));
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText('Garage');
+                await selectRestoreFile(JSON.stringify({ _type: 'v1simple_backup', _version: 1 }));
+                if (operation === 'delete' || operation === 'test') {
+                    await fireEvent.click(screen.getAllByRole('button', { name: operation === 'delete' ? 'Delete' : 'Test' })[0]);
+                } else await performSavedWifiOperation(operation);
+                await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === path && init?.method === 'POST')).toBe(true));
+                const restore = screen.getByRole('button', { name: /restore from backup/i });
+                expect(restore).toBeDisabled();
+                await fireEvent.click(restore);
+                expect(fetchMock.mock.calls.some(([url]) => url === '/api/settings/restore')).toBe(false);
+                pending.resolve(jsonResponse({ success: true }));
+                await waitFor(() => expect(restore).toBeEnabled());
+                await fireEvent.click(restore);
+                await screen.findByText('Settings restored and reloaded.');
+                expect(fetchMock.mock.calls.filter(([url]) => url === '/api/settings/restore')).toHaveLength(1);
+            } finally {
+                pending.resolve(jsonResponse({ success: true }));
+                unmount();
+            }
+        }
+    );
+
+    it.each(['editor', 'scan'])('retires the old WiFi %s draft when restore begins', async (draft) => {
+        const scan = createDeferred();
+        let restored = false;
+        const fetchMock = installDefaultFetch([
+            { method: 'POST', match: '/api/wifi/scan', respond: () => scan.promise },
+            { method: 'POST', match: '/api/settings/restore', respond: () => {
+                restored = true;
+                return jsonResponse({ success: true });
+            } },
+            { method: 'GET', match: '/api/wifi/networks', respond: () => jsonResponse({
+                slots: restored ? [{ ...defaultSlots[0], ssid: 'RestoredWifi', label: 'Restored network' }] : defaultSlots
+            }) }
+        ]);
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText('Garage');
+            await selectRestoreFile(JSON.stringify({ _type: 'v1simple_backup', _version: 1 }));
+            const restore = screen.getByRole('button', { name: /restore from backup/i });
+            if (draft === 'editor') {
+                await fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
+                await fireEvent.input(screen.getByLabelText('SSID'), { target: { value: 'Old draft' } });
+            } else {
+                await fireEvent.click(screen.getAllByRole('button', { name: 'Pick from scan' })[1]);
+                await screen.findByRole('dialog');
+            }
+            // Exercise admission even if an earlier queued click reaches the handler
+            // after a modal opens; native inertness alone is not draft ownership.
+            await fireEvent.click(restore);
+            await screen.findByText('Settings restored and reloaded.');
+            scan.resolve(jsonResponse({ scanning: false, networks: [{ ssid: 'Old scan', secure: false, rssi: -30 }] }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            expect(jsonBodies(fetchMock, '/api/wifi/networks')).toHaveLength(0);
+            await fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+            expect(screen.getByLabelText('SSID')).toHaveValue('RestoredWifi');
+        } finally {
+            scan.resolve(jsonResponse({ scanning: false, networks: [] }));
+            unmount();
+        }
+    });
+
+    it('does not let a startup network read during restore clear required post-restore readback', async () => {
+        const initialStatus = createDeferred();
+        const restore = createDeferred();
+        let statusReads = 0;
+        let networkReads = 0;
+        installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/status', respond: () => ++statusReads === 1
+                ? initialStatus.promise : jsonResponse({ enabled: true, state: 'disconnected' }) },
+            { method: 'GET', match: '/api/wifi/networks', respond: () => ++networkReads === 1
+                ? jsonResponse({ slots: defaultSlots }) : jsonResponse({}, 503) },
+            { method: 'POST', match: '/api/settings/restore', respond: () => restore.promise }
+        ]);
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        try {
+            await screen.findByLabelText('AP Name');
+            await startRestore(JSON.stringify({ _type: 'v1simple_backup', _version: 1 }));
+            initialStatus.resolve(jsonResponse({ enabled: true, state: 'disconnected' }));
+            await waitFor(() => expect(networkReads).toBe(1));
+            restore.resolve(jsonResponse({ success: true }));
+            await screen.findByText('Failed to load saved WiFi networks');
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Retry saved networks' })).toBeEnabled());
+            expect(screen.getAllByRole('button', { name: 'Delete' })[0]).toBeDisabled();
+        } finally {
+            initialStatus.resolve(jsonResponse({ enabled: true, state: 'disconnected' }));
+            restore.resolve(jsonResponse({ success: true }));
+            unmount();
+        }
+    });
+
+    it('does not claim a complete reload when a late startup read supersedes restore readback', async () => {
+        const initialStatus = createDeferred();
+        const restoreNetworks = createDeferred();
+        let statusReads = 0;
+        let networkReads = 0;
+        installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/status', respond: () => ++statusReads === 1
+                ? initialStatus.promise : jsonResponse({ enabled: true, state: 'disconnected' }) },
+            { method: 'GET', match: '/api/wifi/networks', respond: () => ++networkReads === 1
+                ? restoreNetworks.promise : jsonResponse({ slots: defaultSlots }) },
+            { method: 'POST', match: '/api/settings/restore', respond: jsonResponse({ success: true }) }
+        ]);
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        try {
+            await screen.findByLabelText('AP Name');
+            await startRestore(JSON.stringify({ _type: 'v1simple_backup', _version: 1 }));
+            await waitFor(() => expect(networkReads).toBe(1));
+            initialStatus.resolve(jsonResponse({ enabled: true, state: 'disconnected' }));
+            await waitFor(() => expect(networkReads).toBe(2));
+            await screen.findByText('Garage');
+            restoreNetworks.resolve(jsonResponse({ slots: defaultSlots }));
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Retry saved networks' })).toBeEnabled());
+            expect(screen.queryByText('Settings restored and reloaded.')).not.toBeInTheDocument();
+            expect(screen.getAllByRole('button', { name: 'Delete' })[0]).toBeDisabled();
+            await fireEvent.click(screen.getByRole('button', { name: 'Retry saved networks' }));
+            await waitFor(() => expect(screen.getAllByRole('button', { name: 'Delete' })[0]).toBeEnabled());
+            expect(networkReads).toBe(3);
+        } finally {
+            initialStatus.resolve(jsonResponse({ enabled: true, state: 'disconnected' }));
+            restoreNetworks.resolve(jsonResponse({ slots: defaultSlots }));
             unmount();
         }
     });

@@ -141,7 +141,6 @@ inline SettingsNamespaceCleanupPlan buildSettingsNamespaceCleanupPlan(uint32_t u
 String xorObfuscate(const String& input);
 char hexDigit(uint8_t nibble);
 int hexNibble(char c);
-String bytesToHex(const String& input);
 bool hexToBytes(const String& input, String& out);
 String encodeObfuscatedForStorage(const String& plainText);
 bool encodeObfuscatedForStorage(const String& plainText, String& encoded);

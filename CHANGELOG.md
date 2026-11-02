@@ -16,13 +16,19 @@ GitHub Releases retain the complete commit history.
 - Preserved committed profile replacements when a later settings read fails.
 - Rejected profile names that share an SD filename, preserving existing
   profiles and slot assignments when a save or import is refused.
+- Blocked Bluetooth startup after incomplete bond-table reads, preserving the
+  SD bond backup for retry, and corrected empty-table initialization.
+- Rejected queued proxy notifications from retired detector or phone sessions.
+- Kept operating-mode edits disabled until saved settings are read, and
+  reloaded the quiet-screen setting after a lost save response.
 - Corrected GPS detection timing when its start timestamp is zero.
 - Aligned generated factory images with the application partition and kept
   filesystem staging limited to explicit filesystem builds and uploads.
 - Removed unused state, obsolete adapters and duplicate configuration paths
   across firmware, the maintenance interface and replay tools.
-- Verified declared camera capture identities and file hashes before reading
-  replay fields, with explicit handling for older recordings.
+- Verified declared camera capture identities, file hashes and recorded replay
+  expectations before reading replay fields, with explicit handling for older
+  camera recordings.
 
 ## v2.4.1 — 2026-10-16
 

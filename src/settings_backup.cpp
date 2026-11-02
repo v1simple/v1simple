@@ -136,19 +136,6 @@ int hexNibble(char c) {
     return -1;
 }
 
-String bytesToHex(const String& input) {
-    if (input.length() == 0)
-        return "";
-    String out;
-    out.reserve(input.length() * 2);
-    for (size_t i = 0; i < input.length(); ++i) {
-        uint8_t b = static_cast<uint8_t>(input[i]);
-        out += hexDigit(b >> 4);
-        out += hexDigit(b);
-    }
-    return out;
-}
-
 bool hexToBytes(const String& input, String& out) {
     if ((input.length() % 2) != 0)
         return false;
@@ -780,8 +767,6 @@ constexpr uint32_t SETTINGS_DEFERRED_BACKUP_RETRY_BACKOFF_MS = 250;
 struct DeferredSettingsBackupState {
     QueueHandle_t queue = nullptr;
     PsramQueueAllocation queueAllocation = {};
-    bool queueInPsram = false;
-    bool writerTaskStackInPsram = false;
     std::atomic<bool> writerActive{false};
     std::atomic<uint32_t> writerAdmissionsInFlight{0};
     std::atomic<bool> pendingRequest{false};
@@ -978,7 +963,7 @@ bool ensureDeferredBackupWriterReady(StorageManager& storage) {
     if (gDeferredSettingsBackupState.queue == nullptr) {
         gDeferredSettingsBackupState.queue = createQueuePreferPsram(
             SETTINGS_DEFERRED_BACKUP_QUEUE_DEPTH, sizeof(SerializedSettingsBackupPayload),
-            gDeferredSettingsBackupState.queueAllocation, &gDeferredSettingsBackupState.queueInPsram);
+            gDeferredSettingsBackupState.queueAllocation);
         if (gDeferredSettingsBackupState.queue == nullptr) {
             Serial.println("[Settings] ERROR: Failed to create deferred backup queue");
             return false;
@@ -1040,8 +1025,6 @@ void resetDeferredSettingsBackupStateForTest() {
         heap_caps_free(gDeferredSettingsBackupState.queueAllocation.queueBuffer);
         gDeferredSettingsBackupState.queueAllocation.queueBuffer = nullptr;
     }
-    gDeferredSettingsBackupState.queueInPsram = false;
-    gDeferredSettingsBackupState.writerTaskStackInPsram = false;
     gDeferredSettingsBackupState.pendingRequest.store(false, std::memory_order_relaxed);
     gDeferredSettingsBackupState.writerRetryPending.store(false, std::memory_order_relaxed);
     gDeferredSettingsBackupState.shutdownRequested.store(false, std::memory_order_relaxed);

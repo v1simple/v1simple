@@ -1141,7 +1141,7 @@ bool attemptNvsRecovery(const char* activeNs) {
     return recovered;
 }
 
-// xorObfuscate, hexDigit/hexNibble, bytesToHex/hexToBytes,
+// xorObfuscate, hexDigit/hexNibble, hexToBytes,
 // encodeObfuscatedForStorage, decodeObfuscatedFromStorage
 // are defined in settings_backup.cpp.
 

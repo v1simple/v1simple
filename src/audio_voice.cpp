@@ -539,20 +539,7 @@ static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t fr
     }
 
     if (includeDirection) {
-        const char* dirFile = nullptr;
-        switch (direction) {
-        case AlertDirection::AHEAD:
-            dirFile = "dir_ahead.mul";
-            break;
-        case AlertDirection::BEHIND:
-            dirFile = "dir_behind.mul";
-            break;
-        case AlertDirection::SIDE:
-            dirFile = "dir_side.mul";
-            break;
-        case AlertDirection::UNKNOWN:
-            break;
-        }
+        const char* dirFile = getDirectionClipFile(direction);
         if (dirFile) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);
         }
@@ -602,20 +589,7 @@ static AudioPlaybackResult play_direction_only_impl(AlertDirection direction, ui
     SDAudioTaskParams params;
     params.numClips = 0;
 
-    const char* dirFile = nullptr;
-    switch (direction) {
-    case AlertDirection::AHEAD:
-        dirFile = "dir_ahead.mul";
-        break;
-    case AlertDirection::BEHIND:
-        dirFile = "dir_behind.mul";
-        break;
-    case AlertDirection::SIDE:
-        dirFile = "dir_side.mul";
-        break;
-    case AlertDirection::UNKNOWN:
-        break;
-    }
+    const char* dirFile = getDirectionClipFile(direction);
     if (dirFile) {
         snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);
     }
@@ -701,20 +675,7 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/tens_%02d.mul", AUDIO_PATH, lastTwo);
     }
 
-    const char* dirFile = nullptr;
-    switch (direction) {
-    case AlertDirection::AHEAD:
-        dirFile = "dir_ahead.mul";
-        break;
-    case AlertDirection::BEHIND:
-        dirFile = "dir_behind.mul";
-        break;
-    case AlertDirection::SIDE:
-        dirFile = "dir_side.mul";
-        break;
-    case AlertDirection::UNKNOWN:
-        break;
-    }
+    const char* dirFile = getDirectionClipFile(direction);
     if (includeDirection && dirFile) {
         snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);
     }

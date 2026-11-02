@@ -5,15 +5,9 @@ import { fileURLToPath } from 'url';
 import { stageAudioFiles } from './audio-manifest.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const buildDir = join(__dirname, '..', 'build');
 const dataDir = join(__dirname, '..', '..', 'data');
 
 console.log('🚀 Staging audio in the LittleFS data folder...');
-
-if (!existsSync(buildDir)) {
-    console.error('❌ Build folder not found! Run "npm run build" first.');
-    process.exit(1);
-}
 
 if (existsSync(dataDir)) {
     console.log('🧹 Clearing existing data folder...');
@@ -123,6 +117,3 @@ function runLittleFsCapacityGate(rawBytes) {
 }
 
 runLittleFsCapacityGate(totalSize);
-
-console.log('\n💡 Next steps:');
-console.log('   cd .. && ./build.sh --skip-web --upload');

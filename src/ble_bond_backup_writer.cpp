@@ -50,7 +50,6 @@ static_assert(sizeof(BondBackupSnapshot) <= 2048, "bond snapshot outgrew its bou
 struct BondBackupWriterState {
     QueueHandle_t queue = nullptr;
     PsramQueueAllocation queueAllocation = {};
-    bool queueInPsram = false;
     std::atomic<bool> writerActive{false};
     std::atomic<uint32_t> writerAdmissionsInFlight{0};
     std::atomic<bool> shutdownRequested{false};
@@ -300,7 +299,7 @@ bool ensureBondBackupWriterReady() {
     if (!gBondBackupWriterState.queue) {
         gBondBackupWriterState.queue =
             createQueuePreferPsram(kBondBackupQueueDepth, sizeof(BondBackupSnapshot*),
-                                   gBondBackupWriterState.queueAllocation, &gBondBackupWriterState.queueInPsram);
+                                   gBondBackupWriterState.queueAllocation);
         if (!gBondBackupWriterState.queue) {
             Serial.println("[BLE] ERROR: Failed to create bond backup queue");
             return false;
@@ -447,7 +446,6 @@ void resetBleBondBackupWriterForTest() {
         heap_caps_free(gBondBackupWriterState.queueAllocation.queueBuffer);
         gBondBackupWriterState.queueAllocation.queueBuffer = nullptr;
     }
-    gBondBackupWriterState.queueInPsram = false;
     gBondBackupWriterState.shutdownRequested.store(false, std::memory_order_relaxed);
     gBondBackupWriterState.nextSequence.store(0, std::memory_order_relaxed);
     gBondBackupWriterState.lastSuccessfulSequence.store(0, std::memory_order_relaxed);

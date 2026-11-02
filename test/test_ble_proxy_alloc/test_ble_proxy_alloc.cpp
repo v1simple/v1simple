@@ -168,10 +168,26 @@ SendResult V1BLEClient::sendCharacteristicCommand(NimBLERemoteCharacteristic* ch
 }
 void V1BLEClient::cancelCommand(V1CommandOwner) {}
 
+
+#include <functional>
+static std::function<void()> proxyNotificationTakeHook;
+static int takeWithProxyNotificationHook(SemaphoreHandle_t semaphore, TickType_t ticks) {
+    const int result = xSemaphoreTake(semaphore, ticks);
+    if (proxyNotificationTakeHook) {
+        auto hook = std::move(proxyNotificationTakeHook);
+        proxyNotificationTakeHook = nullptr;
+        hook();
+    }
+    return result;
+}
+#define xSemaphoreTake takeWithProxyNotificationHook
+
 #include "../../src/ble_proxy.cpp"
+#undef xSemaphoreTake
 #include "../../src/ble_connection.cpp"
 
 void setUp() {
+    proxyNotificationTakeHook = nullptr;
     mock_reset_heap_caps();
     mock_reset_semaphore_state();
     mock_reset_nimble_state();
@@ -473,7 +489,7 @@ void test_reallocated_queues_reject_callbacks_from_the_previous_epoch() {
     TEST_ASSERT_NOT_EQUAL(staleEpoch, client.proxyQueueEpoch_.load(std::memory_order_acquire));
 
     TEST_ASSERT_FALSE(client.enqueuePhoneCommandForEpoch(packet, sizeof(packet), 0xB2CE, staleEpoch, 1, client.proxyPhoneSessionGeneration_.load()));
-    client.forwardToProxyForEpoch(packet, sizeof(packet), 0xB2CE, staleEpoch);
+    client.forwardToProxyForEpoch(packet, sizeof(packet), 0xB2CE, staleEpoch, 1, client.proxyPhoneSessionGeneration_.load());
     TEST_ASSERT_EQUAL_UINT32(0, client.phone2v1QueueCount_);
     TEST_ASSERT_EQUAL_UINT32(0, client.proxyQueueCount_);
 
@@ -721,6 +737,7 @@ void test_forward_to_proxy_immediate_queues_until_main_loop_send() {
     TEST_ASSERT_TRUE(client.proxyServerInitialized_);
     client.proxyClientConnected_.store(true, std::memory_order_relaxed);
     client.bleNotifyMutex_ = xSemaphoreCreateMutex();
+    admitPhoneCommands(client);
     const uint8_t data[] = {0xAA, 0x55, 0x10, 0x41, 0x00};
 
     client.forwardToProxy(data, sizeof(data), 0xB4E0);
@@ -1119,6 +1136,7 @@ void test_notify_callback_preserves_source_characteristic_for_proxy_forwarding()
     client.acceptClientCallbacks_.store(true, std::memory_order_release);
     client.sessionGeneration_.store(1, std::memory_order_release);
     client.sessionPublicationGate_.open(1);
+    connectProxyPhone(client);
 
     NimBLERemoteCharacteristic shortRemote(V1_DISPLAY_DATA_UUID);
     NimBLERemoteCharacteristic longRemote(V1_DISPLAY_DATA_LONG_UUID);
@@ -1180,8 +1198,174 @@ void test_raw_notify_callback_stamps_and_propagates_ingress_before_downstream_de
                              g_receivedIngressSequence);
 }
 
+// These tests execute production notification ingress, queue and phone/session
+// callbacks. NimBLE transport, locks and scheduling are controlled substitutes.
+struct NotificationSessionFixture {
+    V1BLEClient client;
+    NimBLEClient detector;
+    NimBLERemoteCharacteristic shortInput{V1_DISPLAY_DATA_UUID};
+    NimBLERemoteCharacteristic longInput{V1_DISPLAY_DATA_LONG_UUID};
+    V1BLEClient::ProxyServerCallbacks phoneCallbacks{&client};
+    NimBLEConnInfo phone;
+
+    NotificationSessionFixture() {
+        preparePhoneCommandSession(client, detector);
+        client.proxyEnabled_ = true;
+        client.proxyServerInitialized_ = client.initProxyServer("Proxy");
+        client.bleNotifyMutex_ = xSemaphoreCreateMutex();
+        bindInputs();
+    }
+    void bindInputs() {
+        client.notifyShortChar_.store(&shortInput);
+        client.notifyShortCharId_.store(0xB2CE);
+        client.notifyLongChar_.store(&longInput);
+        client.notifyLongCharId_.store(V1_SHORT_UUID_DISPLAY_LONG);
+    }
+    void reconnectPhone() {
+        phoneCallbacks.onDisconnect(client.pServer_, phone, 19);
+        client.drainProxyCallbackEvents();
+        mockMillis += 60000; // Queued data must not survive an arbitrary outage.
+        phoneCallbacks.onConnect(client.pServer_, phone);
+        client.drainProxyCallbackEvents();
+    }
+    void reconnectDetector() {
+        closePhoneCommandSession(client, detector);
+        mockMillis += 60000;
+        openPhoneCommandSession(client, detector);
+        bindInputs();
+    }
+    std::vector<uint8_t> enqueue(bool longChannel, bool newer = false) {
+        std::vector<uint8_t> packet = longChannel
+            ? std::vector<uint8_t>{0xAA,0xD8,0xEA,0x43,0x08,0x11,0x87,0x8C,0x9A,0x00,0x22,0x80,0x17,0xAB}
+            : std::vector<uint8_t>{0xAA,0xD8,0xEA,0x31,0x09,0x06,0x06,0x07,0x22,0x22,0x0C,0x0C,0x40,0x85,0xAB};
+        if (newer) ++packet[8];
+        uint8_t checksum = 0;
+        for (size_t i = 0; i < packet.size() - 2; ++i) checksum += packet[i];
+        packet[packet.size()-2] = checksum;
+        V1BLEClient::notifyCallback(longChannel ? &longInput : &shortInput, packet.data(), packet.size(), true);
+        return packet;
+    }
+};
+
+static void notificationSameSession(bool longChannel) {
+    NotificationSessionFixture fixture;
+    const auto packet = fixture.enqueue(longChannel);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_nimble_state.characteristicNotifyCalls);
+    TEST_ASSERT_EQUAL_INT(1, fixture.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(packet.data(), g_mock_nimble_state.lastNotifyData.data(), packet.size());
+    TEST_ASSERT_EQUAL_STRING(longChannel ? V1_DISPLAY_DATA_LONG_UUID : V1_DISPLAY_DATA_UUID,
+                             g_mock_nimble_state.lastNotifyUuid.c_str());
+    TEST_ASSERT_EQUAL_INT(0, fixture.client.processProxyQueue());
+}
+static void notificationRetiredQueue(bool longChannel, bool detectorReconnect) {
+    NotificationSessionFixture fixture;
+    fixture.enqueue(longChannel);
+    if (detectorReconnect) fixture.reconnectDetector();
+    else fixture.reconnectPhone();
+    const auto current = fixture.enqueue(longChannel, true);
+    TEST_ASSERT_EQUAL_INT(1, fixture.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_nimble_state.characteristicNotifyCalls);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(current.data(), g_mock_nimble_state.lastNotifyData.data(), current.size());
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.client.proxyQueueCount_);
+}
+static void notificationRetiredDuringAdmission(bool longChannel, bool detectorReconnect) {
+    NotificationSessionFixture fixture;
+    proxyNotificationTakeHook = [&] {
+        if (detectorReconnect) fixture.reconnectDetector();
+        else fixture.reconnectPhone();
+    };
+    fixture.enqueue(longChannel);
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.client.proxyQueueCount_);
+    const auto current = fixture.enqueue(longChannel, true);
+    TEST_ASSERT_EQUAL_INT(1, fixture.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_nimble_state.characteristicNotifyCalls);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(current.data(), g_mock_nimble_state.lastNotifyData.data(), current.size());
+}
+void test_proxy_short_same_session_delivery() { notificationSameSession(false); }
+void test_proxy_long_same_session_delivery() { notificationSameSession(true); }
+void test_proxy_short_queue_retires_with_phone() { notificationRetiredQueue(false, false); }
+void test_proxy_long_queue_retires_with_phone() { notificationRetiredQueue(true, false); }
+void test_proxy_short_queue_retires_with_detector() { notificationRetiredQueue(false, true); }
+void test_proxy_long_queue_retires_with_detector() { notificationRetiredQueue(true, true); }
+void test_proxy_short_admission_retires_with_phone() { notificationRetiredDuringAdmission(false, false); }
+void test_proxy_long_admission_retires_with_phone() { notificationRetiredDuringAdmission(true, false); }
+void test_proxy_short_admission_retires_with_detector() { notificationRetiredDuringAdmission(false, true); }
+void test_proxy_long_admission_retires_with_detector() { notificationRetiredDuringAdmission(true, true); }
+
+static void retireDetectorWithoutPhoneEvent(NotificationSessionFixture& fixture, bool reopen) {
+    const uint32_t phoneGeneration = fixture.client.proxyPhoneSessionGeneration_.load();
+    const uint32_t detectorGeneration = fixture.client.sessionGeneration_.load();
+    V1BLEClient::ClientCallbacks callback;
+    callback.onDisconnect(&fixture.detector, 0);
+    TEST_ASSERT_FALSE(fixture.client.sessionPublicationGate_.accepts(detectorGeneration));
+    // Observe immediate callback-side retirement. The main loop has not yet
+    // drained its V1_DISCONNECTED event or changed phone presentation state.
+    TEST_ASSERT_EQUAL_UINT32(phoneGeneration, fixture.client.proxyPhoneSessionGeneration_.load());
+    TEST_ASSERT_TRUE(fixture.client.proxyClientConnected_.load());
+    if (reopen) {
+        fixture.detector.setConnected(false);
+        fixture.client.beginClientQuiesce();
+        fixture.client.processClientQuiesce();
+        TEST_ASSERT_EQUAL(BLEState::DISCONNECTED, fixture.client.bleState_);
+        TEST_ASSERT_TRUE(fixture.client.connectToServer());
+        fixture.detector.setConnected(true);
+        fixture.client.connected_.store(true);
+        fixture.client.activeConnectionHandle_.store(fixture.detector.getConnHandle());
+        fixture.client.bleState_ = BLEState::CONNECTED;
+        fixture.bindInputs();
+        TEST_ASSERT_NOT_EQUAL(detectorGeneration, fixture.client.sessionGeneration_.load());
+        TEST_ASSERT_EQUAL_UINT32(phoneGeneration, fixture.client.proxyPhoneSessionGeneration_.load());
+    }
+}
+static void notificationDetectorOnlyBoundary(bool longChannel, bool duringAdmission, bool reopen) {
+    NotificationSessionFixture fixture;
+    if (duringAdmission) {
+        proxyNotificationTakeHook = [&] { retireDetectorWithoutPhoneEvent(fixture, reopen); };
+        fixture.enqueue(longChannel);
+        TEST_ASSERT_EQUAL_UINT32(0, fixture.client.proxyQueueCount_);
+    } else {
+        fixture.enqueue(longChannel);
+        retireDetectorWithoutPhoneEvent(fixture, reopen);
+        TEST_ASSERT_EQUAL_INT(0, fixture.client.processProxyQueue());
+        TEST_ASSERT_EQUAL_UINT32(0, fixture.client.proxyQueueCount_);
+    }
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_nimble_state.characteristicNotifyCalls);
+    if (reopen) {
+        const auto current = fixture.enqueue(longChannel, true);
+        TEST_ASSERT_EQUAL_INT(1, fixture.client.processProxyQueue());
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(current.data(), g_mock_nimble_state.lastNotifyData.data(), current.size());
+    }
+}
+void test_proxy_short_queue_retires_at_detector_disconnect_callback() { notificationDetectorOnlyBoundary(false, false, false); }
+void test_proxy_long_queue_retires_at_detector_disconnect_callback() { notificationDetectorOnlyBoundary(true, false, false); }
+void test_proxy_short_admission_retires_at_detector_disconnect_callback() { notificationDetectorOnlyBoundary(false, true, false); }
+void test_proxy_long_admission_retires_at_detector_disconnect_callback() { notificationDetectorOnlyBoundary(true, true, false); }
+void test_proxy_short_queue_retires_with_new_detector_generation_only() { notificationDetectorOnlyBoundary(false, false, true); }
+void test_proxy_long_queue_retires_with_new_detector_generation_only() { notificationDetectorOnlyBoundary(true, false, true); }
+void test_proxy_short_admission_retires_with_new_detector_generation_only() { notificationDetectorOnlyBoundary(false, true, true); }
+void test_proxy_long_admission_retires_with_new_detector_generation_only() { notificationDetectorOnlyBoundary(true, true, true); }
+
 int main(int argc, char** argv) {
     UNITY_BEGIN();
+    RUN_TEST(test_proxy_short_same_session_delivery);
+    RUN_TEST(test_proxy_long_same_session_delivery);
+    RUN_TEST(test_proxy_short_queue_retires_with_phone);
+    RUN_TEST(test_proxy_long_queue_retires_with_phone);
+    RUN_TEST(test_proxy_short_queue_retires_with_detector);
+    RUN_TEST(test_proxy_long_queue_retires_with_detector);
+    RUN_TEST(test_proxy_short_admission_retires_with_phone);
+    RUN_TEST(test_proxy_long_admission_retires_with_phone);
+    RUN_TEST(test_proxy_short_admission_retires_with_detector);
+    RUN_TEST(test_proxy_long_admission_retires_with_detector);
+    RUN_TEST(test_proxy_short_queue_retires_at_detector_disconnect_callback);
+    RUN_TEST(test_proxy_long_queue_retires_at_detector_disconnect_callback);
+    RUN_TEST(test_proxy_short_admission_retires_at_detector_disconnect_callback);
+    RUN_TEST(test_proxy_long_admission_retires_at_detector_disconnect_callback);
+    RUN_TEST(test_proxy_short_queue_retires_with_new_detector_generation_only);
+    RUN_TEST(test_proxy_long_queue_retires_with_new_detector_generation_only);
+    RUN_TEST(test_proxy_short_admission_retires_with_new_detector_generation_only);
+    RUN_TEST(test_proxy_long_admission_retires_with_new_detector_generation_only);
+
 
     RUN_TEST(test_ble_timing_members_and_constants_use_uint32);
     RUN_TEST(test_allocateProxyQueues_prefers_psram_for_both_buffers);

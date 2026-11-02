@@ -622,13 +622,16 @@ void V1BLEClient::startProxyAdvertising() {
 }
 
 void V1BLEClient::forwardToProxy(const uint8_t* data, size_t length, uint16_t sourceCharUUID) {
-    forwardToProxyForEpoch(data, length, sourceCharUUID, proxyQueueEpoch_.load(std::memory_order_acquire));
+    forwardToProxyForEpoch(data, length, sourceCharUUID, proxyQueueEpoch_.load(std::memory_order_acquire),
+                           sessionGeneration_.load(std::memory_order_acquire),
+                           proxyPhoneSessionGeneration_.load(std::memory_order_acquire));
 }
 
 void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID,
-                                         uint32_t queueEpoch) {
+                                         uint32_t queueEpoch, uint32_t sessionGeneration, uint32_t phoneSessionGeneration) {
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch) ||
-        !proxyClientConnected_) {
+        !proxyClientConnected_ || !sessionPublicationGate_.accepts(sessionGeneration) ||
+        !acceptsPhoneSession(phoneSessionGeneration)) {
         return;
     }
 
@@ -643,7 +646,8 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
     }
 
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) ||
-        proxyQueueEpoch_.load(std::memory_order_acquire) != queueEpoch || !proxyQueue_) {
+        proxyQueueEpoch_.load(std::memory_order_acquire) != queueEpoch || !proxyQueue_ ||
+        !sessionPublicationGate_.accepts(sessionGeneration) || !acceptsPhoneSession(phoneSessionGeneration)) {
         if (bleNotifyMutex_)
             xSemaphoreGive(bleNotifyMutex_);
         return;
@@ -660,6 +664,8 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
     pkt.length = length;
     pkt.charUUID = sourceCharUUID;
     pkt.tsMs = static_cast<uint32_t>(millis());
+    pkt.sessionGeneration = sessionGeneration;
+    pkt.phoneSessionGeneration = phoneSessionGeneration;
     proxyQueueHead_ = (proxyQueueHead_ + 1) % PROXY_QUEUE_SIZE;
     proxyQueueCount_++;
     if (bleNotifyMutex_) {
@@ -693,7 +699,10 @@ int V1BLEClient::processProxyQueue() {
             targetChar = pProxyNotifyChar_;
         }
 
-        if (targetChar) {
+        // A retained response belongs to the detector and phone present at
+        // ingress. Reconnect must not replay it to a later session.
+        if (targetChar && sessionPublicationGate_.accepts(pkt.sessionGeneration) &&
+            acceptsPhoneSession(pkt.phoneSessionGeneration)) {
             if (targetChar->notify(pkt.data, pkt.length)) {
                 sent++;
             }

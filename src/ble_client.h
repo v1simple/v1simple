@@ -579,8 +579,8 @@ class V1BLEClient {
         size_t length;
         uint16_t charUUID;
         uint32_t tsMs;
-        uint32_t sessionGeneration; // Phone commands belong to one V1 connection.
-        uint32_t phoneSessionGeneration; // And to the phone that submitted them.
+        uint32_t sessionGeneration; // Both queue directions belong to one V1 connection.
+        uint32_t phoneSessionGeneration; // And to one phone connection.
     };
     ProxyPacket* proxyQueue_ = nullptr;
 
@@ -896,7 +896,8 @@ class V1BLEClient {
     bool allocateProxyQueues();
     void releaseProxyQueues();
     bool tryFinalizeProxyQueueRelease();
-    void forwardToProxyForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID, uint32_t queueEpoch);
+    void forwardToProxyForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID, uint32_t queueEpoch,
+                                uint32_t sessionGeneration, uint32_t phoneSessionGeneration);
     bool enqueueProxyCallbackEvent(const ProxyCallbackEvent& event);
     bool popProxyCallbackEvent(ProxyCallbackEvent& event);
     void drainProxyCallbackEvents();

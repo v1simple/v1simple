@@ -687,6 +687,7 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
     const uint32_t callbackMillis = static_cast<uint32_t>(millis());
     const uint32_t callbackGeneration = instancePtr->sessionGeneration_.load(std::memory_order_acquire);
     const uint32_t proxyQueueEpoch = instancePtr->proxyQueueEpoch_.load(std::memory_order_acquire);
+    const uint32_t phoneSessionGeneration = instancePtr->proxyPhoneSessionGeneration_.load(std::memory_order_acquire);
     BleProxyEpochObserver::CallbackLease callbackLease(instancePtr->proxyEpochObserver_,
                                                        BleProxyCallbackDirection::V1ToProxy, proxyQueueEpoch);
     if (!instancePtr->acceptClientCallbacks_.load(std::memory_order_acquire) ||
@@ -713,7 +714,8 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
     // IDs 0x41/0x42 are request IDs, while response 0x43 already arrives on
     // B4E0, so packet-ID-based rerouting would misrepresent the source.
     // Forward to proxy via the proxy queue only. Keep BLE callback path notify-free.
-    instancePtr->forwardToProxyForEpoch(pData, length, charId, proxyQueueEpoch);
+    instancePtr->forwardToProxyForEpoch(pData, length, charId, proxyQueueEpoch,
+                                       callbackGeneration, phoneSessionGeneration);
 
     if (instancePtr->connected_.load(std::memory_order_relaxed) &&
         instancePtr->firstRxAfterConnectMs_.load(std::memory_order_relaxed) == 0) {

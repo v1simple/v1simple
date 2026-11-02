@@ -55,6 +55,14 @@ executes the real command-send path to verify that retired phone mute commands
 cannot override a later local unmute, while connected-phone retries still work.
 NimBLE transport, clocks, and locks remain host doubles.
 
+Detector-to-phone notifications also retain both session generations from
+callback entry through the proxy queue. Admission rechecks them after acquiring
+the queue lock, and the consumer discards entries from either retired session.
+`test_ble_proxy_alloc` exercises both notification characteristics, phone-only
+and detector-only retirement, callbacks delayed at queue admission, and fresh
+traffic after reconnect. It does not serialize NimBLE's final notification call
+with a concurrent reconnect or establish physical radio scheduling.
+
 A successfully forwarded `reqStopAlertData` retires the current detailed-stream
 start, including raw and indexed long-characteristic phone writes. While the
 same phone session owns that explicit stop, local requests do not undo it. A

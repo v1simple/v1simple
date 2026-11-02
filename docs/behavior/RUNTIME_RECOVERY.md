@@ -103,6 +103,17 @@ without a mode field remain compatible when that field is proven absent.
 `test_settings_persistence` covers these paths through retry and fresh-manager
 reload with bounded NVS faults, including the three-read-fault HTTP regression.
 
+The pinned NimBLE NVS initializer publishes a complete-load result. Normal
+boot stops before bond migration, backup, proxy advertising or client creation
+if any bond, subscription or peer-identity table could not be read. The existing
+visible BLE boot-error path retries on reboot; partial RAM tables cannot replace
+the complete SD recovery source. Empty OUR/PEER tables initialize their recency
+counters to zero without reading before the array. `test_ble_bond_bootstrap.py`
+compiles the pinned loader, actual `initBLE` owner and real backup writer with
+modeled NVS and radio adapters. It covers first/later read failure, every table,
+empty and one-sided tables, successful retry, new pairing and intentional
+bond deletion. It does not inject physical NVS faults or prove radio recovery.
+
 Bond backups have a fixed layout: the file length must equal its header plus
 exactly the declared records. A decreased count with remaining bytes cannot
 masquerade as a valid empty backup and discard a valid previous generation.

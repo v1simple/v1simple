@@ -16,6 +16,8 @@
 extern "C" {
 #include "nimble/nimble/host/include/host/ble_store.h"
 #include "nimble/nimble/host/include/host/ble_sm.h"
+// Supplied by the fingerprinted pinned-NimBLE bootstrap repair.
+int v1simple_nimble_bond_bootstrap_status(void);
 }
 
 // Back up NimBLE NVS bonds to SD for recovery after bond loss or flash erase.
@@ -165,7 +167,13 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
 
     initializeBleBondRecovery();
     NimBLEDevice::setDeviceCallbacks(&bondRecoveryCallbacks);
-    NimBLEDevice::init(proxyEnabled_ ? "V1 Proxy" : "V1Display");
+    if (!NimBLEDevice::init(proxyEnabled_ ? "V1 Proxy" : "V1Display")) return false;
+    if (v1simple_nimble_bond_bootstrap_status() != 0) {
+        // A partial RAM table cannot authorize backup, migration or pairing.
+        // The existing fatal boot path displays an error and retries on reboot.
+        Serial.println("[BLE] Bond storage initialization incomplete; preserving saved bonds");
+        return false;
+    }
     NimBLEDevice::setDeviceName(proxyName_.c_str());
     // NimBLE-Arduino expects dBm here, not esp_power_level_t enum indices.
     // 9 dBm is a supported ESP32-S3 step.

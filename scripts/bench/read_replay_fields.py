@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import bisect
 from collections import Counter
+import hashlib
 import json
 import math
 import re
@@ -336,6 +337,38 @@ def secondary_identities(stimulus):
                   if not alert["priority"] and alert["band"] in ("k", "ka", "x"))
 
 
+def read_replay_stimuli(run, window):
+    """Read expectations only from the retained display contract's exact file."""
+    artifacts = window.get("artifacts", {})
+    if not isinstance(artifacts, dict) or "replay_display_contract" not in artifacts:
+        raise ValueError("replay artifact ownership is invalid")
+
+    def verified_file(entry):
+        if not isinstance(entry, dict):
+            raise ValueError("replay artifact ownership is invalid")
+        name, size, digest = (entry.get(key) for key in ("path", "size_bytes", "sha256"))
+        if (not isinstance(name, str) or not name or Path(name).name != name or
+                name in {".", ".."} or type(size) is not int or size <= 0 or
+                not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
+            raise ValueError("replay artifact ownership is invalid")
+        path = run / name
+        if not path.is_file():
+            raise ValueError("replay artifact disappeared")
+        data = path.read_bytes()
+        if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+            raise ValueError("replay artifact changed")
+        return path, data
+
+    entry = artifacts["replay_display_contract"]
+    _, data = verified_file(entry)
+    contract = json.loads(data)
+    if (not isinstance(contract, dict) or contract.get("schema_version") != 1 or
+            contract.get("kind") != "bench_replay_display_contract"):
+        raise ValueError("replay display contract is invalid")
+    _, data = verified_file(contract.get("expected_display_rubric"))
+    return [json.loads(line) for line in data.splitlines()], entry["sha256"]
+
+
 def compare_run(run, limit=None, progress=None):
     window = json.loads((run / "window_result.json").read_text())
     if (window.get("result") != "COMPLETE" or
@@ -371,7 +404,7 @@ def compare_run(run, limit=None, progress=None):
         preflight_path = camera_dir / "camera_preflight.json"
         camera_integrity = "legacy-unverified"
 
-    stimuli = list(ndjson(run / "replay_stimulus.ndjson"))
+    stimuli, contract_sha = read_replay_stimuli(run, window)
     if len(stimuli) < 3:
         raise ValueError("too few replay stimuli")
     frames = [row for row in ndjson(timing_path) if row["status"] == "written"]
@@ -457,7 +490,7 @@ def compare_run(run, limit=None, progress=None):
                        "imageId": window["runtime_identity"]["image_id"],
                        "cameraCaptureId": window["camera"]["capture_id"],
                        "cameraIntegrity": camera_integrity,
-                       "displayContractSha256": window["artifacts"]["replay_display_contract"]["sha256"]},
+                       "displayContractSha256": contract_sha},
             "framesChecked": len(eligible), "fields": totals, "secondaryCardTextDirection": cards,
             "exceptions": exceptions}
 

@@ -69,7 +69,7 @@ class ReadReplayFieldsTest(unittest.TestCase):
             "camera": {"result": "CAPTURED", "capture_id": "fixture",
                        "video_timing_verification_result": {"status": "verified"}},
             "git_sha": "fixture", "runtime_identity": {"image_id": "fixture"},
-            "artifacts": {"replay_display_contract": {"sha256": "fixture"}}}))
+            "artifacts": {}}))
         expected = {"alerts": [
             {"priority": True, "band": "k", "frequencyMHz": 24150, "direction": "FRONT"},
             {"priority": False, "band": "k", "frequencyMHz": 24125,
@@ -95,6 +95,7 @@ class ReadReplayFieldsTest(unittest.TestCase):
                 (camera / result[field]).write_bytes(b"fixture")
             manifest = build_capture_manifest(camera_dir=camera, camera_result=result, suite="replay")
             self.publish_manifest(run, manifest)
+        self.publish_display_contract(run)
         return run
 
     @staticmethod
@@ -108,6 +109,59 @@ class ReadReplayFieldsTest(unittest.TestCase):
         window = json.loads(window_path.read_text())
         window["camera"].update(capture_manifest="capture_manifest.json", capture_id=manifest["capture_id"])
         window_path.write_text(json.dumps(window))
+        ReadReplayFieldsTest.publish_display_contract(run)
+
+    @staticmethod
+    def publish_display_contract(run, stimulus_name="replay_stimulus.ndjson"):
+        def entry(path):
+            data = path.read_bytes()
+            return {"path": path.name, "size_bytes": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest()}
+        path = run / "replay_display_contract.json"
+        path.write_text(json.dumps({"schema_version": 1, "kind": "bench_replay_display_contract",
+                                    "expected_display_rubric": entry(run / stimulus_name)}))
+        window_path = run / "window_result.json"
+        window = json.loads(window_path.read_text())
+        window["artifacts"]["replay_display_contract"] = entry(path)
+        window_path.write_text(json.dumps(window))
+
+    def test_replay_contract_and_stimulus_changes_cannot_receive_a_visual_pass(self):
+        for name in ("replay_display_contract.json", "replay_stimulus.ndjson"):
+            for missing in (False, True):
+                with self.subTest(name=name, missing=missing), tempfile.TemporaryDirectory() as temporary:
+                    image, registration = self.camera_pose(self.radar_frame())
+                    run = self.make_run(Path(temporary), registration, declared=True)
+                    path = run / name
+                    if missing:
+                        path.unlink()
+                    elif name.endswith(".ndjson"):
+                        path.write_bytes(path.read_bytes().replace(b"24150", b"24151"))
+                    else:
+                        path.write_bytes(path.read_bytes().replace(b'"schema_version": 1', b'"schema_version": 2'))
+                    with (mock.patch.object(reader, "frame_at", return_value=(1.18, image)) as decode,
+                          self.assertRaisesRegex(ValueError, "replay artifact changed|disappeared")):
+                        reader.compare_run(run)
+                    decode.assert_not_called()
+
+    def test_replay_reader_uses_verified_stimulus_path_and_rejects_missing_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            image, registration = self.camera_pose(self.radar_frame())
+            run = self.make_run(Path(temporary), registration, declared=True)
+            original = run / "replay_stimulus.ndjson"
+            original.rename(run / "retained_stimulus.ndjson")
+            original.write_bytes(b"unverified stale default")
+            self.publish_display_contract(run, "retained_stimulus.ndjson")
+            with mock.patch.object(reader, "frame_at", return_value=(1.18, image)):
+                report = reader.compare_run(run)
+            self.assertEqual("PASS", report["result"])
+            window_path = run / "window_result.json"
+            window = json.loads(window_path.read_text())
+            del window["artifacts"]["replay_display_contract"]
+            window_path.write_text(json.dumps(window))
+            with (mock.patch.object(reader, "frame_at", return_value=(1.18, image)) as decode,
+                  self.assertRaisesRegex(ValueError, "replay artifact ownership")):
+                reader.compare_run(run)
+            decode.assert_not_called()
 
     def compare_frame(self, image, registration):
         with tempfile.TemporaryDirectory() as temporary:
@@ -218,7 +272,7 @@ class ReadReplayFieldsTest(unittest.TestCase):
         env = {**os.environ, "PYTHONPATH": str(scripts), "PYTHONDONTWRITEBYTECODE": "1"}
         for command in ([sys.executable, str(Path(reader.__file__))],
                         [sys.executable, "-m", "bench.read_replay_fields"]):
-            for fault in ("missing", "identity", "suite-shape", "corrupt"):
+            for fault in ("missing", "identity", "suite-shape", "corrupt", "stimulus", "contract"):
                 with self.subTest(command=command[1:], fault=fault), tempfile.TemporaryDirectory() as temporary:
                     _image, registration = self.camera_pose(self.radar_frame())
                     run = self.make_run(Path(temporary), registration, declared=True)
@@ -232,6 +286,9 @@ class ReadReplayFieldsTest(unittest.TestCase):
                         else:
                             manifest["identity"]["suite"] = []
                         manifest_path.write_text(json.dumps(manifest))
+                    elif fault in {"stimulus", "contract"}:
+                        path = run / ("replay_stimulus.ndjson" if fault == "stimulus" else "replay_display_contract.json")
+                        path.write_bytes(path.read_bytes() + b" ")
                     else:
                         path = run / "camera/frame_timing.ndjson"
                         path.write_bytes(path.read_bytes().replace(b"1180000000", b"1180000001"))
@@ -247,7 +304,7 @@ class ReadReplayFieldsTest(unittest.TestCase):
                     self.assertEqual(2, result.returncode, result.stderr)
                     report = json.loads(output.read_text())
                     self.assertEqual("INCONCLUSIVE", report["result"])
-                    self.assertRegex(report["reason"], "camera.*(artifact|identity|suite)")
+                    self.assertRegex(report["reason"], "(camera|replay).*(artifact|identity|suite)")
                     self.assertNotIn("Traceback", result.stderr)
 
     def test_comparison_reads_registered_translation_and_scale(self):

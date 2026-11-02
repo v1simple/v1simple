@@ -53,6 +53,13 @@ Registration estimates translation and uniform scale from the SCAN landmark.
 The reader derives X/Y mapping coefficients from that registered crop; this is
 not a perspective, rotation or arbitrary camera-layout solver.
 
+The reader also verifies the retained display contract against the window's
+recorded size and hash, then verifies and consumes the exact stimulus bytes named
+by that contract. A missing contract or changed expectation file cannot receive
+a visual pass, even when the camera files remain intact. This prevents a stale
+or edited expectation file from being graded under the original contract hash.
+It does not add authentication against coordinated rewriting of all metadata.
+
 ## What a verdict establishes
 
 - **PASS:** every compared supported sample is readable and matches, with at
@@ -98,6 +105,8 @@ commands use fixtures and do not start a physical capture.
 | `test_declared_manifest_cannot_silently_become_legacy` | Missing or malformed declarations cannot bypass integrity checks. |
 | `test_manifest_identity_schema_and_replay_suite_are_required` | Window identity, manifest digest/schema and replay suite must agree. |
 | `test_reader_consumes_verified_manifest_paths_instead_of_default_paths` | Renamed verified inputs are read despite poisoned files at the old paths. |
+| `test_replay_contract_and_stimulus_changes_cannot_receive_a_visual_pass` | Missing or changed expectations and contract files are rejected before decoding. |
+| `test_replay_reader_uses_verified_stimulus_path_and_rejects_missing_contract` | The retained expectation path is consumed; absent contract ownership cannot become a legacy pass. |
 | `test_integrity_errors_are_inconclusive_in_script_and_package_commands` | Fresh processes exercise both invocation modes and turn integrity errors into an INCONCLUSIVE report/exit 2. |
 
 The comparison fixture substitutes only `frame_at` inside the comparison path;

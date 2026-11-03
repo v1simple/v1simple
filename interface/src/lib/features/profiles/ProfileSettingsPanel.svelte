@@ -3,18 +3,12 @@
     import ProfileSettingsSections from '#lib/features/profiles/ProfileSettingsSections.svelte';
 
     let {
-        editingSettings,
-        currentProfile,
+        authoring,
         capturedSnapshot = null,
         canApply = false,
         applyDisabled = true,
         onapply,
-        savingProfile = null,
         mutationBusy = false,
-        editedSettings = $bindable(null),
-        editedDetector = $bindable(null),
-        editedInTheBox = $bindable(null),
-        editDescription = $bindable(''),
         frequencyError = null,
         oncancelEditing,
         onsaveEditedProfile,
@@ -30,12 +24,12 @@
 <div class="surface-card" id="profile-editor" tabindex="-1">
     <div class="card-body">
         <CardSectionHead
-            title={currentProfile?.name ? `Profile: ${currentProfile.name}` : 'Profile Editor'}
+            title={authoring.acceptedProfile?.name ? `Profile: ${authoring.acceptedProfile.name}` : 'Profile Editor'}
             subtitle="Save your choices here. Apply the saved profile to your V1, or assign it to Auto-Push."
         />
-        {#if editingSettings}
+        {#if authoring.draft}
             <p class="copy-caption" role="status">
-                {currentProfile?.name ? `Editing profile: ${currentProfile.name}` : 'Creating new offline profile'}
+                {authoring.acceptedProfile?.name ? `Editing profile: ${authoring.acceptedProfile.name}` : 'Creating new offline profile'}
             </p>
             <div class="field-control max-w-md">
                 <label class="label" for="edit-description">
@@ -47,22 +41,22 @@
                     placeholder="Update description"
                     class="input w-full input-sm"
                     maxlength="4096"
-                    bind:value={editDescription}
+                    bind:value={authoring.draft.description}
                 />
             </div>
         {/if}
         <div class="space-y-2 border-y border-base-300 py-3">
             <div class="flex flex-wrap items-center justify-end gap-2">
-                {#if editingSettings}
+                {#if authoring.draft}
                     <button class="btn btn-ghost btn-sm" onclick={oncancelEditing}>Cancel</button>
-                    {#if currentProfile?.name}
-                        <button class="btn btn-primary btn-sm" onclick={onsaveEditedProfile} disabled={mutationBusy || !!savingProfile}>
-                            {savingProfile ? `Saving ${savingProfile}...` : 'Save Profile'}
+                    {#if authoring.acceptedProfile?.name}
+                        <button class="btn btn-primary btn-sm" onclick={onsaveEditedProfile} disabled={mutationBusy || !!authoring.savingProfile}>
+                            {authoring.savingProfile ? `Saving ${authoring.savingProfile}...` : 'Save Profile'}
                         </button>
                     {:else}
                         <button class="btn btn-primary btn-sm" onclick={onshowSaveDialog}>Save as Profile</button>
                     {/if}
-                {:else if currentProfile?.settings}
+                {:else if authoring.acceptedProfile?.settings}
                     <button class="btn btn-secondary btn-sm" onclick={onstartEditing}>Edit</button>
                     <button class="btn btn-sm btn-success" onclick={onshowSaveDialog}>Save under a name…</button>
                 {:else}
@@ -75,26 +69,26 @@
             <p class="copy-caption">
                 {#if canApply}
                     Save stores your edits. Apply uses the saved profile and briefly restarts V1Simple to connect to your captured detector.
-                {:else if editingSettings}
+                {:else if authoring.draft}
                     Save this profile to make it available for Apply and Auto-Push.
                 {:else}
                     Choose a saved profile or create one to get started.
                 {/if}
             </p>
         </div>
-        {#if currentProfile && currentProfile.settings}
+        {#if authoring.acceptedProfile && authoring.acceptedProfile.settings}
             <ProfileSettingsSections
-                {editingSettings}
-                {currentProfile}
+                editingSettings={!!authoring.draft}
+                currentProfile={authoring.acceptedProfile}
                 {capturedSnapshot}
-                bind:editedSettings
-                bind:editedDetector
-                bind:editedInTheBox
+                bind:editedSettings={() => authoring.draft?.settings, (value) => { if (authoring.draft) authoring.draft.settings = value; }}
+                bind:editedDetector={() => authoring.draft?.detector, (value) => { if (authoring.draft) authoring.draft.detector = value; }}
+                bind:editedInTheBox={() => authoring.draft?.inTheBox, (value) => { if (authoring.draft) authoring.draft.inTheBox = value; }}
                 {frequencyError}
                 {onaddCustomFrequencyRange}
                 {onremoveCustomFrequencyRange}
             />
-            {#if editingSettings}
+            {#if authoring.draft}
                 <details class="mt-3">
                     <summary class="cursor-pointer copy-caption">Reset this draft</summary>
                     <p class="copy-caption my-2">Replace the choices in this editor with V1Simple defaults. Save the profile to keep them.</p>

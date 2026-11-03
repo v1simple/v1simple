@@ -648,7 +648,7 @@ describe('autopush route page', () => {
         await screen.findByText(
             'Apply to V1 is available in maintenance mode. Auto-Push still applies the selected slot when your V1 connects during normal use.'
         );
-        const pushButton = screen.getAllByRole('button', { name: /apply to v1/i })[0];
+        const pushButton = (await screen.findAllByRole('button', { name: /apply to v1/i }))[0];
         expect(pushButton).toBeDisabled();
 
         // Exercise the handler guard independently from the disabled UI state.

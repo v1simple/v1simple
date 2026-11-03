@@ -7,7 +7,7 @@
     import ColorControl from '#lib/components/ColorControl.svelte';
     import ColorPickerModal from '#lib/components/ColorPickerModal.svelte';
     import { parseColorInput, rgb565ToHex, rgb565ToRgb888, rgb888ToRgb565 } from '#lib/utils/colors.js';
-    import { validDetectorOperationStart } from '#lib/features/profiles/detectorOperation.js';
+    import { fetchProfileCatalog, requestDetectorOperation } from '#lib/features/profiles/profileApi.js';
     import { createDetectorOperationTracker } from '#lib/features/profiles/detectorOperationTracker.js';
     import {
         isMaintenance,
@@ -24,6 +24,8 @@
     });
 
     let profiles = $state([]);
+    let catalogGeneration = 0;
+    let disposed = false;
     let loading = $state(true);
     let message = $state(null);
     let editingSlot = $state(null);
@@ -64,6 +66,8 @@
         });
         void operationTracker.resume();
         return () => {
+            disposed = true;
+            catalogGeneration += 1;
             operationTracker.dispose();
             releaseRuntimeStatus();
         };
@@ -109,30 +113,14 @@
     }
 
     async function fetchProfiles() {
+        const generation = ++catalogGeneration;
         try {
-            const loadedProfiles = [];
-            let cursor = '';
-            while (true) {
-                const url = cursor
-                    ? `/api/v1/profiles?after=${encodeURIComponent(cursor)}&limit=10`
-                    : '/api/v1/profiles';
-                const res = await fetchJsonWithTimeout(url);
-                if (!res.ok) {
-                    message = { type: 'error', text: 'Failed to load profiles' };
-                    return;
-                }
-                const d = res.data;
-                if (!Array.isArray(d.profiles)) throw new Error('Invalid profile page');
-                loadedProfiles.push(...d.profiles);
-                if (!d.hasMore) break;
-                if (typeof d.nextCursor !== 'string' || !d.nextCursor || d.nextCursor === cursor) {
-                    throw new Error('Invalid profile cursor');
-                }
-                cursor = d.nextCursor;
+            const catalog = await fetchProfileCatalog();
+            if (!disposed && generation === catalogGeneration) profiles = catalog.profiles;
+        } catch {
+            if (!disposed && generation === catalogGeneration) {
+                message = { type: 'error', text: 'Failed to load profiles' };
             }
-            profiles = loadedProfiles;
-        } catch (e) {
-            message = { type: 'error', text: 'Failed to load profiles' };
         }
     }
 
@@ -193,28 +181,17 @@
             body.set('slot', String(slot));
             body.set('address', address);
 
-            const res = await fetchWithTimeout('/api/autopush/push', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-                body
-            }, undefined, async (response) => ({
-                status: response.status,
-                ok: response.ok,
-                body: await response.json()
-            }));
-            const response = res.body;
-            if (!res.ok) {
-                message = {
-                    type: 'error',
-                    text: response.message || response.error || `Apply could not be queued (HTTP ${res.status})`
-                };
+            const result = await requestDetectorOperation('/api/autopush/push', body);
+            if (result.kind === 'accepted') operationTracker.accepted(result.response);
+            if (disposed) return;
+            if (result.kind !== 'accepted') {
+                message = { type: 'error', text: result.kind === 'rejected'
+                    ? result.response?.message || result.response?.error || `Apply could not be queued (HTTP ${result.status})`
+                    : result.reason === 'invalid_identity' ? 'Apply returned an invalid operation identity.'
+                        : 'Connection error' };
                 return;
             }
-            if (!validDetectorOperationStart(response)) {
-                message = { type: 'error', text: 'Apply returned an invalid operation identity.' };
-                return;
-            }
-            operationTracker.accepted(response);
+            const response = result.response;
             message = {
                 type: 'info',
                 text: `Slot ${slot + 1} queued as operation ${response.operationId} for ${address}. V1Simple will return here with verification results.`

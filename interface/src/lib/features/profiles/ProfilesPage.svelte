@@ -7,54 +7,19 @@
     import ProfileSavedListCard from '#lib/features/profiles/ProfileSavedListCard.svelte';
     import ProfileSettingsPanel from '#lib/features/profiles/ProfileSettingsPanel.svelte';
     import ProfileOperationStatus from '#lib/features/profiles/ProfileOperationStatus.svelte';
-    import {
-        createDefaultProfileSettings,
-        createProfileDetectorConfiguration,
-        cloneDetectorConfiguration,
-        customFrequencyBand,
-        detectorConfigurationFromSnapshot,
-        fromApiDetectorConfiguration,
-        fromApiSettings,
-        toApiDetectorConfiguration,
-        toApiSettings
-    } from '#lib/features/profiles/profileSettingsAdapter.js';
-    import {
-        createDefaultInTheBoxSettings,
-        cloneInTheBoxSettings,
-        fromApiInTheBoxSettings,
-        toApiInTheBoxSettings,
-        inTheBoxSettingsError
-    } from '#lib/features/profiles/inTheBoxSettings.js';
-    import { validDetectorOperationStart } from '#lib/features/profiles/detectorOperation.js';
+    import { createProfileAuthoring, customFrequencyError } from '#lib/features/profiles/profileAuthoring.svelte.js';
+    import { fetchProfileCatalog, requestDetectorOperation } from '#lib/features/profiles/profileApi.js';
     import { createDetectorOperationTracker } from '#lib/features/profiles/detectorOperationTracker.js';
 
     let profiles = $state([]);
     let catalogGeneration = 0;
-    let currentProfile = $state(null);
     let loading = $state(true);
     let message = $state(null);
-    let showSaveDialog = $state(false);
-    let saveName = $state('');
-    let saveDescription = $state('');
-    let savingProfile = $state(null);
     let deletingProfile = $state(false);
+    const authoring = createProfileAuthoring({ onSaved: recordSavedProfile, onMessage: (next) => { message = next; } });
     // Publish catalog writes in the same order that they reach storage.
-    let mutationBusy = $derived(!!savingProfile || deletingProfile);
-    let copySourceName = $state(null);
-    let editingSettings = $state(false);
-    let editedSettings = $state(null);
-    let editedDetector = $state(null);
-    let editedInTheBox = $state(null);
+    let mutationBusy = $derived(!!authoring.savingProfile || deletingProfile);
     let profileLoadGeneration = 0;
-    const PROFILE_DESCRIPTION_MAX_BYTES = 4096;
-
-    function descriptionForSave(value) {
-        const description = (value || '').trim();
-        return new TextEncoder().encode(description).length <= PROFILE_DESCRIPTION_MAX_BYTES
-            ? { description }
-            : { error: 'Description must be 4096 UTF-8 bytes or fewer' };
-    }
-    let editDescription = $state('');
     let capturedSnapshot = $state(null);
     let snapshotLoading = $state(true);
     let snapshotGeneration = 0;
@@ -65,33 +30,6 @@
     let factoryConfirmation = $state('');
     const PROFILE_LOAD_ERROR_TEXT = 'Failed to load profiles';
     let operationTracker;
-
-    function validateProfileName(raw) {
-        const canonical = raw.trim();
-        if (!canonical) return { error: 'Profile name required' };
-        if (new TextEncoder().encode(canonical).length > 64) {
-            return { error: 'Profile name exceeds 64 UTF-8 bytes' };
-        }
-        if (canonical.startsWith('.') || canonical.startsWith('_')) {
-            return { error: 'Profile name cannot begin with dot or underscore' };
-        }
-        if (canonical.includes('/') || canonical.includes('\\') || canonical.includes('..')) {
-            return { error: 'Profile name cannot contain path characters' };
-        }
-        const hasControlCharacter = [...canonical].some((character) => {
-            const code = character.charCodeAt(0);
-            return code < 32 || code === 127;
-        });
-        if (hasControlCharacter || /[:*?"<>|]/.test(canonical)) {
-            return { error: 'Profile name contains an invalid character' };
-        }
-        const asciiFold = (value) => value.replace(/[A-Z]/g, (character) => character.toLowerCase());
-        const collision = profiles.find(
-            (profile) => asciiFold(profile.name) === asciiFold(canonical)
-        );
-        if (collision) return { error: 'Profile name collides with an existing profile' };
-        return { canonical };
-    }
 
     function clearMessageText(text) {
         if (message?.text === text) {
@@ -108,68 +46,32 @@
             : [...profiles, saved];
     }
 
-    function detectorConfigurationsEqual(left, right) {
-        return JSON.stringify(toApiDetectorConfiguration(left)) ===
-            JSON.stringify(toApiDetectorConfiguration(right));
-    }
-
-    function inTheBoxConfigurationsEqual(left, right) {
-        return JSON.stringify(toApiInTheBoxSettings(left)) === JSON.stringify(toApiInTheBoxSettings(right));
-    }
-
-    function ensureCustomFrequencyOwnership(detector = editedDetector) {
+    function ensureCustomFrequencyOwnership(detector = authoring.draft?.detector) {
         if (!detector) return;
         detector.customFrequencyPolicy = 'value';
         if (!Array.isArray(detector.customFrequencyDefinitions)) detector.customFrequencyDefinitions = [];
     }
 
     function addCustomFrequencyRange(band) {
-        if (!editedDetector) return;
+        if (!authoring.draft.detector) return;
         ensureCustomFrequencyOwnership();
-        if (editedDetector.customFrequencyDefinitions.length >= 64) return;
+        if (authoring.draft.detector.customFrequencyDefinitions.length >= 64) return;
         const range = band === 'ka'
             ? { lowerMHz: 33400, upperMHz: 36002 }
             : { lowerMHz: 23910, upperMHz: 24250 };
-        editedDetector.customFrequencyDefinitions = [
-            ...editedDetector.customFrequencyDefinitions,
-            { index: editedDetector.customFrequencyDefinitions.length, ...range }
+        authoring.draft.detector.customFrequencyDefinitions = [
+            ...authoring.draft.detector.customFrequencyDefinitions,
+            { index: authoring.draft.detector.customFrequencyDefinitions.length, ...range }
         ];
     }
 
     function removeCustomFrequencyRange(index) {
-        if (!editedDetector) return;
-        const remaining = editedDetector.customFrequencyDefinitions
+        if (!authoring.draft.detector) return;
+        const remaining = authoring.draft.detector.customFrequencyDefinitions
             .filter((_, definitionIndex) => definitionIndex !== index)
             .map((definition, definitionIndex) => ({ ...definition, index: definitionIndex }));
-        editedDetector.customFrequencyDefinitions = remaining;
-        if (remaining.length === 0) editedDetector.customFrequencyPolicy = 'unchanged';
-    }
-
-    function customFrequencyError(settings, detector) {
-        if (detector?.customFrequencyPolicy !== 'value') {
-            return detector?.userSettings !== 'unchanged' && settings?.customFreqs
-                ? 'To enable custom-frequency detection, choose profile ranges and add at least one K or Ka range.'
-                : null;
-        }
-        const definitions = detector.customFrequencyDefinitions;
-        if (!Array.isArray(definitions) || definitions.length === 0) {
-            return 'Add at least one K or Ka range, or choose to keep the detector’s current ranges.';
-        }
-        if (definitions.length > 64) {
-            return 'A profile can author at most 64 custom-frequency ranges.';
-        }
-        const validEdges = definitions.every((definition) =>
-            Number.isInteger(Number(definition.lowerMHz)) &&
-            Number.isInteger(Number(definition.upperMHz)) &&
-            Number(definition.lowerMHz) > 0 &&
-            Number(definition.upperMHz) > Number(definition.lowerMHz) &&
-            Number(definition.upperMHz) <= 65535
-        );
-        if (!validEdges) return 'Every custom-frequency range needs valid lower and upper MHz edges.';
-        if (definitions.some((definition) => customFrequencyBand(definition) === null)) {
-            return 'Every range must fit inside the published Gen2 K or Ka sweep section.';
-        }
-        return null;
+        authoring.draft.detector.customFrequencyDefinitions = remaining;
+        if (remaining.length === 0) authoring.draft.detector.customFrequencyPolicy = 'unchanged';
     }
 
     onMount(() => {
@@ -194,6 +96,8 @@
         void operationTracker.resume();
         return () => {
             disposed = true;
+            profileLoadGeneration += 1;
+            authoring.dispose();
             snapshotGeneration += 1;
             operationTracker.dispose();
         };
@@ -204,28 +108,17 @@
         operationBusy = true;
         message = { type: 'info', text: `${label} is being queued...` };
         try {
-            const res = await fetchWithTimeout(path, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-                body
-            }, undefined, async (response) => ({
-                status: response.status,
-                ok: response.ok,
-                body: await response.json()
-            }));
-            const response = res.body;
-            if (!res.ok) {
-                message = {
-                    type: 'error',
-                    text: response.error || `${label} could not be queued (HTTP ${res.status})`
-                };
+            const result = await requestDetectorOperation(path, body);
+            if (result.kind === 'accepted') operationTracker.accepted(result.response);
+            if (disposed) return;
+            if (result.kind !== 'accepted') {
+                message = { type: 'error', text: result.kind === 'rejected'
+                    ? result.response?.error || `${label} could not be queued (HTTP ${result.status})`
+                    : result.reason === 'invalid_identity' ? `${label} returned an invalid operation identity.`
+                        : `${label} connection was interrupted before acceptance was confirmed.` };
                 return;
             }
-            if (!validDetectorOperationStart(response)) {
-                message = { type: 'error', text: `${label} returned an invalid operation identity.` };
-                return;
-            }
-            operationTracker.accepted(response);
+            const response = result.response;
             message = {
                 type: 'info',
                 text: `${label} queued as operation ${response.operationId}. V1Simple will restart, verify the exact captured detector in normal mode, and return here.`
@@ -238,7 +131,7 @@
     }
 
     function applySavedProfile() {
-        const savedName = currentProfile?.name;
+        const savedName = authoring.acceptedProfile?.name;
         const stillSaved = savedName && profiles.some((profile) => profile.name === savedName);
         const address = capturedSnapshot?.address;
         if (!stillSaved || !address) {
@@ -298,24 +191,7 @@
     function startDraftFromCapturedSettings() {
         if (snapshotLoading || !capturedSnapshot?.settings || !capturedSnapshot?.observations?.userBytes?.available) return;
         profileLoadGeneration += 1;
-        const settings = fromApiSettings(capturedSnapshot.settings);
-        currentProfile = {
-            available: true,
-            draft: true,
-            captured: true,
-            name: '',
-            description: '',
-            detector: detectorConfigurationFromSnapshot(capturedSnapshot),
-            inTheBox: createDefaultInTheBoxSettings(),
-            settings
-        };
-        editedSettings = { ...settings, baseBytes: settings.baseBytes ? [...settings.baseBytes] : undefined };
-        editedDetector = cloneDetectorConfiguration(currentProfile.detector);
-        editedInTheBox = cloneInTheBoxSettings(currentProfile.inTheBox);
-        editDescription = '';
-        saveName = '';
-        saveDescription = '';
-        editingSettings = true;
+        authoring.beginCaptured(capturedSnapshot);
         message = {
             type: 'info',
             text: 'Draft started from the last observed V1 user bytes. In-the-Box actions start off because the detector cannot report these app settings. No detector changes were made.'
@@ -326,33 +202,11 @@
     async function fetchProfiles() {
         const generation = catalogGeneration;
         try {
-            const loadedProfiles = [];
-            let cursor = '';
-            let schemaReady = true;
-            while (true) {
-                const url = cursor
-                    ? `/api/v1/profiles?after=${encodeURIComponent(cursor)}&limit=10`
-                    : '/api/v1/profiles';
-                const res = await fetchJsonWithTimeout(url);
-                if (disposed) return false;
-                // Acknowledged changes invalidate every page of this older catalog.
-                if (generation !== catalogGeneration) return await fetchProfiles();
-                if (!res.ok) {
-                    message = { type: 'error', text: PROFILE_LOAD_ERROR_TEXT };
-                    return false;
-                }
-                const data = res.data;
-                if (!Array.isArray(data.profiles)) throw new Error('Invalid profile page');
-                loadedProfiles.push(...data.profiles);
-                schemaReady = schemaReady && data.schemaVersion === 4;
-                if (!data.hasMore) break;
-                if (typeof data.nextCursor !== 'string' || !data.nextCursor || data.nextCursor === cursor) {
-                    throw new Error('Invalid profile cursor');
-                }
-                cursor = data.nextCursor;
-            }
-            profiles = loadedProfiles;
-            profileSchemaReady = schemaReady;
+            const catalog = await fetchProfileCatalog();
+            if (disposed) return false;
+            if (generation !== catalogGeneration) return await fetchProfiles();
+            profiles = catalog.profiles;
+            profileSchemaReady = catalog.schemaReady;
             clearMessageText(PROFILE_LOAD_ERROR_TEXT);
             return true;
         } catch (e) {
@@ -365,145 +219,6 @@
         }
     }
 
-    function prepareProfileSave({
-        description, settings, detector, detectorToSave = detector, inTheBox, cloneBaseBytes = false
-    }) {
-        const validatedDescription = descriptionForSave(description);
-        if (validatedDescription.error) return validatedDescription;
-        if (!settings) return { error: 'No settings to save' };
-        const frequencyError = customFrequencyError(settings, detector);
-        if (frequencyError) return { error: frequencyError };
-        const boxError = inTheBoxSettingsError(inTheBox);
-        if (boxError) return { error: boxError };
-
-        // The dialog detaches raw bytes; the existing editor keeps its shallow
-        // snapshot because its completion check compares field identities.
-        const savedSettings = {
-            ...settings,
-            ...(cloneBaseBytes && settings.baseBytes ? { baseBytes: [...settings.baseBytes] } : {})
-        };
-        const savedDetector = cloneDetectorConfiguration(detectorToSave);
-        const savedInTheBox = cloneInTheBoxSettings(inTheBox);
-        return {
-            savedSettings,
-            savedDetector,
-            savedInTheBox,
-            description: validatedDescription.description
-        };
-    }
-
-    async function postProfileSave(name, prepared, { createOnly = false, parseErrorJson = false } = {}) {
-        const payload = {
-            name,
-            ...(createOnly ? { createOnly: true } : {}),
-            description: prepared.description,
-            schemaVersion: 4,
-            detector: toApiDetectorConfiguration(prepared.savedDetector),
-            inTheBox: toApiInTheBoxSettings(prepared.savedInTheBox),
-            settings: toApiSettings(prepared.savedSettings)
-        };
-        const result = await fetchWithTimeout('/api/v1/profile', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        }, undefined, async (response) => {
-            if (response.ok) return { ok: true, error: null };
-            const body = await response.text();
-            // Preserve each save path's existing error presentation.
-            if (parseErrorJson) {
-                try {
-                    return { ok: false, error: JSON.parse(body).error || body };
-                } catch {
-                    // Non-JSON errors are displayed as received.
-                }
-            }
-            return { ok: false, error: body };
-        });
-        return { ...result, payload };
-    }
-
-    async function saveCurrentProfile() {
-        if (mutationBusy) return;
-        const validatedName = validateProfileName(saveName);
-        if (validatedName.error) {
-            message = { type: 'error', text: validatedName.error };
-            return;
-        }
-        if (copySourceName && profiles.some((profile) =>
-            profile.name.toLowerCase() === validatedName.canonical.toLowerCase())) {
-            message = { type: 'error', text: 'Choose a new name for the copied profile' };
-            return;
-        }
-        const prepared = prepareProfileSave({
-            description: saveDescription,
-            settings: editingSettings && editedSettings ? editedSettings : currentProfile?.settings,
-            detector: editedDetector || currentProfile?.detector,
-            inTheBox: editedInTheBox || currentProfile?.inTheBox,
-            cloneBaseBytes: true
-        });
-        if (prepared.error) {
-            message = { type: 'error', text: prepared.error };
-            return;
-        }
-
-        const sourceProfile = currentProfile;
-        const editSession = editedSettings;
-        const detectorEditSession = editedDetector;
-        const boxEditSession = editedInTheBox;
-        const descriptionAtStart = editDescription;
-        const wasEditing = editingSettings;
-        const { savedSettings, savedDetector, savedInTheBox } = prepared;
-        savingProfile = validatedName.canonical;
-        try {
-            const res = await postProfileSave(validatedName.canonical, prepared, {
-                createOnly: true,
-                parseErrorJson: true
-            });
-            const { payload } = res;
-
-            if (res.ok) {
-                const canonicalName = validatedName.canonical;
-                recordSavedProfile(
-                    canonicalName,
-                    payload.description,
-                    true
-                );
-                if (currentProfile === sourceProfile && editedSettings === editSession &&
-                    editedDetector === detectorEditSession && editedInTheBox === boxEditSession) {
-                    const dialogUnchanged = saveName.trim() === canonicalName &&
-                        saveDescription.trim() === payload.description;
-                    const draftUnchanged = !wasEditing ||
-                        (editDescription === descriptionAtStart &&
-                            JSON.stringify(toApiSettings(editedSettings)) === JSON.stringify(payload.settings) &&
-                            detectorConfigurationsEqual(editedDetector, savedDetector) &&
-                            inTheBoxConfigurationsEqual(editedInTheBox, savedInTheBox));
-                    currentProfile = {
-                        ...sourceProfile,
-                        draft: false,
-                        name: canonicalName,
-                        description: payload.description,
-                        detector: savedDetector,
-                        inTheBox: savedInTheBox,
-                        settings: savedSettings
-                    };
-                    if (draftUnchanged && dialogUnchanged) cancelEditing();
-                    if (dialogUnchanged) {
-                        saveName = canonicalName;
-                        showSaveDialog = false;
-                        copySourceName = null;
-                    }
-                }
-                message = { type: 'success', text: `Profile "${canonicalName}" saved` };
-            } else {
-                message = { type: 'error', text: `Failed to save: ${res.error}` };
-            }
-        } catch (e) {
-            message = { type: 'error', text: 'Connection error' };
-        } finally {
-            savingProfile = null;
-        }
-    }
-
     async function focusEditor() {
         await tick();
         const editor = document.getElementById('profile-editor');
@@ -512,57 +227,13 @@
     }
 
     function startEditing() {
-        if (currentProfile && currentProfile.settings) {
-            profileLoadGeneration += 1;
-            editedSettings = { ...currentProfile.settings };
-            editedDetector = cloneDetectorConfiguration(currentProfile.detector);
-            editedInTheBox = cloneInTheBoxSettings(currentProfile.inTheBox);
-            editDescription = currentProfile.description || '';
-            editingSettings = true;
-        }
-    }
-
-    function cancelEditing() {
-        editedSettings = null;
-        editedDetector = null;
-        editedInTheBox = null;
-        editDescription = '';
-        editingSettings = false;
+        profileLoadGeneration += 1;
+        authoring.reedit();
     }
 
     function cancelProfileEditing() {
         profileLoadGeneration += 1;
-        cancelEditing();
-    }
-
-    function openSaveDialog() {
-        if (editingSettings && editDescription && !saveDescription) {
-            saveDescription = editDescription;
-        }
-        showSaveDialog = true;
-    }
-
-    function closeSaveDialog() {
-        showSaveDialog = false;
-    }
-
-    function copyNameSuggestion(name) {
-        const suffix = ' copy';
-        let base = name;
-        while (new TextEncoder().encode(base + suffix).length > 64) {
-            base = Array.from(base).slice(0, -1).join('');
-        }
-        let candidate = base + suffix;
-        let number = 2;
-        while (profiles.some((profile) => profile.name.toLowerCase() === candidate.toLowerCase())) {
-            const numberedSuffix = ` copy ${number++}`;
-            let trimmed = name;
-            while (new TextEncoder().encode(trimmed + numberedSuffix).length > 64) {
-                trimmed = Array.from(trimmed).slice(0, -1).join('');
-            }
-            candidate = trimmed + numberedSuffix;
-        }
-        return candidate;
+        authoring.cancel();
     }
 
     async function copyProfile(name) {
@@ -575,37 +246,21 @@
                     body: response.ok ? await response.json() : await response.text()
                 })
             );
-            if (loadGeneration !== profileLoadGeneration) return;
+            if (disposed || loadGeneration !== profileLoadGeneration) return;
             if (!res.ok) {
                 message = { type: 'error', text: `Failed to load: ${res.body}` };
                 return;
             }
-            const data = res.body;
-            const detector = fromApiDetectorConfiguration(data.detector || {});
-            const inTheBox = fromApiInTheBoxSettings(data.inTheBox);
-            const settings = fromApiSettings(data.settings || {});
-            currentProfile = {
-                ...data, draft: true, name: '', detector, inTheBox, settings
-            };
-            editedSettings = { ...settings };
-            editedDetector = cloneDetectorConfiguration(detector);
-            editedInTheBox = cloneInTheBoxSettings(inTheBox);
-            editDescription = data.description || '';
-            saveDescription = editDescription;
-            saveName = copyNameSuggestion(name);
-            copySourceName = name;
-            editingSettings = true;
-            showSaveDialog = true;
+            authoring.beginCopy(res.body, profiles, name);
             message = { type: 'info', text: `Copying ${name}. Save under a new name.` };
         } catch {
-            if (loadGeneration !== profileLoadGeneration) return;
+            if (disposed || loadGeneration !== profileLoadGeneration) return;
             message = { type: 'error', text: 'Connection error' };
         }
     }
 
     async function editProfile(name) {
         const loadGeneration = ++profileLoadGeneration;
-        copySourceName = null;
         message = { type: 'info', text: `Loading ${name}...` };
         try {
             const res = await fetchWithTimeout(
@@ -617,50 +272,23 @@
                     body: response.ok ? await response.json() : await response.text()
                 })
             );
-            if (loadGeneration !== profileLoadGeneration) return;
+            if (disposed || loadGeneration !== profileLoadGeneration) return;
             if (res.ok) {
-                const data = res.body;
-                currentProfile = {
-                    ...data,
-                    detector: fromApiDetectorConfiguration(data.detector || {}),
-                    inTheBox: fromApiInTheBoxSettings(data.inTheBox),
-                    settings: fromApiSettings(data.settings || {})
-                };
-                editedSettings = { ...currentProfile.settings };
-                editedDetector = cloneDetectorConfiguration(currentProfile.detector);
-                editedInTheBox = cloneInTheBoxSettings(currentProfile.inTheBox);
-                editDescription = data.description || '';
-                editingSettings = true;
+                authoring.beginEdit(res.body);
                 message = null;
                 void focusEditor();
             } else {
                 message = { type: 'error', text: `Failed to load: ${res.body}` };
             }
         } catch (e) {
-            if (loadGeneration !== profileLoadGeneration) return;
+            if (disposed || loadGeneration !== profileLoadGeneration) return;
             message = { type: 'error', text: 'Connection error' };
         }
     }
 
     function createNewProfile() {
         profileLoadGeneration += 1;
-        copySourceName = null;
-        currentProfile = {
-            available: true,
-            draft: true,
-            name: '',
-            description: '',
-            detector: createProfileDetectorConfiguration(),
-            inTheBox: createDefaultInTheBoxSettings(),
-            settings: createDefaultProfileSettings()
-        };
-        editedSettings = createDefaultProfileSettings();
-        editedDetector = createProfileDetectorConfiguration();
-        editedInTheBox = createDefaultInTheBoxSettings();
-        editDescription = '';
-        saveName = '';
-        saveDescription = '';
-        editingSettings = true;
+        authoring.beginNew();
         message = {
             type: 'info',
             text: 'Choose your settings, then save this profile. Apply it to your V1 or assign it to Auto-Push.'
@@ -669,71 +297,13 @@
     }
 
     function resetDraftToLocalDefaults() {
-        if (!editingSettings) return;
+        if (!authoring.draft) return;
         profileLoadGeneration += 1;
-        editedSettings = createDefaultProfileSettings();
-        editedDetector = createProfileDetectorConfiguration();
-        editedInTheBox = createDefaultInTheBoxSettings();
+        authoring.resetEditableDomains();
         message = {
             type: 'info',
             text: 'Draft reset to V1Simple profile defaults. No command was sent to the detector.'
         };
-    }
-
-    async function saveEditedProfile() {
-        if (mutationBusy) return;
-        if (!editedSettings || !currentProfile || !currentProfile.name) {
-            message = { type: 'error', text: 'No profile loaded to save' };
-            return;
-        }
-        const prepared = prepareProfileSave({
-            description: editDescription,
-            settings: editedSettings,
-            detector: editedDetector,
-            detectorToSave: editedDetector || currentProfile.detector,
-            inTheBox: editedInTheBox || currentProfile.inTheBox
-        });
-        if (prepared.error) {
-            message = { type: 'error', text: prepared.error };
-            return;
-        }
-
-        const profile = currentProfile;
-        const editSession = editedSettings;
-        const detectorEditSession = editedDetector;
-        const boxEditSession = editedInTheBox;
-        const { savedSettings, savedDetector, savedInTheBox } = prepared;
-        savingProfile = profile.name;
-        message = { type: 'info', text: `Saving ${profile.name}...` };
-        try {
-            const res = await postProfileSave(profile.name, prepared);
-            const { payload } = res;
-
-            if (res.ok) {
-                recordSavedProfile(payload.name, payload.description, true);
-                message = { type: 'success', text: `Profile "${payload.name}" saved` };
-                if (editedSettings === editSession && editedDetector === detectorEditSession && editedInTheBox === boxEditSession) {
-                    const draftUnchanged = editDescription.trim() === payload.description &&
-                        Object.entries(savedSettings).every(([key, value]) => editedSettings[key] === value) &&
-                        detectorConfigurationsEqual(editedDetector, savedDetector) &&
-                        inTheBoxConfigurationsEqual(editedInTheBox, savedInTheBox);
-                    currentProfile = {
-                        ...profile,
-                        description: payload.description,
-                        detector: savedDetector,
-                        inTheBox: savedInTheBox,
-                        settings: savedSettings
-                    };
-                    if (draftUnchanged) cancelEditing();
-                }
-            } else {
-                message = { type: 'error', text: `Failed to save: ${res.error}` };
-            }
-        } catch (e) {
-            message = { type: 'error', text: 'Connection error' };
-        } finally {
-            savingProfile = null;
-        }
     }
 
     async function deleteProfile(name) {
@@ -783,7 +353,7 @@
     >
         <div class="flex flex-wrap items-center gap-2">
             <a class="btn btn-outline btn-sm" href="/autopush">Assign profiles to Auto-Push</a>
-            {#if profileSchemaReady && currentProfile?.settings}
+            {#if profileSchemaReady && authoring.acceptedProfile?.settings}
                 <button class="btn btn-primary btn-sm" onclick={createNewProfile}>New Profile</button>
             {/if}
         </div>
@@ -803,13 +373,11 @@
     {/if}
 
     <ProfileSaveDialog
-        open={showSaveDialog}
-        {savingProfile}
+        dialog={authoring.namingDialog}
+        savingProfile={authoring.savingProfile}
         {mutationBusy}
-        bind:saveName
-        bind:saveDescription
-        oncancel={closeSaveDialog}
-        onsave={saveCurrentProfile}
+        oncancel={authoring.closeNamingDialog}
+        onsave={() => authoring.saveNewName(profiles, deletingProfile)}
     />
 
     <ProfileSavedListCard
@@ -817,8 +385,8 @@
         {profiles}
         {mutationBusy}
         allowEdit={profileSchemaReady}
-        currentName={currentProfile?.name || ''}
-        compact={!!currentProfile?.settings}
+        currentName={authoring.acceptedProfile?.name || ''}
+        compact={!!authoring.acceptedProfile?.settings}
         oneditProfile={editProfile}
         oncopyProfile={copyProfile}
         ondeleteProfile={deleteProfile}
@@ -826,29 +394,23 @@
 
     {#if profileSchemaReady}
         <ProfileSettingsPanel
-            {editingSettings}
-            {currentProfile}
+            {authoring}
             {capturedSnapshot}
-            canApply={!!currentProfile?.name && profiles.some((profile) => profile.name === currentProfile.name)}
+            canApply={!!authoring.acceptedProfile?.name && profiles.some((profile) => profile.name === authoring.acceptedProfile.name)}
             applyDisabled={operationBusy || !capturedSnapshot?.address}
             onapply={applySavedProfile}
-            {savingProfile}
             {mutationBusy}
-            bind:editedSettings
-            bind:editedDetector
-            bind:editedInTheBox
-            bind:editDescription
-            frequencyError={editingSettings && editedSettings && editedDetector
-                ? customFrequencyError(editedSettings, editedDetector)
+            frequencyError={authoring.draft
+                ? customFrequencyError(authoring.draft.settings, authoring.draft.detector)
                 : null}
             oncancelEditing={cancelProfileEditing}
-            onsaveEditedProfile={saveEditedProfile}
+            onsaveEditedProfile={() => authoring.saveEdit(deletingProfile)}
             oncreateNewProfile={createNewProfile}
             onstartEditing={startEditing}
             onaddCustomFrequencyRange={addCustomFrequencyRange}
             onremoveCustomFrequencyRange={removeCustomFrequencyRange}
             onresetDraft={resetDraftToLocalDefaults}
-            onshowSaveDialog={openSaveDialog}
+            onshowSaveDialog={authoring.openNamingDialog}
         />
     {/if}
 

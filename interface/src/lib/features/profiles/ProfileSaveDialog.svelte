@@ -1,9 +1,7 @@
 <script>
     import { nativeDialog } from '#lib/utils/nativeDialog.js';
     let {
-        open = false,
-        saveName = $bindable(''),
-        saveDescription = $bindable(''),
+        dialog,
         savingProfile = null,
         mutationBusy = false,
         oncancel,
@@ -11,7 +9,7 @@
     } = $props();
 </script>
 
-{#if open}
+{#if dialog}
     <dialog use:nativeDialog class="modal" aria-label="Save Profile"
         oncancel={(event) => { event.preventDefault(); oncancel(); }}>
         <div class="surface-modal modal-box">
@@ -27,7 +25,7 @@
                         placeholder="e.g., Highway, City, Custom"
                         class="input w-full"
                         maxlength="64"
-                        bind:value={saveName}
+                        bind:value={dialog.name}
                     />
                 </div>
                 <div class="field-control">
@@ -40,7 +38,7 @@
                         placeholder="e.g., Max sensitivity for open roads"
                         class="input w-full"
                         maxlength="4096"
-                        bind:value={saveDescription}
+                        bind:value={dialog.description}
                     />
                 </div>
             </div>

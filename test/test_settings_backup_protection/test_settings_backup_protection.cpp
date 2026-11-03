@@ -85,6 +85,62 @@ JsonObject appendCurrentProfile(JsonDocument& doc, const char* name) {
     return profile;
 }
 
+// These inputs are independent of the production detector writer. The same
+// expected admission is checked at the leaf and inside an exact full backup.
+constexpr const char* kCurrentDetectorContract = R"json({
+    "userSettings":"value", "mode":{"policy":"value","value":1},
+    "display":"on",
+    "volume":{"policy":"temporary","main":0,"muted":9,"feedback":"changed_only","disconnect":"keep_current"},
+    "bluetoothLed":"off",
+    "customFrequencies":{"policy":"value","definitions":[
+        {"index":0,"lowerMHz":0,"upperMHz":0},
+        {"index":1,"lowerMHz":65534,"upperMHz":65535}
+    ]}
+})json";
+constexpr const char* kUnchangedDetectorContract = R"json({
+    "userSettings":"unchanged", "mode":{"policy":"unchanged"},
+    "display":"unchanged", "volume":{"policy":"unchanged"},
+    "bluetoothLed":"unchanged", "customFrequencies":{"policy":"unchanged"}
+})json";
+
+void assertCurrentDetectorContract(const JsonDocument& detector, bool expected, const char* label) {
+    V1DetectorConfiguration output;
+    output.modePolicy = V1ModePolicy::Value;
+    output.mode = 3;
+    output.displayPolicy = V1DisplayPolicy::Off;
+    output.volumePolicy = V1VolumePolicy::Saved;
+    output.mainVolume = 7;
+    output.mutedVolume = 2;
+    output.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    TEST_ASSERT_TRUE(output.customFrequencyDefinitions.push_back({0, 24000, 24100}));
+    const V1DetectorConfiguration before = output;
+    TEST_ASSERT_EQUAL_MESSAGE(expected,
+        parseV1DetectorConfiguration(detector.as<JsonObjectConst>(), output), label);
+    TEST_ASSERT_EQUAL_MESSAGE(expected,
+        validateV1DetectorConfiguration(detector.as<JsonObjectConst>()), label);
+    if (!expected) TEST_ASSERT_TRUE_MESSAGE(output == before, label);
+    else {
+        const bool hasDefinitions = detector["customFrequencies"]["policy"] == "value";
+        TEST_ASSERT_EQUAL_UINT_MESSAGE(hasDefinitions ? detector["customFrequencies"]["definitions"].size() : 0,
+                                       output.customFrequencyDefinitions.size(), label);
+    }
+
+    JsonDocument backup;
+    buildValidBackupDoc(backup);
+    JsonObject profile = appendCurrentProfile(backup, "Grammar");
+    TEST_ASSERT_TRUE(profile["detector"].set(detector.as<JsonVariantConst>()));
+    TEST_ASSERT_EQUAL_MESSAGE(expected, validateCurrentBackupDocumentShape(backup), label);
+}
+
+template<typename Mutation>
+void checkCurrentDetectorMutation(const char* label, bool expected, Mutation mutate,
+                                  const char* initial = kCurrentDetectorContract) {
+    JsonDocument detector;
+    TEST_ASSERT_FALSE(deserializeJson(detector, initial));
+    mutate(detector);
+    assertCurrentDetectorContract(detector, expected, label);
+}
+
 /// Serialize a JsonDocument to a std::string for writing to files.
 std::string serializeDoc(const JsonDocument& doc) {
     std::string output;
@@ -155,6 +211,215 @@ void tearDown() {
     if (!g_tempRoot.empty()) {
         std::filesystem::remove_all(g_tempRoot);
     }
+}
+
+void test_current_detector_complete_output_matches_independent_values() {
+    JsonDocument detector;
+    TEST_ASSERT_FALSE(deserializeJson(detector, kCurrentDetectorContract));
+    V1DetectorConfiguration output;
+    output.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    output.mode = 3;
+    output.displayPolicy = V1DisplayPolicy::Off;
+    output.volumePolicy = V1VolumePolicy::Saved;
+    output.mainVolume = 7;
+    output.mutedVolume = 2;
+    output.volumeFeedback = V1VolumeFeedbackPolicy::Always;
+    output.bluetoothLedPolicy = V1BluetoothLedPolicy::On;
+    TEST_ASSERT_TRUE(output.customFrequencyDefinitions.push_back({0, 24000, 24100}));
+
+    V1DetectorConfiguration expected;
+    expected.userSettingsPolicy = V1UserSettingsPolicy::Value;
+    expected.modePolicy = V1ModePolicy::Value;
+    expected.mode = 1;
+    expected.displayPolicy = V1DisplayPolicy::On;
+    expected.volumePolicy = V1VolumePolicy::Temporary;
+    expected.mainVolume = 0;
+    expected.mutedVolume = 9;
+    expected.volumeFeedback = V1VolumeFeedbackPolicy::ChangedOnly;
+    expected.volumeDisconnect = V1VolumeDisconnectPolicy::KeepCurrent;
+    expected.bluetoothLedPolicy = V1BluetoothLedPolicy::Off;
+    expected.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    TEST_ASSERT_TRUE(expected.customFrequencyDefinitions.push_back({0, 0, 0}));
+    TEST_ASSERT_TRUE(expected.customFrequencyDefinitions.push_back({1, 65534, 65535}));
+    TEST_ASSERT_TRUE(parseV1DetectorConfiguration(detector.as<JsonObjectConst>(), output));
+    TEST_ASSERT_TRUE(output == expected);
+}
+
+void test_current_detector_unchanged_output_replaces_all_previous_values() {
+    JsonDocument detector;
+    TEST_ASSERT_FALSE(deserializeJson(detector, kUnchangedDetectorContract));
+    V1DetectorConfiguration output;
+    output.userSettingsPolicy = V1UserSettingsPolicy::Value;
+    output.modePolicy = V1ModePolicy::Value;
+    output.mode = 3;
+    output.displayPolicy = V1DisplayPolicy::Off;
+    output.volumePolicy = V1VolumePolicy::Saved;
+    output.mainVolume = 7;
+    output.mutedVolume = 2;
+    output.volumeFeedback = V1VolumeFeedbackPolicy::Always;
+    output.volumeDisconnect = V1VolumeDisconnectPolicy::KeepCurrent;
+    output.bluetoothLedPolicy = V1BluetoothLedPolicy::On;
+    output.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    TEST_ASSERT_TRUE(output.customFrequencyDefinitions.push_back({0, 24000, 24100}));
+
+    V1DetectorConfiguration expected;
+    expected.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    expected.modePolicy = V1ModePolicy::Unchanged;
+    expected.mode = 0;
+    expected.displayPolicy = V1DisplayPolicy::Unchanged;
+    expected.volumePolicy = V1VolumePolicy::Unchanged;
+    expected.mainVolume = 0;
+    expected.mutedVolume = 0;
+    expected.volumeFeedback = V1VolumeFeedbackPolicy::None;
+    expected.volumeDisconnect = V1VolumeDisconnectPolicy::RestoreSaved;
+    expected.bluetoothLedPolicy = V1BluetoothLedPolicy::Unchanged;
+    expected.customFrequencyPolicy = V1CustomFrequencyPolicy::Unchanged;
+    TEST_ASSERT_TRUE(parseV1DetectorConfiguration(detector.as<JsonObjectConst>(), output));
+    TEST_ASSERT_TRUE(output == expected);
+}
+
+void test_current_detector_grammar_exact_objects_and_tokens_match_backup_admission() {
+    const auto unchanged = [](JsonDocument&) {};
+    checkCurrentDetectorMutation("complete current detector", true, unchanged);
+    checkCurrentDetectorMutation("all unchanged", true, unchanged, kUnchangedDetectorContract);
+    for (const char* key : {"userSettings", "mode", "display", "volume", "bluetoothLed", "customFrequencies"}) {
+        checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) { doc.remove(key); });
+    }
+    checkCurrentDetectorMutation("extra root field", false, [](JsonDocument& doc) { doc["extra"] = true; });
+    for (const char* key : {"mode", "volume", "customFrequencies"}) {
+        for (const char* wrongType : {"null", "[]", "true", "1", "\"value\""}) {
+            checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) {
+                JsonDocument wrong;
+                TEST_ASSERT_FALSE(deserializeJson(wrong, wrongType));
+                doc[key].set(wrong.as<JsonVariantConst>());
+            });
+        }
+        checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) { doc[key].remove("policy"); });
+        checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) { doc[key]["extra"] = 1; });
+        checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) { doc[key]["policy"] = "VALUE"; });
+        checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) {
+            doc[key]["policy"] = std::string("value\0suffix", 12);
+        });
+    }
+    for (const char* key : {"userSettings", "display", "bluetoothLed"}) {
+        checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) { doc[key] = true; });
+        checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) { doc[key] = "unknown"; });
+        checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) {
+            doc[key] = std::string("unchanged\0suffix", 16);
+        });
+    }
+    for (const char* key : {"display", "bluetoothLed"}) {
+        for (const char* token : {"on", "off", "unchanged"}) {
+            checkCurrentDetectorMutation(token, true, [&](JsonDocument& doc) { doc[key] = token; });
+        }
+    }
+    for (const char* key : {"feedback", "disconnect"}) {
+        checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) { doc["volume"].remove(key); });
+        checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) { doc["volume"][key] = false; });
+        checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) { doc["volume"][key] = "unknown"; });
+        checkCurrentDetectorMutation(key, false, [&](JsonDocument& doc) {
+            doc["volume"][key] = std::string(std::strcmp(key, "feedback") == 0 ? "none\0suffix" : "restore_saved\0suffix",
+                                            std::strcmp(key, "feedback") == 0 ? 11 : 20);
+        });
+    }
+    for (const char* token : {"none", "changed_only", "always"}) {
+        checkCurrentDetectorMutation(token, true, [&](JsonDocument& doc) { doc["volume"]["feedback"] = token; });
+    }
+    checkCurrentDetectorMutation("saved restores saved", true, [](JsonDocument& doc) {
+        doc["volume"]["policy"] = "saved";
+        doc["volume"]["disconnect"] = "restore_saved";
+    });
+    checkCurrentDetectorMutation("saved cannot keep current", false, [](JsonDocument& doc) {
+        doc["volume"]["policy"] = "saved";
+    });
+    checkCurrentDetectorMutation("unchanged mode forbids value", false, [](JsonDocument& doc) {
+        doc["mode"]["value"] = 1;
+    }, kUnchangedDetectorContract);
+    checkCurrentDetectorMutation("unchanged volume forbids main", false, [](JsonDocument& doc) {
+        doc["volume"]["main"] = 0;
+    }, kUnchangedDetectorContract);
+    checkCurrentDetectorMutation("unchanged custom forbids definitions", false, [](JsonDocument& doc) {
+        doc["customFrequencies"]["definitions"].to<JsonArray>();
+    }, kUnchangedDetectorContract);
+}
+
+void test_current_detector_numeric_and_definition_boundaries_match_backup_admission() {
+    for (int mode : {0, 1, 2, 3, 4}) {
+        checkCurrentDetectorMutation("mode range", mode >= 1 && mode <= 3,
+                                      [&](JsonDocument& doc) { doc["mode"]["value"] = mode; });
+    }
+    for (const char* key : {"main", "muted"}) {
+        for (int volume : {-1, 0, 9, 10}) {
+            checkCurrentDetectorMutation("volume range", volume >= 0 && volume <= 9,
+                                          [&](JsonDocument& doc) { doc["volume"][key] = volume; });
+        }
+        checkCurrentDetectorMutation("missing volume field", false,
+                                      [&](JsonDocument& doc) { doc["volume"].remove(key); });
+    }
+    for (const char* wrongType : {"true", "\"1\"", "1.5", "4294967296", "null"}) {
+        for (int field = 0; field < 6; ++field) {
+            checkCurrentDetectorMutation("exact integer type", false, [&](JsonDocument& doc) {
+                JsonDocument wrong;
+                TEST_ASSERT_FALSE(deserializeJson(wrong, wrongType));
+                const JsonVariantConst value = wrong.as<JsonVariantConst>();
+                switch (field) {
+                case 0: doc["mode"]["value"].set(value); break;
+                case 1: doc["volume"]["main"].set(value); break;
+                case 2: doc["volume"]["muted"].set(value); break;
+                case 3: doc["customFrequencies"]["definitions"][0]["index"].set(value); break;
+                case 4: doc["customFrequencies"]["definitions"][0]["lowerMHz"].set(value); break;
+                default: doc["customFrequencies"]["definitions"][0]["upperMHz"].set(value); break;
+                }
+            });
+        }
+    }
+    for (int count : {0, 1, 64, 65}) {
+        checkCurrentDetectorMutation("definition count", count >= 1 && count <= 64, [&](JsonDocument& doc) {
+            JsonArray definitions = doc["customFrequencies"]["definitions"].to<JsonArray>();
+            for (int index = 0; index < count; ++index) {
+                JsonObject item = definitions.add<JsonObject>();
+                item["index"] = index;
+                item["lowerMHz"] = 65534;
+                item["upperMHz"] = 65535;
+            }
+        });
+    }
+    struct Bounds { int lower; int upper; bool accepted; };
+    const Bounds bounds[] = {{0,0,true}, {0,1,false}, {1,0,false}, {1,1,false}, {2,1,false},
+                             {1,2,true}, {65534,65535,true}, {65535,65535,false},
+                             {-1,1,false}, {1,-1,false}, {65536,65535,false}, {1,65536,false}};
+    for (const auto& value : bounds) {
+        checkCurrentDetectorMutation("frequency bounds", value.accepted, [&](JsonDocument& doc) {
+            doc["customFrequencies"]["definitions"][0]["lowerMHz"] = value.lower;
+            doc["customFrequencies"]["definitions"][0]["upperMHz"] = value.upper;
+        });
+    }
+    for (int index : {-1, 0, 2, 64}) {
+        checkCurrentDetectorMutation("consecutive definition index", false, [&](JsonDocument& doc) {
+            doc["customFrequencies"]["definitions"][1]["index"] = index;
+        });
+    }
+    for (const char* key : {"index", "lowerMHz", "upperMHz"}) {
+        checkCurrentDetectorMutation("missing definition field", false, [&](JsonDocument& doc) {
+            doc["customFrequencies"]["definitions"][0].remove(key);
+        });
+    }
+    checkCurrentDetectorMutation("extra definition field", false, [](JsonDocument& doc) {
+        doc["customFrequencies"]["definitions"][0]["extra"] = 1;
+    });
+    for (const char* wrongType : {"null", "[]", "true", "1", "\"definition\""}) {
+        checkCurrentDetectorMutation("definition requires object", false, [&](JsonDocument& doc) {
+            JsonDocument wrong;
+            TEST_ASSERT_FALSE(deserializeJson(wrong, wrongType));
+            doc["customFrequencies"]["definitions"][0].set(wrong.as<JsonVariantConst>());
+        });
+    }
+    checkCurrentDetectorMutation("missing definitions", false, [](JsonDocument& doc) {
+        doc["customFrequencies"].remove("definitions");
+    });
+    checkCurrentDetectorMutation("definitions requires array", false, [](JsonDocument& doc) {
+        doc["customFrequencies"]["definitions"].to<JsonObject>();
+    });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -968,6 +1233,10 @@ int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
     UNITY_BEGIN();
+    RUN_TEST(test_current_detector_complete_output_matches_independent_values);
+    RUN_TEST(test_current_detector_unchanged_output_replaces_all_previous_values);
+    RUN_TEST(test_current_detector_grammar_exact_objects_and_tokens_match_backup_admission);
+    RUN_TEST(test_current_detector_numeric_and_definition_boundaries_match_backup_admission);
     RUN_TEST(test_backup_live_remains_authoritative_when_cached_file_size_is_unavailable);
     RUN_TEST(test_backup_promotion_retains_previous_when_live_is_missing_and_rename_fails);
     RUN_TEST(test_backup_rollback_restores_previous_even_when_previous_read_open_fails);

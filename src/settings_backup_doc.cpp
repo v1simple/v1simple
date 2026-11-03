@@ -1059,68 +1059,6 @@ bool currentJsonRawSettingsAreValid(JsonVariantConst value) {
     return true;
 }
 
-bool currentJsonDetectorIsValid(JsonObjectConst source) {
-    if (source.isNull() || source.size() != 6 || !source["userSettings"].is<const char*>() ||
-        !source["mode"].is<JsonObjectConst>() || !source["display"].is<const char*>() ||
-        !source["volume"].is<JsonObjectConst>() || !source["bluetoothLed"].is<const char*>() ||
-        !source["customFrequencies"].is<JsonObjectConst>()) return false;
-    if (!exactV1JsonToken(source["userSettings"], "value") &&
-        !exactV1JsonToken(source["userSettings"], "unchanged")) return false;
-
-    const JsonObjectConst mode = source["mode"].as<JsonObjectConst>();
-    if (exactV1JsonToken(mode["policy"], "value")) {
-        if (mode.size() != 2 || !mode["value"].is<int>() || mode["value"].as<int>() < 1 ||
-            mode["value"].as<int>() > 3) return false;
-    } else if (!exactV1JsonToken(mode["policy"], "unchanged") || mode.size() != 1) {
-        return false;
-    }
-    if (!exactV1JsonToken(source["display"], "on") &&
-        !exactV1JsonToken(source["display"], "off") &&
-        !exactV1JsonToken(source["display"], "unchanged")) return false;
-
-    const JsonObjectConst volume = source["volume"].as<JsonObjectConst>();
-    const bool temporary = exactV1JsonToken(volume["policy"], "temporary");
-    const bool saved = exactV1JsonToken(volume["policy"], "saved");
-    if (temporary || saved) {
-        if (volume.size() != 5 || !volume["main"].is<int>() || !volume["muted"].is<int>() ||
-            volume["main"].as<int>() < 0 || volume["main"].as<int>() > 9 ||
-            volume["muted"].as<int>() < 0 || volume["muted"].as<int>() > 9 ||
-            (!exactV1JsonToken(volume["feedback"], "none") &&
-             !exactV1JsonToken(volume["feedback"], "changed_only") &&
-             !exactV1JsonToken(volume["feedback"], "always")) ||
-            (!exactV1JsonToken(volume["disconnect"], "restore_saved") &&
-             !exactV1JsonToken(volume["disconnect"], "keep_current")) ||
-            (saved && !exactV1JsonToken(volume["disconnect"], "restore_saved"))) return false;
-    } else if (!exactV1JsonToken(volume["policy"], "unchanged") || volume.size() != 1) {
-        return false;
-    }
-    if (!exactV1JsonToken(source["bluetoothLed"], "on") &&
-        !exactV1JsonToken(source["bluetoothLed"], "off") &&
-        !exactV1JsonToken(source["bluetoothLed"], "unchanged")) return false;
-
-    const JsonObjectConst custom = source["customFrequencies"].as<JsonObjectConst>();
-    if (exactV1JsonToken(custom["policy"], "unchanged")) return custom.size() == 1;
-    if (!exactV1JsonToken(custom["policy"], "value") || custom.size() != 2 ||
-        !custom["definitions"].is<JsonArrayConst>()) return false;
-    const JsonArrayConst definitions = custom["definitions"].as<JsonArrayConst>();
-    if (definitions.size() == 0 || definitions.size() > 64) return false;
-    uint8_t expectedIndex = 0;
-    for (JsonVariantConst value : definitions) {
-        if (!value.is<JsonObjectConst>()) return false;
-        const JsonObjectConst definition = value.as<JsonObjectConst>();
-        if (definition.size() != 3 || !definition["index"].is<int>() ||
-            definition["index"].as<int>() != expectedIndex++ || !definition["lowerMHz"].is<int>() ||
-            !definition["upperMHz"].is<int>() || definition["lowerMHz"].as<int>() < 0 ||
-            definition["lowerMHz"].as<int>() > 65535 || definition["upperMHz"].as<int>() < 0 ||
-            definition["upperMHz"].as<int>() > 65535) return false;
-        const int lower = definition["lowerMHz"].as<int>();
-        const int upper = definition["upperMHz"].as<int>();
-        const bool unused = lower == 0 && upper == 0;
-        if ((lower == 0) != (upper == 0) || (!unused && lower >= upper)) return false;
-    }
-    return true;
-}
-
 bool currentJsonEncodedPasswordIsValid(JsonVariantConst value) {
     if (!value.is<const char*>()) return false;
     const JsonString encoded = value.as<JsonString>();
@@ -1447,7 +1385,7 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
             if (!profile["schemaVersion"].is<int>() ||
                 profile["schemaVersion"].as<int>() != expectedProfileSchema ||
                 !profile["detector"].is<JsonObjectConst>() ||
-                !currentJsonDetectorIsValid(profile["detector"].as<JsonObjectConst>())) return false;
+                !validateV1DetectorConfiguration(profile["detector"].as<JsonObjectConst>())) return false;
             V1InTheBoxSettings inTheBox;
             if (!parseV1ProfileInTheBox(profile, expectedProfileSchema, inTheBox)) return false;
             size_t priorIndex = 0;

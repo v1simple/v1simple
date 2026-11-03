@@ -266,31 +266,42 @@ inline V1DetectorConfiguration migrateV1DetectorConfigurationV2(const V1Detector
     return migrated;
 }
 
-inline bool parseV1DetectorConfiguration(JsonObjectConst source, V1DetectorConfiguration& config) {
+namespace V1ProfileDetail {
+
+// Output, when requested, is the parser's default-initialized local value.
+// Validation executes the same grammar without constructing a configuration.
+// Inline the core so null-output validation and parser caller frames stay bounded.
+inline __attribute__((always_inline)) bool decodeCurrentV1DetectorConfiguration(
+    JsonObjectConst source, V1DetectorConfiguration* output) {
     if (source.isNull() || source.size() != 6 || !source["userSettings"].is<const char*>() ||
         !source["mode"].is<JsonObjectConst>() || !source["display"].is<const char*>() ||
         !source["volume"].is<JsonObjectConst>() || !source["bluetoothLed"].is<const char*>() ||
         !source["customFrequencies"].is<JsonObjectConst>()) return false;
 
-    V1DetectorConfiguration parsed;
-    if (exactV1JsonToken(source["userSettings"], "value")) parsed.userSettingsPolicy = V1UserSettingsPolicy::Value;
-    else if (exactV1JsonToken(source["userSettings"], "unchanged")) parsed.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
-    else return false;
+    if (exactV1JsonToken(source["userSettings"], "value")) {
+        if (output) output->userSettingsPolicy = V1UserSettingsPolicy::Value;
+    } else if (exactV1JsonToken(source["userSettings"], "unchanged")) {
+        if (output) output->userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    } else return false;
 
     const JsonObjectConst mode = source["mode"].as<JsonObjectConst>();
     if (!mode["policy"].is<const char*>()) return false;
     if (exactV1JsonToken(mode["policy"], "value")) {
         if (mode.size() != 2 || !mode["value"].is<int>() || mode["value"].as<int>() < 1 ||
             mode["value"].as<int>() > 3) return false;
-        parsed.modePolicy = V1ModePolicy::Value;
-        parsed.mode = static_cast<uint8_t>(mode["value"].as<int>());
+        if (output) {
+            output->modePolicy = V1ModePolicy::Value;
+            output->mode = static_cast<uint8_t>(mode["value"].as<int>());
+        }
     } else if (exactV1JsonToken(mode["policy"], "unchanged")) {
         if (mode.size() != 1) return false;
     } else return false;
 
-    if (exactV1JsonToken(source["display"], "on")) parsed.displayPolicy = V1DisplayPolicy::On;
-    else if (exactV1JsonToken(source["display"], "off")) parsed.displayPolicy = V1DisplayPolicy::Off;
-    else if (!exactV1JsonToken(source["display"], "unchanged")) return false;
+    if (exactV1JsonToken(source["display"], "on")) {
+        if (output) output->displayPolicy = V1DisplayPolicy::On;
+    } else if (exactV1JsonToken(source["display"], "off")) {
+        if (output) output->displayPolicy = V1DisplayPolicy::Off;
+    } else if (!exactV1JsonToken(source["display"], "unchanged")) return false;
 
     const JsonObjectConst volume = source["volume"].as<JsonObjectConst>();
     if (!volume["policy"].is<const char*>()) return false;
@@ -301,25 +312,32 @@ inline bool parseV1DetectorConfiguration(JsonObjectConst source, V1DetectorConfi
             !volume["feedback"].is<const char*>() || !volume["disconnect"].is<const char*>() ||
             volume["main"].as<int>() < 0 || volume["main"].as<int>() > 9 ||
             volume["muted"].as<int>() < 0 || volume["muted"].as<int>() > 9) return false;
-        parsed.volumePolicy = volumeSaved ? V1VolumePolicy::Saved : V1VolumePolicy::Temporary;
-        parsed.mainVolume = static_cast<uint8_t>(volume["main"].as<int>());
-        parsed.mutedVolume = static_cast<uint8_t>(volume["muted"].as<int>());
-        if (exactV1JsonToken(volume["feedback"], "none")) parsed.volumeFeedback = V1VolumeFeedbackPolicy::None;
-        else if (exactV1JsonToken(volume["feedback"], "changed_only")) parsed.volumeFeedback = V1VolumeFeedbackPolicy::ChangedOnly;
-        else if (exactV1JsonToken(volume["feedback"], "always")) parsed.volumeFeedback = V1VolumeFeedbackPolicy::Always;
+        V1VolumeFeedbackPolicy feedback;
+        if (exactV1JsonToken(volume["feedback"], "none")) feedback = V1VolumeFeedbackPolicy::None;
+        else if (exactV1JsonToken(volume["feedback"], "changed_only")) feedback = V1VolumeFeedbackPolicy::ChangedOnly;
+        else if (exactV1JsonToken(volume["feedback"], "always")) feedback = V1VolumeFeedbackPolicy::Always;
         else return false;
-        if (exactV1JsonToken(volume["disconnect"], "restore_saved")) parsed.volumeDisconnect = V1VolumeDisconnectPolicy::RestoreSaved;
-        else if (exactV1JsonToken(volume["disconnect"], "keep_current")) parsed.volumeDisconnect = V1VolumeDisconnectPolicy::KeepCurrent;
+        V1VolumeDisconnectPolicy disconnect;
+        if (exactV1JsonToken(volume["disconnect"], "restore_saved")) disconnect = V1VolumeDisconnectPolicy::RestoreSaved;
+        else if (exactV1JsonToken(volume["disconnect"], "keep_current")) disconnect = V1VolumeDisconnectPolicy::KeepCurrent;
         else return false;
-        if (parsed.volumePolicy == V1VolumePolicy::Saved &&
-            parsed.volumeDisconnect != V1VolumeDisconnectPolicy::RestoreSaved) return false;
+        if (volumeSaved && disconnect != V1VolumeDisconnectPolicy::RestoreSaved) return false;
+        if (output) {
+            output->volumePolicy = volumeSaved ? V1VolumePolicy::Saved : V1VolumePolicy::Temporary;
+            output->mainVolume = static_cast<uint8_t>(volume["main"].as<int>());
+            output->mutedVolume = static_cast<uint8_t>(volume["muted"].as<int>());
+            output->volumeFeedback = feedback;
+            output->volumeDisconnect = disconnect;
+        }
     } else if (exactV1JsonToken(volume["policy"], "unchanged")) {
         if (volume.size() != 1) return false;
     } else return false;
 
-    if (exactV1JsonToken(source["bluetoothLed"], "on")) parsed.bluetoothLedPolicy = V1BluetoothLedPolicy::On;
-    else if (exactV1JsonToken(source["bluetoothLed"], "off")) parsed.bluetoothLedPolicy = V1BluetoothLedPolicy::Off;
-    else if (!exactV1JsonToken(source["bluetoothLed"], "unchanged")) return false;
+    if (exactV1JsonToken(source["bluetoothLed"], "on")) {
+        if (output) output->bluetoothLedPolicy = V1BluetoothLedPolicy::On;
+    } else if (exactV1JsonToken(source["bluetoothLed"], "off")) {
+        if (output) output->bluetoothLedPolicy = V1BluetoothLedPolicy::Off;
+    } else if (!exactV1JsonToken(source["bluetoothLed"], "unchanged")) return false;
 
     const JsonObjectConst custom = source["customFrequencies"].as<JsonObjectConst>();
     if (!custom["policy"].is<const char*>()) return false;
@@ -327,7 +345,7 @@ inline bool parseV1DetectorConfiguration(JsonObjectConst source, V1DetectorConfi
         if (custom.size() != 2 || !custom["definitions"].is<JsonArrayConst>()) return false;
         const JsonArrayConst definitions = custom["definitions"].as<JsonArrayConst>();
         if (definitions.size() == 0 || definitions.size() > 64) return false;
-        parsed.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+        if (output) output->customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
         uint8_t expectedIndex = 0;
         for (JsonObjectConst item : definitions) {
             if (item.size() != 3 || !item["index"].is<int>() || !item["lowerMHz"].is<int>() ||
@@ -341,14 +359,26 @@ inline bool parseV1DetectorConfiguration(JsonObjectConst source, V1DetectorConfi
             const bool unused = definition.lowerMHz == 0 && definition.upperMHz == 0;
             if ((definition.lowerMHz == 0) != (definition.upperMHz == 0) ||
                 (!unused && definition.lowerMHz >= definition.upperMHz)) return false;
-            if (!parsed.customFrequencyDefinitions.push_back(definition)) return false;
+            if (output && !output->customFrequencyDefinitions.push_back(definition)) return false;
         }
     } else if (exactV1JsonToken(custom["policy"], "unchanged")) {
         if (custom.size() != 1) return false;
     } else return false;
 
+    return true;
+}
+
+} // namespace V1ProfileDetail
+
+inline bool parseV1DetectorConfiguration(JsonObjectConst source, V1DetectorConfiguration& config) {
+    V1DetectorConfiguration parsed;
+    if (!V1ProfileDetail::decodeCurrentV1DetectorConfiguration(source, &parsed)) return false;
     config = parsed;
     return true;
+}
+
+inline __attribute__((always_inline)) bool validateV1DetectorConfiguration(JsonObjectConst source) {
+    return V1ProfileDetail::decodeCurrentV1DetectorConfiguration(source, nullptr);
 }
 
 enum class ProfileStorageStatus : uint8_t {

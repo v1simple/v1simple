@@ -160,8 +160,8 @@ this format check; physical media and radio behavior are not exercised.
 
 ## Unknown maintenance settings
 
-GPS and OBD configuration use independent instances of
-`interface/src/lib/features/settings/peripheralConfig.svelte.js`. That owner
+GPS, OBD and ALP configuration use independent instances of
+`interface/src/lib/features/settings/immediateConfig.svelte.js`. That owner
 controls loading, write admission and post-write readback through one phase per
 instance; each card retains its payload validation and displayed field values.
 

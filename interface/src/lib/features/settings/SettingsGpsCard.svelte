@@ -1,6 +1,7 @@
 <script>
     import { onMount } from 'svelte';
-    import { createPeripheralConfig } from './peripheralConfig.svelte.js';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
+    import { createImmediateConfig } from './immediateConfig.svelte.js';
     import CardSectionHead from '#lib/components/CardSectionHead.svelte';
     import ToggleSetting from '#lib/components/ToggleSetting.svelte';
 
@@ -8,9 +9,27 @@
 
     let gpsEnabled = $state(false);
     let gpsBaud = $state(9600);
-    const config = createPeripheralConfig({ url: '/api/gps/config', name: 'GPS', apply: applyConfig });
+    const config = createImmediateConfig({
+        name: 'GPS',
+        async read() {
+            const response = await fetchJsonWithTimeout('/api/gps/config');
+            if (!response.ok) throw new Error(`GPS config request failed with status ${response.status}`);
+            return response.data;
+        },
+        async write(fields) {
+            return (await fetchWithTimeout('/api/gps/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(fields)
+            })).ok;
+        },
+        validateAndApply: applyConfig
+    });
 
-    onMount(() => { void config.load(); });
+    onMount(() => {
+        void config.load();
+        return config.dispose;
+    });
 
     function applyConfig(data) {
         if (typeof data?.gpsEnabled !== 'boolean' || !BAUD_OPTIONS.includes(data?.gpsBaud)) {

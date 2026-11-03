@@ -1,7 +1,7 @@
 <script>
     import { onMount } from 'svelte';
     import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
-    import { createPeripheralConfig } from './peripheralConfig.svelte.js';
+    import { createImmediateConfig } from './immediateConfig.svelte.js';
     import CardSectionHead from '#lib/components/CardSectionHead.svelte';
     import StatusAlert from '#lib/components/StatusAlert.svelte';
 
@@ -21,11 +21,27 @@
     let devicesMessage = $state(null);
     let editingAddress = $state('');
     let editName = $state('');
-    const config = createPeripheralConfig({ url: '/api/obd/config', name: 'OBD', apply: applyConfig });
+    const config = createImmediateConfig({
+        name: 'OBD',
+        async read() {
+            const response = await fetchJsonWithTimeout('/api/obd/config');
+            if (!response.ok) throw new Error(`OBD config request failed with status ${response.status}`);
+            return response.data;
+        },
+        async write(fields) {
+            return (await fetchWithTimeout('/api/obd/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(fields)
+            })).ok;
+        },
+        validateAndApply: applyConfig
+    });
 
     onMount(() => {
         void config.load();
         void retryDevices();
+        return config.dispose;
     });
 
     function applyConfig(data) {

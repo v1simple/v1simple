@@ -343,22 +343,172 @@ void test_profile_sync_generation_exhaustion_preserves_live_profile_and_tombston
 }
 
 void test_create_only_save_preserves_existing_profile() {
-    fs::FS fs(g_tempRoot);
-    V1ProfileManager manager;
-    TEST_ASSERT_TRUE(manager.begin(&fs));
-    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "original")).success);
+    const auto assertProfile = [](const V1Profile& expected, const V1Profile& actual) {
+        TEST_ASSERT_EQUAL_STRING(expected.name.c_str(), actual.name.c_str());
+        TEST_ASSERT_EQUAL_STRING(expected.description.c_str(), actual.description.c_str());
+        TEST_ASSERT_EQUAL_UINT8(expected.schemaVersion, actual.schemaVersion);
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(expected.settings.bytes, actual.settings.bytes, 6);
+        TEST_ASSERT_TRUE(expected.detector == actual.detector);
+        TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(expected.inTheBox, actual.inTheBox));
+    };
+    for (bool mirrored : {false, true}) {
+        mock_preferences::reset();
+        mock_nvs::reset();
+        const auto root = g_tempRoot / (mirrored ? "mirrored" : "single");
+        fs::FS primary(root / "primary");
+        fs::FS secondary(root / "secondary");
+        StorageManager storage;
+        storage.setFilesystem(&primary, mirrored);
+        storage.setLittleFS(mirrored ? &secondary : &primary);
+        V1ProfileManager manager;
+        TEST_ASSERT_TRUE(manager.begin(storage));
+        const V1Profile unrelated = makeProfile("Other", 40, "unrelated profile");
+        TEST_ASSERT_TRUE(manager.saveProfile(unrelated, true).success);
 
-    const ProfileSaveResult duplicate = manager.saveProfile(makeProfile("Road", 20, "replacement"), true);
-    TEST_ASSERT_FALSE(duplicate.success);
-    TEST_ASSERT_EQUAL_STRING("Profile already exists", duplicate.error.c_str());
-    V1Profile loaded;
-    TEST_ASSERT_TRUE(manager.loadProfile("Road", loaded));
-    TEST_ASSERT_EQUAL_STRING("original", loaded.description.c_str());
-    TEST_ASSERT_EQUAL_HEX8(10, loaded.settings.bytes[0]);
+        // A client's list predates the first creator. Both later requests reach
+        // the actual manager, which must check current storage, not that list.
+        const ProfileListResult staleCatalog = manager.listProfilesResult();
+        TEST_ASSERT_TRUE(staleCatalog.success());
+        TEST_ASSERT_EQUAL_UINT(1, staleCatalog.profiles.size());
+        TEST_ASSERT_EQUAL_STRING("Other", staleCatalog.profiles[0].c_str());
+        V1Profile original = makeProfile("Road", 0x91, "original detector and app policy");
+        original.detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+        original.detector.modePolicy = V1ModePolicy::Value;
+        original.detector.mode = 3;
+        original.detector.displayPolicy = V1DisplayPolicy::Off;
+        original.detector.volumePolicy = V1VolumePolicy::Saved;
+        original.detector.mainVolume = 9;
+        original.detector.mutedVolume = 0;
+        original.detector.volumeFeedback = V1VolumeFeedbackPolicy::Always;
+        original.detector.volumeDisconnect = V1VolumeDisconnectPolicy::RestoreSaved;
+        original.detector.bluetoothLedPolicy = V1BluetoothLedPolicy::On;
+        original.detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+        const std::array<V1CustomFrequencyDefinition, 2> originalDefinitions{{
+            {0, 24050, 24150}, {1, 0, 0}}};
+        TEST_ASSERT_TRUE(original.detector.customFrequencyDefinitions.assign(originalDefinitions));
+        original.inTheBox.bands[2] = {true, true};
+        original.inTheBox.boxes[2] = {true, 23900, 23900};
+        original.inTheBox.boxes[4].enabled = false;
+        TEST_ASSERT_TRUE(manager.saveProfile(original, true).success);
 
-    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("New", 30, "created"), true).success);
-    TEST_ASSERT_TRUE(manager.loadProfile("New", loaded));
-    TEST_ASSERT_EQUAL_STRING("created", loaded.description.c_str());
+        SettingsManager settings(storage, manager);
+        settings.load();
+        auto& seeded = settings.mutableSettings();
+        seeded.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+        seeded.autoPushEnabled = true;
+        seeded.activeSlot = 2;
+        seeded.slot0_default.profileName = "Road";
+        seeded.slot1_highway.profileName = "Other";
+        seeded.slot2_comfort.profileName = "Road";
+        seeded.slot2AlertPersist = 4;
+        seeded.slot2PriorityArrow = true;
+        TEST_ASSERT_TRUE(settings.save());
+
+        V1Profile replacement = makeProfile("Road", 0xA1, "later create must not replace");
+        replacement.detector.modePolicy = V1ModePolicy::Value;
+        replacement.detector.mode = 2;
+        replacement.detector.displayPolicy = V1DisplayPolicy::On;
+        replacement.detector.volumePolicy = V1VolumePolicy::Temporary;
+        replacement.detector.mainVolume = 2;
+        replacement.detector.mutedVolume = 1;
+        replacement.detector.volumeDisconnect = V1VolumeDisconnectPolicy::KeepCurrent;
+        replacement.detector.bluetoothLedPolicy = V1BluetoothLedPolicy::Off;
+        replacement.detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+        const std::array<V1CustomFrequencyDefinition, 2> replacementDefinitions{{
+            {0, 24060, 24160}, {1, 33000, 33500}}};
+        TEST_ASSERT_TRUE(replacement.detector.customFrequencyDefinitions.assign(replacementDefinitions));
+        replacement.inTheBox.bands[3] = {true, false};
+
+        const auto filesBefore = filesSnapshot();
+        const auto nvsBefore = mock_preferences::store();
+        const uint32_t catalogBefore = manager.catalogRevision();
+        const auto assertSettingsUnchanged = [&] {
+            const auto& current = mock_preferences::store();
+            TEST_ASSERT_EQUAL_UINT(nvsBefore.size(), current.size());
+            for (const auto& ns : nvsBefore) {
+                TEST_ASSERT_TRUE(current.count(ns.first) == 1);
+                const auto& entries = current.at(ns.first);
+                TEST_ASSERT_EQUAL_UINT(ns.second.size(), entries.size());
+                for (const auto& entry : ns.second) {
+                    TEST_ASSERT_TRUE(entries.count(entry.first) == 1);
+                    TEST_ASSERT_EQUAL(entry.second.type, entries.at(entry.first).type);
+                    TEST_ASSERT_TRUE(entry.second.value == entries.at(entry.first).value);
+                }
+            }
+        };
+        const ProfileSaveResult duplicate = manager.saveProfile(replacement, true);
+        TEST_ASSERT_FALSE(duplicate.success);
+        TEST_ASSERT_EQUAL(ProfileStorageStatus::InvalidName, duplicate.status);
+        TEST_ASSERT_EQUAL_STRING("Profile already exists", duplicate.error.c_str());
+        TEST_ASSERT_EQUAL_UINT32(catalogBefore, manager.catalogRevision());
+        TEST_ASSERT_TRUE(filesBefore == filesSnapshot()); // Payloads, metadata, mirrors and settings backup.
+        assertSettingsUnchanged();
+
+        // Fresh owners read persisted assignments and resolve the active slot to
+        // the complete original profile, rather than reusing an in-memory copy.
+        V1ProfileManager reloaded;
+        TEST_ASSERT_TRUE(reloaded.begin(storage));
+        SettingsManager reloadedSettings(storage, reloaded);
+        reloadedSettings.load();
+        TEST_ASSERT_FALSE(reloadedSettings.recoveryPending());
+        const V1Settings& persisted = reloadedSettings.get();
+        TEST_ASSERT_TRUE(persisted.autoPushEnabled);
+        TEST_ASSERT_EQUAL_INT(2, persisted.activeSlot);
+        TEST_ASSERT_EQUAL_STRING("Road", persisted.slot0_default.profileName.c_str());
+        TEST_ASSERT_EQUAL_STRING("Other", persisted.slot1_highway.profileName.c_str());
+        TEST_ASSERT_EQUAL_STRING("Road", persisted.slot2_comfort.profileName.c_str());
+        TEST_ASSERT_EQUAL_UINT8(4, persisted.slot2AlertPersist);
+        TEST_ASSERT_TRUE(persisted.slot2PriorityArrow);
+        const String assignedName = persisted.autoPushSlotView(persisted.activeSlot).config.profileName;
+        V1Profile loaded;
+        TEST_ASSERT_TRUE(reloaded.loadProfile(assignedName, loaded));
+        assertProfile(original, loaded);
+        TEST_ASSERT_TRUE(reloaded.loadProfile("Other", loaded));
+        assertProfile(unrelated, loaded);
+        TEST_ASSERT_TRUE(filesBefore == filesSnapshot());
+        assertSettingsUnchanged();
+
+        // Both configured storage copies independently retain usable content.
+        if (mirrored) {
+            V1ProfileManager mirrorOnly;
+            TEST_ASSERT_TRUE(mirrorOnly.begin(&secondary));
+            TEST_ASSERT_TRUE(mirrorOnly.loadProfile(assignedName, loaded));
+            assertProfile(original, loaded);
+            TEST_ASSERT_TRUE(filesBefore == filesSnapshot());
+        }
+
+        V1Profile created = replacement;
+        created.name = "New";
+        TEST_ASSERT_TRUE(reloaded.saveProfile(created, true).success);
+        TEST_ASSERT_TRUE(reloaded.loadProfile("New", loaded));
+        assertProfile(created, loaded);
+        TEST_ASSERT_TRUE(reloaded.loadProfile(assignedName, loaded));
+        assertProfile(original, loaded);
+        const auto afterCreate = filesSnapshot();
+        for (const auto& file : filesBefore) {
+            TEST_ASSERT_TRUE(afterCreate.count(file.first) == 1);
+            TEST_ASSERT_TRUE(file.second == afterCreate.at(file.first));
+        }
+        assertSettingsUnchanged();
+
+        // Explicit Edit still replaces this profile; its references keep the
+        // same name and resolve to the deliberate replacement after reload.
+        TEST_ASSERT_TRUE(reloaded.saveProfile(replacement, false).success);
+        V1ProfileManager afterEdit;
+        TEST_ASSERT_TRUE(afterEdit.begin(storage));
+        SettingsManager settingsAfterEdit(storage, afterEdit);
+        settingsAfterEdit.load();
+        const auto& editedSettings = settingsAfterEdit.get();
+        const String editedName = editedSettings.autoPushSlotView(editedSettings.activeSlot).config.profileName;
+        TEST_ASSERT_EQUAL_STRING("Road", editedName.c_str());
+        TEST_ASSERT_TRUE(afterEdit.loadProfile(editedName, loaded));
+        assertProfile(replacement, loaded);
+        TEST_ASSERT_TRUE(afterEdit.loadProfile("New", loaded));
+        assertProfile(created, loaded);
+        TEST_ASSERT_TRUE(afterEdit.loadProfile("Other", loaded));
+        assertProfile(unrelated, loaded);
+        assertSettingsUnchanged();
+    }
 }
 
 void test_profile_reconcile_generation_exhaustion_does_not_choose_or_overwrite_either_copy() {

@@ -630,7 +630,7 @@ describe('profiles route page', () => {
             {
                 method: 'GET',
                 match: '/api/v1/profiles',
-                respond: jsonResponse(profileCatalog([{ name: 'Bench Profile' }]))
+                respond: jsonResponse(profileCatalog([{ name: 'Existing Profile' }]))
             },
             { method: 'POST', match: '/api/v1/profile', respond: jsonResponse({ success: true }) }
         ]);

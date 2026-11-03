@@ -39,9 +39,9 @@ function installCatalog() {
     }));
     return { pending, durable: () => durable };
 }
-function browseDelete() {
+function browseDelete(name = 'Daily') {
     document.querySelector('.surface-card details').open = true;
-    return within(screen.getByText('Daily', { selector: '.font-medium' }).closest('.surface-panel'))
+    return within(screen.getByText(name, { selector: '.font-medium' }).closest('.surface-panel'))
         .getByRole('button', { name: 'Delete' });
 }
 async function editDaily() {
@@ -51,11 +51,11 @@ async function editDaily() {
     await screen.findByText('Editing profile: Daily');
     await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'updated' } });
 }
-async function saveControl(path) {
+async function saveControl(path, name = 'Daily') {
     if (path === 'editor') return screen.getByRole('button', { name: 'Save Profile' });
     await fireEvent.click(screen.getByRole('button', { name: 'New Profile' }));
     await fireEvent.click(screen.getByRole('button', { name: 'Save as Profile' }));
-    await fireEvent.input(screen.getByLabelText('Profile Name'), { target: { value: 'Daily' } });
+    await fireEvent.input(screen.getByLabelText('Profile Name'), { target: { value: name } });
     return within(screen.getByText('Save Profile').closest('.modal-box')).getByRole('button', { name: 'Save' });
 }
 
@@ -74,7 +74,8 @@ describe('profile mutation ordering', () => {
     it.each(['editor', 'dialog'])('holds Delete until the %s Save response and preserves later edits', async (path) => {
         const state = installCatalog();
         await editDaily();
-        await fireEvent.click(await saveControl(path));
+        const savedName = path === 'dialog' ? 'New Daily' : 'Daily';
+        await fireEvent.click(await saveControl(path, savedName));
         await waitFor(() => expect(state.pending).toHaveLength(1));
         if (path === 'dialog') {
             await fireEvent.click(within(document.querySelector('.modal-box')).getByRole('button', { name: 'Cancel' }));
@@ -85,15 +86,15 @@ describe('profile mutation ordering', () => {
         expect(state.pending).toHaveLength(1);
         await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'later unsent edit' } });
         state.pending[0].resolve(json({ success: true }));
-        await screen.findByText('Profile "Daily" saved');
+        await screen.findByText(`Profile "${savedName}" saved`);
         expect(screen.getByLabelText('Description')).toHaveValue('later unsent edit');
-        expect(browseDelete()).toBeEnabled();
-        await fireEvent.click(browseDelete());
+        expect(browseDelete(savedName)).toBeEnabled();
+        await fireEvent.click(browseDelete(savedName));
         await waitFor(() => expect(state.pending).toHaveLength(2));
         state.pending[1].resolve(json({ success: true }));
         await screen.findByText('Profile deleted');
         expect(state.durable()).toBeNull();
-        expect(screen.queryByText('Daily', { selector: '.font-medium' })).not.toBeInTheDocument();
+        expect(screen.queryByText(savedName, { selector: '.font-medium' })).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Apply saved profile to V1' })).not.toBeInTheDocument();
     });
 

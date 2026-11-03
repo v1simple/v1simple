@@ -87,7 +87,7 @@
         }
         const asciiFold = (value) => value.replace(/[A-Z]/g, (character) => character.toLowerCase());
         const collision = profiles.find(
-            (profile) => asciiFold(profile.name) === asciiFold(canonical) && profile.name !== canonical
+            (profile) => asciiFold(profile.name) === asciiFold(canonical)
         );
         if (collision) return { error: 'Profile name collides with an existing profile' };
         return { canonical };
@@ -452,12 +452,11 @@
         const boxEditSession = editedInTheBox;
         const descriptionAtStart = editDescription;
         const wasEditing = editingSettings;
-        const copiedProfile = !!copySourceName;
         const { savedSettings, savedDetector, savedInTheBox } = prepared;
         savingProfile = validatedName.canonical;
         try {
             const res = await postProfileSave(validatedName.canonical, prepared, {
-                createOnly: copiedProfile,
+                createOnly: true,
                 parseErrorJson: true
             });
             const { payload } = res;

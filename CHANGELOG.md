@@ -16,6 +16,8 @@ GitHub Releases retain the complete commit history.
 - Preserved committed profile replacements when a later settings read fails.
 - Rejected profile names that share an SD filename, preserving existing
   profiles and slot assignments when a save or import is refused.
+- Prevented new profile saves from overwriting an existing profile, including
+  when the saved-profile list is unavailable.
 - Blocked Bluetooth startup after incomplete bond-table reads, preserving the
   SD bond backup for retry, and corrected empty-table initialization.
 - Rejected queued proxy notifications from retired detector or phone sessions.

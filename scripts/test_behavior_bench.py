@@ -244,6 +244,10 @@ class CoordinatorTests(unittest.TestCase):
                                         if value == "profiles_backup"), fixture.events.index("camera_verify"))
                 else:
                     self.assertEqual(result["restoration"], "unverified")
+                    journal = bench.RecoveryJournal.load(fixture.directory)
+                    self.assertEqual(journal.value["restoration_error"],
+                                     "Original display fields could not be restored")
+                    self.assertEqual(result["cleanup_errors"], [])
 
     def test_partial_baseline_or_camera_start_cannot_send_a_setting_write(self):
         for failure in ("snapshot", "profiles_backup", "camera_start"):

@@ -334,8 +334,8 @@ class Runner:
                     restoration = self.restore()
                 except BaseException as exc:
                     restoration = "unverified"
-                    cleanup("recovery record", lambda: self.journal.save(
-                        restoration=restoration, restoration_error=str(exc)))
+                    cleanup("recovery record", lambda message=str(exc): self.journal.save(
+                        restoration=restoration, restoration_error=message))
                     error = error or "Restoration could not be verified: " + str(exc)
                     progress("restoration incomplete; saved recovery record retained")
             elif initial_status is not None:

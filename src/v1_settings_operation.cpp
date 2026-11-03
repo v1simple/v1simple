@@ -1,6 +1,7 @@
 #include "v1_settings_operation.h"
 
 #include <Preferences.h>
+#include <nvs.h>
 
 #include <cstddef>
 #include <cstring>
@@ -235,27 +236,33 @@ V1SettingsOperationStore::Record V1SettingsOperationStore::encodeRecord(const Sn
 }
 
 V1SettingsOperationStore::LoadStatus V1SettingsOperationStore::begin() {
-    Preferences preferences;
-    // Opening read/write is intentional: Arduino Preferences may reject a
-    // read-only open for a namespace that has never existed. This creates the
-    // empty namespace but still reports real NVS-open failures.
-    if (!preferences.begin(kNamespace, false)) {
+    nvs_handle_t handle;
+    // Read/write permits a genuinely new namespace. Use checked NVS results:
+    // Preferences::isKey() also returns false when its type probe cannot read.
+    if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) {
         snapshot_ = Snapshot{};
         snapshot_.valid = false;
         loadStatus_ = LoadStatus::Unavailable;
         return loadStatus_;
     }
-    if (!preferences.isKey(kRecordKey)) {
-        preferences.end();
+    Record record{};
+    size_t read = sizeof(record);
+    const esp_err_t result = nvs_get_blob(handle, kRecordKey, &record, &read);
+    nvs_close(handle);
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
         snapshot_ = Snapshot{};
         loadStatus_ = LoadStatus::Ready;
         return loadStatus_;
     }
-    Record record{};
-    const size_t read = preferences.getBytes(kRecordKey, &record, sizeof(record));
-    preferences.end();
+    if (result != ESP_OK && result != ESP_ERR_NVS_TYPE_MISMATCH &&
+        result != ESP_ERR_NVS_INVALID_LENGTH) {
+        snapshot_ = Snapshot{};
+        snapshot_.valid = false;
+        loadStatus_ = LoadStatus::Unavailable;
+        return loadStatus_;
+    }
     Snapshot decoded;
-    if (read != sizeof(record) || !decodeRecord(record, decoded)) {
+    if (result != ESP_OK || read != sizeof(record) || !decodeRecord(record, decoded)) {
         snapshot_ = Snapshot{};
         snapshot_.available = true;
         snapshot_.valid = false;

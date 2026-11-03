@@ -121,7 +121,10 @@ bool contains(const String& body, const char* text) {
 
 } // namespace
 
-void setUp() {}
+void setUp() {
+    mock_preferences::reset();
+    mock_nvs::reset();
+}
 void tearDown() {}
 
 void test_slots_api_uses_explicit_volume_contract_and_never_emits_255() {
@@ -253,6 +256,86 @@ void test_apply_profile_starts_only_saved_profile_for_captured_exact_target() {
         reinterpret_cast<const uint8_t*>(body), sizeof(body) - 1u);
     TEST_ASSERT_EQUAL_INT(404, missing.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(0, fake.operationStartCalls);
+}
+
+void test_unreadable_operation_reports_unavailable_blocks_all_starts_and_recovers_same_id() {
+    using Store = V1SettingsOperationStore;
+    Store writer;
+    TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, writer.begin());
+    const auto original = writer.startApply(2, "AA:BB:CC:DD:EE:FF",
+        Store::Source::MaintenanceUi, true, true);
+    TEST_ASSERT_EQUAL_INT(Store::StartStatus::Started, original.status);
+    const auto saved = mock_preferences::getBlob(Store::namespaceForTest(), Store::recordKeyForTest());
+    mock_preferences::set_scalar_read_fault(Store::namespaceForTest(), Store::recordKeyForTest(),
+                                            PT_BLOB, ESP_FAIL, 1);
+    Store reboot;
+    TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Unavailable, reboot.begin());
+
+    FakeRuntime fake;
+    auto runtime = makeOperationRuntime(fake);
+    // Replace only the runtime transport wiring; the API, durable admission,
+    // persistence and status serialization below are production owners.
+    runtime.loadOperation = [](Store::Snapshot& output, void* ctx) {
+        output = static_cast<Store*>(ctx)->snapshot();
+        return output.valid;
+    };
+    runtime.loadOperationCtx = &reboot;
+    runtime.startOperation = [](const WifiAutoPushApiService::OperationStartRequest& request, void* ctx) {
+        auto& store = *static_cast<Store*>(ctx);
+        switch (request.kind) {
+        case Store::Kind::ApplySlot:
+            return store.startApply(request.slot, request.targetAddress.c_str(),
+                Store::Source::MaintenanceUi, true, true);
+        case Store::Kind::ApplyProfile:
+            return store.startProfileApply(request.profileName.c_str(), request.targetAddress.c_str(), true, true);
+        case Store::Kind::FactoryReset:
+            return store.startFactoryReset(request.targetAddress.c_str(), true, true);
+        case Store::Kind::None: break;
+        }
+        return Store::StartResult{Store::StartStatus::Invalid, 0};
+    };
+    runtime.startOperationCtx = &reboot;
+    const char query[] = "operationId=1";
+    WebServer status(80);
+    WifiAutoPushApiService::handleApiStatusQuery(status, runtime,
+        reinterpret_cast<const uint8_t*>(query), sizeof(query) - 1u);
+    TEST_ASSERT_EQUAL_INT(503, status.lastStatusCode);
+    TEST_ASSERT_TRUE(contains(status.lastBody, "operation_status_unavailable"));
+
+    struct Request {
+        void (*handler)(WebServer&, const WifiAutoPushApiService::Runtime&, const uint8_t*, size_t);
+        const char* body;
+    };
+    const Request requests[] = {
+        {WifiAutoPushApiService::handleApiApplySlotBody, "slot=1&address=AA%3ABB%3ACC%3ADD%3AEE%3AFF"},
+        {WifiAutoPushApiService::handleApiApplyProfileBody, "profile=Road&address=AA%3ABB%3ACC%3ADD%3AEE%3AFF"},
+        {WifiAutoPushApiService::handleApiFactoryResetBody, "address=AA%3ABB%3ACC%3ADD%3AEE%3AFF&confirm=RESET+V1"},
+    };
+    for (const auto& request : requests) {
+        WebServer response(80);
+        request.handler(response, runtime, reinterpret_cast<const uint8_t*>(request.body), std::strlen(request.body));
+        TEST_ASSERT_EQUAL_INT(503, response.lastStatusCode);
+        TEST_ASSERT_TRUE(contains(response.lastBody, "operation_storage_unavailable"));
+    }
+    TEST_ASSERT_EQUAL_INT(0, fake.restartCalls);
+    TEST_ASSERT_TRUE(saved == mock_preferences::getBlob(Store::namespaceForTest(), Store::recordKeyForTest()));
+
+    TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, reboot.begin());
+    WifiAutoPushApiService::handleApiStatusQuery(status, runtime,
+        reinterpret_cast<const uint8_t*>(query), sizeof(query) - 1u);
+    TEST_ASSERT_EQUAL_INT(200, status.lastStatusCode);
+    TEST_ASSERT_TRUE(contains(status.lastBody, "\"operationId\":1"));
+    TEST_ASSERT_TRUE(contains(status.lastBody, "\"slot\":2"));
+    TEST_ASSERT_TRUE(contains(status.lastBody, "\"state\":\"pending_normal_boot\""));
+    for (const auto& request : requests) {
+        WebServer response(80);
+        request.handler(response, runtime, reinterpret_cast<const uint8_t*>(request.body), std::strlen(request.body));
+        TEST_ASSERT_EQUAL_INT(409, response.lastStatusCode);
+        TEST_ASSERT_TRUE(contains(response.lastBody, "operation_active"));
+        TEST_ASSERT_TRUE(contains(response.lastBody, "\"operationId\":1"));
+    }
+    TEST_ASSERT_EQUAL_INT(0, fake.restartCalls);
+    TEST_ASSERT_TRUE(saved == mock_preferences::getBlob(Store::namespaceForTest(), Store::recordKeyForTest()));
 }
 
 void test_factory_reset_requires_confirmation_and_captured_gen2_before_queue() {
@@ -791,6 +874,7 @@ int main() {
     RUN_TEST(test_status_api_preserves_terminal_result);
     RUN_TEST(test_operation_status_requires_exact_canonical_identity_and_rejects_stale_status);
     RUN_TEST(test_apply_profile_starts_only_saved_profile_for_captured_exact_target);
+    RUN_TEST(test_unreadable_operation_reports_unavailable_blocks_all_starts_and_recovers_same_id);
     RUN_TEST(test_factory_reset_requires_confirmation_and_captured_gen2_before_queue);
     RUN_TEST(test_profile_owned_slots_api_reports_explicit_modifiers);
     RUN_TEST(test_profile_owned_slot_save_accepts_only_assignment_and_slot_overlays);

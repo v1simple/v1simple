@@ -23,6 +23,9 @@ using esp_err_t = int;
 #ifndef ESP_ERR_NVS_TYPE_MISMATCH
 #define ESP_ERR_NVS_TYPE_MISMATCH 0x1103
 #endif
+#ifndef ESP_ERR_NVS_INVALID_LENGTH
+#define ESP_ERR_NVS_INVALID_LENGTH 0x110c
+#endif
 #ifndef ESP_ERR_INVALID_ARG
 #define ESP_ERR_INVALID_ARG 0x102
 #endif
@@ -85,7 +88,7 @@ inline std::unordered_map<std::string, ProbeResponse>& readResults() {
     return g_results;
 }
 
-enum class ReadStage { Any, Presence, StringSize, StringValue, Scalar };
+enum class ReadStage { Any, Presence, StringSize, StringValue, Scalar, BlobSize, BlobValue };
 inline std::string readResultKey(const char* name, const char* key, ReadStage stage) {
     return std::string(name) + '\x1f' + key + '\x1f' + std::to_string(static_cast<int>(stage));
 }
@@ -234,6 +237,27 @@ inline esp_err_t nvs_get_str(nvs_handle_t handle, const char* key, char* out_val
         std::memcpy(out_value, text.c_str(), text.size() + 1u);
     }
     *length = text.size() + 1u;
+    return ESP_OK;
+}
+
+inline esp_err_t nvs_get_blob(nvs_handle_t handle, const char* key, void* out_value, size_t* length) {
+    const auto* ns = mock_nvs_namespace(handle);
+    if (!ns || !key || !length) return ESP_ERR_INVALID_ARG;
+    const auto result = mock_nvs::readResult(ns->c_str(), key,
+        out_value ? mock_nvs::ReadStage::BlobValue : mock_nvs::ReadStage::BlobSize);
+    if (result != ESP_OK) return result;
+    const auto* entry = mock_preferences::find(*ns, key);
+    if (!entry) return ESP_ERR_NVS_NOT_FOUND;
+    if (entry->type != PT_BLOB) return ESP_ERR_NVS_TYPE_MISMATCH;
+    const auto error = mock_preferences::scalarReadError(ns->c_str(), key, PT_BLOB);
+    if (error != ESP_OK) return error;
+    const auto& blob = std::get<std::vector<uint8_t>>(entry->value);
+    if (out_value && *length < blob.size()) {
+        *length = blob.size();
+        return ESP_ERR_NVS_INVALID_LENGTH;
+    }
+    if (out_value && !blob.empty()) std::memcpy(out_value, blob.data(), blob.size());
+    *length = blob.size();
     return ESP_OK;
 }
 

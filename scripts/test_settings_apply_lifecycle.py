@@ -34,6 +34,14 @@ def build_and_run(build: Path) -> None:
         "esp_reset_reason_t", "int") + "}\n"
     owner += between(source, "void DriveRuntime::attemptFactoryReset(",
                      "bool DriveRuntime::handleSettingsOperationStableConnection()")
+    owner += between(source, "bool DriveRuntime::handleSettingsOperationStableConnection()",
+                     "bool DriveRuntime::persistInTheBoxApply(")
+    # Preserve the real connection admission ordering. The healthy continuation
+    # supplies a known profile to the real AutoPush owner instead of performing
+    # unrelated device-catalog/default-profile selection.
+    owner += between(source, "void DriveRuntime::onV1Connected()",
+                     "    const V1Settings& settings = self.settings_.get();")
+    owner += "    queueAndPreflight();\n    at(1000);\n}\n"
     (build / "outer_operation.inc").write_text(owner, encoding="utf-8")
     compiler = shlex.split(os.environ.get("CXX", "clang++" if shutil.which("clang++") else "c++"))
     deps = ROOT / ".pio/libdeps/native-sanitized"

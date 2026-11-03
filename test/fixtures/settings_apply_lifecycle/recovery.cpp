@@ -8,6 +8,12 @@
 // processSettingsOperation method below is extracted unchanged at build time.
 class DriveRuntime {
   public:
+    static DriveRuntime* callbackOwner_;
+    static void onV1Connected();
+    QuietCoordinatorModule& quiet_ = quiet;
+    struct DeviceCatalog {
+        bool getInTheBoxForAddressChecked(const String&, V1InTheBoxSettings&) { return true; }
+    } devices_;
     struct BleAdapter {
         unsigned resetCalls = 0;
         SendResult nextResetResult = SendResult::SENT;
@@ -54,6 +60,7 @@ class DriveRuntime {
         address = "AA:BB:CC:DD:EE:FF";
         return ble.isConnected();
     }
+    bool handleSettingsOperationStableConnection();
     V1DetectorSnapshot captureDetectorSnapshot(uint32_t) { return makeSnapshot(); }
     bool settingsSnapshotComplete(const V1DetectorSnapshot &) { return true; }
     bool persistDetectorSnapshot(const String &, const V1DetectorSnapshot &, bool) { return true; }
@@ -64,6 +71,7 @@ class DriveRuntime {
     void syncRecoveredSettings() {}
     void processPeriodicMaintenance(uint32_t nowMs, bool, bool, bool, bool);
 };
+DriveRuntime* DriveRuntime::callbackOwner_ = nullptr;
 #include "outer_operation.inc"
 
 // Production coordinator owns whether the two production owners are serviced.
@@ -383,8 +391,77 @@ void test_factory_reset_lost_ack_cannot_replay_after_reconnect_or_persistence_fa
     }
 }
 
+void prepareConnectionVolumeProfile() {
+    configureProfile();
+    auto& detector = profiles.loadableProfile.detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    stageSnapshot(makeSnapshot());
+}
+
+void test_unreadable_pending_job_blocks_connection_apply_without_losing_alerts_then_recovers() {
+    mock_preferences::reset();
+    mock_nvs::reset();
+    Store writer;
+    TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, writer.begin());
+    const auto pending = writer.startApply(2, "AA:BB:CC:DD:EE:FF",
+        Store::Source::MaintenanceUi, true, true);
+    TEST_ASSERT_EQUAL_INT(Store::StartStatus::Started, pending.status);
+    const auto saved = mock_preferences::getBlob(Store::namespaceForTest(), Store::recordKeyForTest());
+    mock_preferences::set_scalar_read_fault(Store::namespaceForTest(), Store::recordKeyForTest(),
+                                            PT_BLOB, ESP_FAIL, 1);
+    DriveRuntime outer;
+    TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Unavailable, outer.settingsOperations_.begin());
+    outer.start(0, 0, 0);
+    prepareConnectionVolumeProfile();
+    DriveRuntime::callbackOwner_ = &outer;
+    DriveRuntime::onV1Connected();
+    DriveRuntime::onV1Connected();
+    outer.processSettingsOperation(1000);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_TRUE(ble.isConnected());
+    TEST_ASSERT_FALSE(outer.settingsWrongDetectorDisconnectPending_);
+    observeFadeAlert(true, 1500);
+    TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+    TEST_ASSERT_TRUE(saved == mock_preferences::getBlob(Store::namespaceForTest(), Store::recordKeyForTest()));
+
+    // A later boot/reinitialization rereads the preserved job; it cannot create
+    // another identity or let ordinary connection AutoPush race that operation.
+    TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, outer.settingsOperations_.begin());
+    outer.start(0, 0, 0);
+    TEST_ASSERT_EQUAL_UINT32(pending.operationId, outer.settingsOperations_.snapshot().operationId);
+    TEST_ASSERT_EQUAL_INT(2, outer.settingsOperations_.snapshot().slot);
+    TEST_ASSERT_EQUAL_INT(Store::State::WaitingForDetector, outer.settingsOperations_.snapshot().state);
+    DriveRuntime::onV1Connected();
+    TEST_ASSERT_TRUE(outer.settingsFreshObservationGate_.completeFor(ble.sessionGeneration()));
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+    TEST_ASSERT_TRUE(ble.isConnected());
+    TEST_ASSERT_FALSE(outer.settingsWrongDetectorDisconnectPending_);
+    DriveRuntime::callbackOwner_ = nullptr;
+}
+
+void test_known_empty_job_still_allows_connection_autopush() {
+    mock_preferences::reset();
+    mock_nvs::reset();
+    DriveRuntime outer;
+    TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, outer.settingsOperations_.begin());
+    TEST_ASSERT_FALSE(outer.settingsOperations_.snapshot().available);
+    outer.start(0, 0, 0);
+    prepareConnectionVolumeProfile();
+    DriveRuntime::callbackOwner_ = &outer;
+    DriveRuntime::onV1Connected();
+    TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+    TEST_ASSERT_TRUE(ble.isConnected());
+    TEST_ASSERT_FALSE(outer.settingsWrongDetectorDisconnectPending_);
+    DriveRuntime::callbackOwner_ = nullptr;
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_unreadable_pending_job_blocks_connection_apply_without_losing_alerts_then_recovers);
+    RUN_TEST(test_known_empty_job_still_allows_connection_autopush);
     RUN_TEST(test_factory_reset_lost_ack_cannot_replay_after_reconnect_or_persistence_failure);
     RUN_TEST(test_factory_reset_delayed_ack_does_not_latch_or_publish_sent_early);
     RUN_TEST(test_factory_reset_operation_timeout_cancels_unacknowledged_send);

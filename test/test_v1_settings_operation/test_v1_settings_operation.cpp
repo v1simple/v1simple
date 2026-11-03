@@ -3,6 +3,7 @@
 #include <vector>
 
 #include <Preferences.h>
+#include <nvs.h>
 
 #include "../../src/v1_settings_operation.h"
 #include "../../src/v1_settings_operation.cpp"
@@ -15,6 +16,7 @@ unsigned long mockMicros = 0;
 
 void setUp() {
     mock_preferences::reset();
+    mock_nvs::reset();
 }
 
 void tearDown() {}
@@ -26,6 +28,79 @@ void test_fresh_namespace_is_ready_and_can_create_first_operation() {
     const auto started = store.startProfileApply("Road", "AA:BB:CC:DD:EE:FF", true, true);
     TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::StartStatus::Started, started.status);
     TEST_ASSERT_EQUAL_UINT32(1, started.operationId);
+}
+
+void test_unreadable_pending_record_blocks_replacement_and_recovers_original_on_reload() {
+    using Store = V1SettingsOperationStore;
+    for (int error : {ESP_FAIL, ESP_ERR_NO_MEM}) {
+        mock_preferences::reset();
+        mock_nvs::reset();
+        Store writer;
+        TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, writer.begin());
+        const auto original = writer.startApply(2, "AA:BB:CC:DD:EE:FF",
+            Store::Source::MaintenanceUi, true, true);
+        TEST_ASSERT_EQUAL_INT(Store::StartStatus::Started, original.status);
+        const auto saved = mock_preferences::getBlob(Store::namespaceForTest(), Store::recordKeyForTest());
+        // The same correctly typed read failure made Preferences::isKey() say
+        // absent. Checked NVS loading must preserve its unavailable outcome.
+        mock_preferences::set_scalar_read_fault(Store::namespaceForTest(), Store::recordKeyForTest(),
+                                                PT_BLOB, error, 1);
+        Store reboot;
+        TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Unavailable, reboot.begin());
+        TEST_ASSERT_FALSE(reboot.snapshot().valid);
+        TEST_ASSERT_TRUE(mock_nvs::handles().empty());
+        TEST_ASSERT_FALSE(reboot.beginNormalBoot());
+        for (Store::Source source : {Store::Source::MaintenanceUi, Store::Source::TripleTap}) {
+            const bool maintenance = source == Store::Source::MaintenanceUi;
+            TEST_ASSERT_EQUAL_INT(Store::StartStatus::StorageUnavailable,
+                reboot.startApply(0, "AA:BB:CC:DD:EE:FF", source, maintenance, maintenance).status);
+        }
+        TEST_ASSERT_EQUAL_INT(Store::StartStatus::StorageUnavailable,
+            reboot.startProfileApply("Other", "AA:BB:CC:DD:EE:FF", true, true).status);
+        TEST_ASSERT_EQUAL_INT(Store::StartStatus::StorageUnavailable,
+            reboot.startFactoryReset("AA:BB:CC:DD:EE:FF", true, true).status);
+        const auto retained = mock_preferences::getBlob(Store::namespaceForTest(), Store::recordKeyForTest());
+        TEST_ASSERT_TRUE(saved == retained);
+
+        TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, reboot.begin());
+        TEST_ASSERT_TRUE(reboot.snapshot().valid);
+        TEST_ASSERT_EQUAL_UINT32(original.operationId, reboot.snapshot().operationId);
+        TEST_ASSERT_EQUAL_INT(2, reboot.snapshot().slot);
+        TEST_ASSERT_EQUAL_INT(Store::State::PendingNormalBoot, reboot.snapshot().state);
+        TEST_ASSERT_EQUAL_INT(Store::StartStatus::Active,
+            reboot.startApply(0, "AA:BB:CC:DD:EE:FF", Store::Source::TripleTap, false, false).status);
+        TEST_ASSERT_TRUE(reboot.beginNormalBoot());
+        TEST_ASSERT_EQUAL_INT(Store::State::WaitingForDetector, reboot.snapshot().state);
+        TEST_ASSERT_TRUE(mock_nvs::handles().empty());
+    }
+}
+
+void test_wrong_type_and_oversized_records_are_corrupt_and_never_replaced() {
+    using Store = V1SettingsOperationStore;
+    for (bool wrongType : {true, false}) {
+        mock_preferences::reset();
+        mock_nvs::reset();
+        Store writer;
+        TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, writer.begin());
+        TEST_ASSERT_EQUAL_INT(Store::StartStatus::Started,
+            writer.startProfileApply("Road", "AA:BB:CC:DD:EE:FF", true, true).status);
+        auto& entry = mock_preferences::ensureNamespace(Store::namespaceForTest())[Store::recordKeyForTest()];
+        if (wrongType) {
+            entry.type = PT_STR;
+            entry.value = std::string("invalid record type");
+        } else {
+            std::get<std::vector<uint8_t>>(entry.value).push_back(0);
+        }
+        const auto saved = entry.value;
+        Store reboot;
+        TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Corrupt, reboot.begin());
+        TEST_ASSERT_FALSE(reboot.snapshot().valid);
+        TEST_ASSERT_EQUAL_INT(Store::Reason::InvalidRecord, reboot.snapshot().reason);
+        TEST_ASSERT_EQUAL_INT(Store::StartStatus::StorageUnavailable,
+            reboot.startProfileApply("Other", "AA:BB:CC:DD:EE:FF", true, true).status);
+        TEST_ASSERT_TRUE(entry.value == saved);
+        TEST_ASSERT_TRUE(mock_nvs::handles().empty());
+    }
 }
 
 void test_pending_operation_survives_restart_and_repeated_wait_boot_fails_closed() {
@@ -572,6 +647,8 @@ void test_new_operation_is_rejected_while_one_is_active_and_storage_failures_are
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_fresh_namespace_is_ready_and_can_create_first_operation);
+    RUN_TEST(test_unreadable_pending_record_blocks_replacement_and_recovers_original_on_reload);
+    RUN_TEST(test_wrong_type_and_oversized_records_are_corrupt_and_never_replaced);
     RUN_TEST(test_pending_operation_survives_restart_and_repeated_wait_boot_fails_closed);
     RUN_TEST(test_repeated_reboot_cannot_extend_interrupted_recapture);
     RUN_TEST(test_component_truth_and_reason_survive_terminal_reboot);

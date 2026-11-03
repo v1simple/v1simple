@@ -70,6 +70,23 @@ sleep current, wake behavior or a future supply sensor's reliability.
 
 ## Graceful persistence and interrupted recovery
 
+`V1SettingsOperationStore::begin()` reads its durable record with checked NVS
+results. Only `ESP_ERR_NVS_NOT_FOUND` establishes an empty operation store.
+An unavailable read blocks new Apply and factory-reset requests; invalid record
+types, lengths and contents remain corrupt. Neither condition overwrites the
+retained bytes. The operation API reports unavailable storage rather than no
+operation. A later successful initialization recovers the original operation ID
+and target; this owner does not poll or automatically repeat detector writes.
+
+`DriveRuntime::handleSettingsOperationStableConnection()` also blocks ordinary
+connection Auto-Push while the operation snapshot is invalid. It leaves the
+detector connected and alert input available. A valid empty store retains normal
+Auto-Push behavior; a known pending job retains its existing target admission.
+`test_v1_settings_operation`, `test_wifi_autopush_api`, and
+`test_settings_apply_lifecycle.py` cover retained bytes, rejected starts, API
+status, connection admission, parsed alerts and recovery through fresh owners.
+NVS faults and BLE transport are host substitutes, not physical fault injection.
+
 The maintenance Backup & Restore card reads `/api/settings/recovery`, a pure
 in-memory `SettingsManager::recoveryStatus()` snapshot. It separates the last
 internal-save result, queued/writing/retry state, and known recovery flags

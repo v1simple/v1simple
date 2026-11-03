@@ -1436,6 +1436,9 @@ void DriveRuntime::attemptFactoryReset(const V1SettingsOperationStore::Snapshot&
 }
 
 bool DriveRuntime::handleSettingsOperationStableConnection() {
+    // An unreadable durable job cannot authorize a competing automatic Apply.
+    // Keep the connection for alerts; there is no known target to disconnect.
+    if (!settingsOperations_.snapshot().valid) return true;
     if (!settingsOperations_.requiresExclusiveDetectorAdmission()) return false;
     String address;
     if (!connectedV1Address(address) || !settingsOperations_.targetMatches(address.c_str())) {

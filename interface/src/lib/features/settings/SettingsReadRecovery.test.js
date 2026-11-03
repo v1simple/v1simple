@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Alp from '../../../routes/alp/+page.svelte';
@@ -142,6 +142,78 @@ for (const testCase of CASES) {
         });
     });
 }
+
+describe('configuration resource isolation', () => {
+    it('keeps GPS recovery independent while an OBD save is awaiting readback', async () => {
+        let gpsUnavailable = true;
+        let obdReads = 0;
+        let finishObdRead;
+        let obdConfig = { ...OBD_CONFIG };
+        const posts = [];
+        const pendingObdRead = new Promise((resolve) => { finishObdRead = resolve; });
+        vi.stubGlobal('fetch', vi.fn(async (url, init = {}) => {
+            if (init.method === 'POST') {
+                posts.push(url);
+                if (url !== '/api/obd/config') throw new Error(`Unexpected write: ${url}`);
+                obdConfig = { ...obdConfig, ...JSON.parse(init.body) };
+                return jsonResponse({ success: true });
+            }
+            if (url === '/api/gps/config') {
+                return gpsUnavailable ? jsonResponse({}, 503)
+                    : jsonResponse({ gpsEnabled: true, gpsBaud: 38400 });
+            }
+            if (url === '/api/obd/config') {
+                return ++obdReads === 2 ? pendingObdRead : jsonResponse(obdConfig);
+            }
+            if (url === '/api/obd/devices') return jsonResponse({ devices: [] });
+            throw new Error(`Unexpected request: ${url}`);
+        }));
+        render(Gps);
+        render(Obd);
+        const retryGps = await screen.findByRole('button', { name: 'Retry GPS settings' });
+        const obdControl = await screen.findByRole('checkbox', { name: /enable obd/i });
+        expect(obdControl).toBeEnabled();
+        await fireEvent.click(obdControl);
+        await waitFor(() => expect(obdReads).toBe(2));
+        expect(obdControl).toBeDisabled();
+
+        gpsUnavailable = false;
+        await fireEvent.click(retryGps);
+        const gpsControl = await screen.findByRole('checkbox', { name: /enable gps/i });
+        expect(gpsControl).toBeEnabled();
+        expect(gpsControl).toBeChecked();
+        expect(obdControl).toBeDisabled();
+        expect(posts).toEqual(['/api/obd/config']);
+
+        await act(async () => { finishObdRead(jsonResponse(obdConfig)); });
+        await waitFor(() => expect(obdControl).toBeEnabled());
+        expect(obdControl).not.toBeChecked();
+        expect(gpsControl).toBeChecked();
+    });
+
+    it.each(CASES.slice(1))('keeps a late $name read attached to its original component', async (testCase) => {
+        const state = server(testCase);
+        let finishOldRead;
+        state.readback = new Promise((resolve) => { finishOldRead = resolve; });
+        const first = render(testCase.Component);
+        await waitFor(() => expect(state.reads).toBe(1));
+        first.unmount();
+
+        state.readback = null;
+        state.config[testCase.field] = false;
+        render(testCase.Component);
+        const control = await screen.findByRole('checkbox', { name: testCase.label });
+        expect(control).not.toBeChecked();
+        expect(control).toBeEnabled();
+
+        await act(async () => { finishOldRead(jsonResponse(testCase.config)); });
+        await act();
+        expect(control).not.toBeChecked();
+        expect(control).toBeEnabled();
+        expect(state.reads).toBe(2);
+        expect(state.posts).toHaveLength(0);
+    });
+});
 
 describe('OBD catalog readiness is independent of config readiness', () => {
     const testCase = CASES[2];

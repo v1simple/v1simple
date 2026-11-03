@@ -141,6 +141,11 @@ this format check; physical media and radio behavior are not exercised.
 
 ## Unknown maintenance settings
 
+GPS and OBD configuration use independent instances of
+`interface/src/lib/features/settings/peripheralConfig.svelte.js`. That owner
+controls loading, write admission and post-write readback through one phase per
+instance; each card retains its payload validation and displayed field values.
+
 The ALP page, GPS card and OBD card require complete valid configuration before
 enabling edits. A failed initial read or post-save readback withdraws readiness
 and offers Retry. Retry reads current settings; it never repeats a previous

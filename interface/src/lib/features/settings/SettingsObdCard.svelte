@@ -1,10 +1,10 @@
 <script>
     import { onMount } from 'svelte';
     import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
+    import { createPeripheralConfig } from './peripheralConfig.svelte.js';
     import CardSectionHead from '#lib/components/CardSectionHead.svelte';
     import StatusAlert from '#lib/components/StatusAlert.svelte';
 
-    let obdMessage = $state(null);
     let savedDevices = $state([]);
     let enabled = $state(false);
     let minRssi = $state(-80);
@@ -14,53 +14,39 @@
     let v1SettleQuietMs = $state(500);
     let v1SettleFallbackMs = $state(1500);
     let cycleTeardownAckTimeoutMs = $state(100);
-    let saving = $state(false);
     let forgetting = $state(false);
     let renaming = $state(false);
-    let loaded = $state(false);
-    let loadingConfig = $state(false);
     let devicesLoaded = $state(false);
     let loadingDevices = $state(false);
     let devicesMessage = $state(null);
     let editingAddress = $state('');
     let editName = $state('');
+    const config = createPeripheralConfig({ url: '/api/obd/config', name: 'OBD', apply: applyConfig });
 
     onMount(() => {
-        void retryConfig();
+        void config.load();
         void retryDevices();
     });
 
-    async function fetchObdConfig() {
-        try {
-            const res = await fetchJsonWithTimeout('/api/obd/config');
-            if (!res.ok) throw new Error(`OBD config request failed with status ${res.status}`);
-            const data = res.data;
-            const ranges = [
-                ['minRssi', -100, -40], ['obdScanWindowMs', 1000, 60000],
-                ['obdRetryIntervalMs', 30000, 600000], ['proxyOpenWindowMs', 1000, 300000],
-                ['v1SettleQuietMs', 100, 5000], ['v1SettleFallbackMs', 500, 10000],
-                ['cycleTeardownAckTimeoutMs', 25, 1000]
-            ];
-            if (typeof data?.enabled !== 'boolean' || ranges.some(([key, min, max]) =>
-                !Number.isInteger(data?.[key]) || data[key] < min || data[key] > max)) {
-                throw new Error('Incomplete OBD settings');
-            }
-            enabled = data.enabled;
-            minRssi = data.minRssi;
-            obdScanWindowMs = data.obdScanWindowMs;
-            obdRetryIntervalMs = data.obdRetryIntervalMs;
-            proxyOpenWindowMs = data.proxyOpenWindowMs;
-            v1SettleQuietMs = data.v1SettleQuietMs;
-            v1SettleFallbackMs = data.v1SettleFallbackMs;
-            cycleTeardownAckTimeoutMs = data.cycleTeardownAckTimeoutMs;
-            loaded = true;
-            return true;
-        } catch (error) {
-            loaded = false;
-            console.error('Failed to load OBD settings', error);
-            obdMessage = { type: 'error', text: 'Failed to load OBD settings.' };
-            return false;
+    function applyConfig(data) {
+        const ranges = [
+            ['minRssi', -100, -40], ['obdScanWindowMs', 1000, 60000],
+            ['obdRetryIntervalMs', 30000, 600000], ['proxyOpenWindowMs', 1000, 300000],
+            ['v1SettleQuietMs', 100, 5000], ['v1SettleFallbackMs', 500, 10000],
+            ['cycleTeardownAckTimeoutMs', 25, 1000]
+        ];
+        if (typeof data?.enabled !== 'boolean' || ranges.some(([key, min, max]) =>
+            !Number.isInteger(data?.[key]) || data[key] < min || data[key] > max)) {
+            throw new Error('Incomplete OBD settings');
         }
+        enabled = data.enabled;
+        minRssi = data.minRssi;
+        obdScanWindowMs = data.obdScanWindowMs;
+        obdRetryIntervalMs = data.obdRetryIntervalMs;
+        proxyOpenWindowMs = data.proxyOpenWindowMs;
+        v1SettleQuietMs = data.v1SettleQuietMs;
+        v1SettleFallbackMs = data.v1SettleFallbackMs;
+        cycleTeardownAckTimeoutMs = data.cycleTeardownAckTimeoutMs;
     }
 
     async function fetchObdDevices() {
@@ -84,14 +70,6 @@
         }
     }
 
-    async function retryConfig() {
-        if (loadingConfig || saving) return;
-        loadingConfig = true;
-        obdMessage = null;
-        await fetchObdConfig();
-        loadingConfig = false;
-    }
-
     async function retryDevices() {
         if (loadingDevices || forgetting || renaming) return;
         loadingDevices = true;
@@ -100,33 +78,12 @@
         loadingDevices = false;
     }
 
-    async function saveConfig(fields) {
-        if (!loaded || loadingConfig || saving) return false;
-        saving = true;
-        obdMessage = null;
-        let saved = false;
-        try {
-            const res = await fetchWithTimeout('/api/obd/config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(fields)
-            });
-            saved = res.ok;
-            if (!saved) obdMessage = { type: 'error', text: 'Failed to save OBD setting.' };
-        } catch (_) {
-            obdMessage = { type: 'error', text: 'Connection error.' };
-        }
-        const refreshed = await fetchObdConfig();
-        saving = false;
-        return saved && refreshed;
-    }
-
     async function handleToggle() {
-        await saveConfig({ enabled });
+        await config.save({ enabled });
     }
 
     async function handleMinRssiChange() {
-        await saveConfig({ minRssi });
+        await config.save({ minRssi });
     }
 
     async function handleTimingChange(field, value) {
@@ -134,7 +91,7 @@
         if (!Number.isFinite(parsed)) {
             return;
         }
-        await saveConfig({ [field]: Math.trunc(parsed) });
+        await config.save({ [field]: Math.trunc(parsed) });
     }
 
     async function forgetDevice() {
@@ -207,16 +164,16 @@
             subtitle="Connect an OBDLink CX for vehicle speed data. Enabling OBD disables proxy mode."
         />
 
-        <StatusAlert message={obdMessage} />
-        {#if !loaded}
-            {#if loadingConfig}
+        <StatusAlert message={config.message} />
+        {#if !config.loaded}
+            {#if config.loading}
                 <p class="copy-caption">Loading OBD settings…</p>
             {:else}
-                <button class="btn btn-outline btn-sm" onclick={retryConfig}>Retry OBD settings</button>
+                <button class="btn btn-outline btn-sm" onclick={config.load}>Retry OBD settings</button>
             {/if}
         {/if}
 
-        {#if loaded}
+        {#if config.loaded}
             <label class="label cursor-pointer">
                 <span class="field-label">Enable OBD</span>
                 <input
@@ -224,7 +181,7 @@
                     class="toggle toggle-primary"
                     bind:checked={enabled}
                     onchange={handleToggle}
-                    disabled={saving}
+                    disabled={config.saving}
                 />
             </label>
 
@@ -241,7 +198,7 @@
                         min="-100"
                         max="-40"
                         placeholder="-80"
-                        disabled={saving}
+                        disabled={config.saving}
                         onchange={handleMinRssiChange}
                     />
                 </div>
@@ -262,7 +219,7 @@
                                 bind:value={obdScanWindowMs}
                                 min="1000"
                                 max="60000"
-                                disabled={saving}
+                                disabled={config.saving}
                                 onchange={() =>
                                     handleTimingChange('obdScanWindowMs', obdScanWindowMs)}
                             />
@@ -279,7 +236,7 @@
                                 bind:value={obdRetryIntervalMs}
                                 min="30000"
                                 max="600000"
-                                disabled={saving}
+                                disabled={config.saving}
                                 onchange={() =>
                                     handleTimingChange('obdRetryIntervalMs', obdRetryIntervalMs)}
                             />
@@ -296,7 +253,7 @@
                                 bind:value={proxyOpenWindowMs}
                                 min="1000"
                                 max="300000"
-                                disabled={saving}
+                                disabled={config.saving}
                                 onchange={() =>
                                     handleTimingChange('proxyOpenWindowMs', proxyOpenWindowMs)}
                             />
@@ -313,7 +270,7 @@
                                 bind:value={v1SettleQuietMs}
                                 min="100"
                                 max="5000"
-                                disabled={saving}
+                                disabled={config.saving}
                                 onchange={() =>
                                     handleTimingChange('v1SettleQuietMs', v1SettleQuietMs)}
                             />
@@ -330,7 +287,7 @@
                                 bind:value={v1SettleFallbackMs}
                                 min="500"
                                 max="10000"
-                                disabled={saving}
+                                disabled={config.saving}
                                 onchange={() =>
                                     handleTimingChange('v1SettleFallbackMs', v1SettleFallbackMs)}
                             />
@@ -347,7 +304,7 @@
                                 bind:value={cycleTeardownAckTimeoutMs}
                                 min="25"
                                 max="1000"
-                                disabled={saving}
+                                disabled={config.saving}
                                 onchange={() =>
                                     handleTimingChange(
                                         'cycleTeardownAckTimeoutMs',

@@ -35,7 +35,7 @@ describe('native dialog ownership', () => {
         const oncancel = vi.fn();
         const onsave = vi.fn();
         render(ProfileSaveDialog, {
-            open: true, saveName: 'Highway', saveDescription: 'Draft',
+            dialog: { id: 1, name: 'Highway', description: 'Draft' },
             savingProfile: 'Highway', mutationBusy: true, oncancel, onsave
         });
         const dialog = screen.getByRole('dialog', { name: 'Save Profile' });

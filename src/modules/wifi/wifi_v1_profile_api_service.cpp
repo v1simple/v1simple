@@ -578,9 +578,9 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
         return;
     }
 
-    String saveError;
-    if (runtime.saveProfile(name, description, detector, inTheBox, settingsBytes, createOnly, saveError,
-                            runtime.saveProfileCtx)) {
+    const ProfileSaveResult saved = runtime.saveProfile(
+        name, description, detector, inTheBox, settingsBytes, createOnly, runtime.saveProfileCtx);
+    if (saved.success) {
         if (runtime.backupToSd) {
             runtime.backupToSd(runtime.backupToSdCtx);
         }
@@ -588,14 +588,15 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
         server.send(200, "application/json", "{\"success\":true}");
     } else {
         Serial.println("[V1Profiles] Failed to save profile");
-        // saveError is filesystem/profile-store text and can contain quotes or
+        // The diagnostic is filesystem/profile-store text and can contain quotes or
         // backslashes; build the response through ArduinoJson so it is escaped
         // and the UI's res.json() cannot throw on a malformed body.
         WifiJson::Document errorDoc;
-        WifiApiResponse::setErrorAndMessage(errorDoc, saveError.c_str());
-        const bool conflict = saveError.indexOf("busy") >= 0 || saveError == V1_PROFILE_CATALOG_LIMIT_ERROR ||
-                              saveError == "Profile already exists" ||
-                              saveError == "Profile name collides with existing canonical name";
+        WifiApiResponse::setErrorAndMessage(errorDoc, saved.error.c_str());
+        const bool conflict = saved.status == ProfileStorageStatus::Busy ||
+                              saved.reason == ProfileFailureReason::AlreadyExists ||
+                              saved.reason == ProfileFailureReason::CanonicalCollision ||
+                              saved.reason == ProfileFailureReason::CatalogFull;
         WifiApiResponse::sendJsonDocument(server, conflict ? 409 : 500, errorDoc);
     }
 }

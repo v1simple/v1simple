@@ -23,10 +23,9 @@ struct Runtime {
     void* loadProfileSummaryCtx = nullptr;
     bool (*parseSettingsJson)(const JsonObject& settingsObj, uint8_t outBytes[6], void* ctx) = nullptr;
     void* parseSettingsJsonCtx = nullptr;
-    bool (*saveProfile)(const String& name, const String& description,
-                        const V1DetectorConfiguration& detector, const V1InTheBoxSettings& inTheBox,
-                        const uint8_t inBytes[6],
-                        bool createOnly, String& error, void* ctx) = nullptr;
+    ProfileSaveResult (*saveProfile)(const String& name, const String& description,
+                                     const V1DetectorConfiguration& detector, const V1InTheBoxSettings& inTheBox,
+                                     const uint8_t inBytes[6], bool createOnly, void* ctx) = nullptr;
     void* saveProfileCtx = nullptr;
     void (*backupToSd)(void* ctx) = nullptr;
     void* backupToSdCtx = nullptr;
@@ -48,6 +47,23 @@ struct Runtime {
                                         const V1DetectorConfiguration& detector, void* ctx) = nullptr;
     void* slotVolumeOverrideConflictsCtx = nullptr;
 };
+
+// Admit complete metadata before storage and preserve the store's typed result.
+inline ProfileSaveResult saveProfile(const String& name, const String& description,
+                                     const V1DetectorConfiguration& detector,
+                                     const V1InTheBoxSettings& inTheBox,
+                                     const uint8_t inBytes[6], bool createOnly, void* ctx) {
+    V1Profile profile;
+    profile.name = name;
+    profile.description = description;
+    if (profile.name != name || profile.description != description) {
+        return ProfileSaveResult(ProfileStorageStatus::IoError, "Profile metadata memory unavailable");
+    }
+    profile.detector = detector;
+    profile.inTheBox = inTheBox;
+    memcpy(profile.settings.bytes, inBytes, 6);
+    return static_cast<V1ProfileManager*>(ctx)->saveProfile(profile, createOnly);
+}
 
 void handleApiProfilesListQuery(WebServer& server, const Runtime& runtime,
                                 const uint8_t* query, size_t querySize);

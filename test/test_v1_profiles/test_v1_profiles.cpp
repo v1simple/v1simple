@@ -28,6 +28,7 @@ inline bool canConvertFromJson(JsonVariantConst src, const ::String&) {
 }  // namespace ArduinoJson
 
 #include "../../src/v1_profiles.cpp"
+#include "../../src/modules/wifi/wifi_v1_profile_api_service.cpp"
 #include "../../src/backup_payload_builder.cpp"
 #include "../../src/psram_freertos_alloc.cpp"
 #include "../../src/settings.cpp"
@@ -136,9 +137,171 @@ void setUp() {
     StorageDirectoryTest::reset();
     mock_reset_semaphore_state();
     mock_reset_heap_caps();
+    mockStringCopyAssignmentsBeforeFailure = -1;
     g_tempRoot = nextTempRoot();
     std::filesystem::remove_all(g_tempRoot);
     std::filesystem::create_directories(g_tempRoot);
+}
+
+namespace {
+struct SaveApiContext {
+    V1ProfileManager& profiles;
+    int backups = 0;
+    int failMetadataCopyAfter = -1;
+};
+
+WifiV1ProfileApiService::Runtime realSaveRuntime(SaveApiContext& ctx) {
+    WifiV1ProfileApiService::Runtime runtime{};
+    runtime.parseSettingsJson = [](const JsonObject& source, uint8_t bytes[6], void* context) {
+        auto& state = *static_cast<SaveApiContext*>(context);
+        V1UserSettings settings;
+        if (!state.profiles.jsonToSettings(source, settings)) return false;
+        memcpy(bytes, settings.bytes, 6);
+        // This is the last boundary before the actual metadata-copy adapter.
+        mockStringCopyAssignmentsBeforeFailure = state.failMetadataCopyAfter;
+        return true;
+    };
+    runtime.parseSettingsJsonCtx = &ctx;
+    runtime.saveProfile = WifiV1ProfileApiService::saveProfile;
+    runtime.saveProfileCtx = &ctx.profiles;
+    runtime.backupToSd = [](void* context) { ++static_cast<SaveApiContext*>(context)->backups; };
+    runtime.backupToSdCtx = &ctx;
+    return runtime;
+}
+
+void callRealSave(WebServer& server, SaveApiContext& context, const V1Profile& profile, bool createOnly) {
+    JsonDocument doc;
+    doc["name"] = profile.name;
+    doc["description"] = profile.description;
+    doc["createOnly"] = createOnly;
+    appendV1DetectorConfiguration(doc["detector"].to<JsonObject>(), profile.detector);
+    appendV1InTheBoxSettings(doc["inTheBox"].to<JsonObject>(), profile.inTheBox);
+    JsonArray bytes = doc["settings"]["bytes"].to<JsonArray>();
+    for (uint8_t value : profile.settings.bytes) bytes.add(value);
+    std::string request;
+    serializeJson(doc, request);
+    WifiV1ProfileApiService::handleApiProfileSaveBody(
+        server, realSaveRuntime(context), reinterpret_cast<const uint8_t*>(request.data()), request.size(),
+        nullptr, nullptr);
+    mockStringCopyAssignmentsBeforeFailure = -1;
+}
+}
+
+void test_profile_result_constructors_default_to_no_failure_reason() {
+    const ProfileSaveResult results[] = {
+        ProfileSaveResult(), ProfileSaveResult(false), ProfileSaveResult(true),
+        ProfileSaveResult(false, "busy"), ProfileSaveResult(true, ""),
+        ProfileSaveResult(ProfileStorageStatus::Busy, "unavailable"),
+        ProfileSaveResult(ProfileStorageStatus::Success)
+    };
+    for (const auto& result : results) TEST_ASSERT_EQUAL(ProfileFailureReason::None, result.reason);
+    TEST_ASSERT_EQUAL(ProfileFailureReason::None, ProfileOperationResult{}.reason);
+}
+
+void test_real_save_handler_adapter_store_preserve_create_edit_and_conflicts() {
+    fs::FS fs(g_tempRoot, fs::MockNameSemantics::ByteSensitive);
+    StorageManager storage;
+    storage.setFilesystem(&fs, true);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(storage));
+    SaveApiContext context{manager};
+    const V1Profile original = makeProfile("Road", 10, "original");
+    const V1Profile replacement = makeProfile("Road", 30, "replacement");
+    WebServer server;
+    callRealSave(server, context, original, true);
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_STRING("{\"success\":true}", server.lastBody.c_str());
+    TEST_ASSERT_EQUAL_INT(1, context.backups);
+    auto before = filesSnapshot();
+    callRealSave(server, context, replacement, true);
+    TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+    callRealSave(server, context, makeProfile("road", 40, "alias"), true);
+    TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+    TEST_ASSERT_EQUAL_INT(1, context.backups);
+
+    mock_queue_semaphore_take_result(pdFALSE);
+    callRealSave(server, context, replacement, false);
+    TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+    TEST_ASSERT_EQUAL_INT(1, context.backups);
+
+    callRealSave(server, context, replacement, false);
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(2, context.backups);
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("replacement", loaded.description.c_str());
+    TEST_ASSERT_EQUAL_MEMORY(replacement.settings.bytes, loaded.settings.bytes, 6);
+
+    for (size_t index = 1; index < V1_PROFILE_CATALOG_MAX_COUNT; ++index) {
+        TEST_ASSERT_TRUE(manager.saveProfile(makeProfile(String("P") + String(index), 10)).success);
+    }
+    before = filesSnapshot();
+    const auto directFull = manager.saveProfile(makeProfile("Extra", 10), true);
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::IoError, directFull.status);
+    TEST_ASSERT_EQUAL(ProfileFailureReason::CatalogFull, directFull.reason);
+    callRealSave(server, context, makeProfile("Extra", 10), true);
+    TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(2, context.backups);
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+}
+
+void test_corrupt_catalog_alias_is_not_a_save_conflict_through_real_adapter() {
+    fs::FS fs(g_tempRoot, fs::MockNameSemantics::ByteSensitive);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10)).success);
+    writeFileFromString(fs, "/v1profiles/road.json", readFileToString(fs, "/v1profiles/Road.json").c_str());
+    const auto before = filesSnapshot();
+    const auto listed = manager.listProfilesResult();
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::Corrupt, listed.status);
+    TEST_ASSERT_EQUAL(ProfileFailureReason::None, listed.reason);
+    const auto saved = manager.saveProfile(makeProfile("Fresh", 20), true);
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::Corrupt, saved.status);
+    TEST_ASSERT_EQUAL(ProfileFailureReason::None, saved.reason);
+    SaveApiContext context{manager};
+    WebServer server;
+    callRealSave(server, context, makeProfile("Fresh", 20), true);
+    TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, context.backups);
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+}
+
+void test_real_save_adapter_metadata_failure_never_enters_store_or_requests_backup() {
+    fs::FS fs(g_tempRoot);
+    StorageManager storage;
+    storage.setFilesystem(&fs, true);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(storage));
+    SaveApiContext context{manager};
+    const auto before = filesSnapshot();
+    for (int failedCopy : {0, 1}) {
+        context.failMetadataCopyAfter = failedCopy;
+        const auto storageAdmissions = g_mock_semaphore_state.takeCalls;
+        WebServer server;
+        callRealSave(server, context, makeProfile("Road", 20, "description"), true);
+        TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+        TEST_ASSERT_EQUAL_STRING("{\"error\":\"Profile metadata memory unavailable\",\"message\":\"Profile metadata memory unavailable\"}", server.lastBody.c_str());
+        TEST_ASSERT_EQUAL_UINT(storageAdmissions, g_mock_semaphore_state.takeCalls);
+        TEST_ASSERT_EQUAL_INT(0, context.backups);
+        TEST_ASSERT_TRUE(before == filesSnapshot());
+    }
+    context.failMetadataCopyAfter = -1;
+    WebServer server;
+    callRealSave(server, context, makeProfile("Road", 20), true);
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, context.backups);
+}
+
+void test_real_save_adapter_keeps_ordinary_io_failure_separate_from_conflicts() {
+    V1ProfileManager unavailable;
+    SaveApiContext context{unavailable};
+    WebServer server;
+    callRealSave(server, context, makeProfile("Road", 20), true);
+    TEST_ASSERT_EQUAL_INT(500, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, context.backups);
 }
 
 void test_cursor_pages_keep_grandfathered_over_limit_catalog_discoverable_and_prunable() {
@@ -164,7 +327,19 @@ void test_cursor_pages_keep_grandfathered_over_limit_catalog_discoverable_and_pr
     const ProfileListResult complete = manager.listProfilesResult();
     TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError),
                           static_cast<int>(complete.status));
+    TEST_ASSERT_EQUAL(ProfileFailureReason::CatalogFull, complete.reason);
     TEST_ASSERT_EQUAL_UINT(0u, complete.profiles.size());
+    const auto beforeOverflowSave = filesSnapshot();
+    const ProfileSaveResult overflowSave = manager.saveProfile(makeProfile("New", 20), true);
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::IoError, overflowSave.status);
+    TEST_ASSERT_EQUAL(ProfileFailureReason::CatalogFull, overflowSave.reason);
+    TEST_ASSERT_TRUE(beforeOverflowSave == filesSnapshot());
+    SaveApiContext context{manager};
+    WebServer server;
+    callRealSave(server, context, makeProfile("New", 20), true);
+    TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, context.backups);
+    TEST_ASSERT_TRUE(beforeOverflowSave == filesSnapshot());
     String cursor;
     size_t seen = 0;
     do {
@@ -439,6 +614,7 @@ void test_create_only_save_preserves_existing_profile() {
         const ProfileSaveResult duplicate = manager.saveProfile(replacement, true);
         TEST_ASSERT_FALSE(duplicate.success);
         TEST_ASSERT_EQUAL(ProfileStorageStatus::InvalidName, duplicate.status);
+        TEST_ASSERT_EQUAL(ProfileFailureReason::AlreadyExists, duplicate.reason);
         TEST_ASSERT_EQUAL_STRING("Profile already exists", duplicate.error.c_str());
         TEST_ASSERT_EQUAL_UINT32(catalogBefore, manager.catalogRevision());
         TEST_ASSERT_TRUE(filesBefore == filesSnapshot()); // Payloads, metadata, mirrors and settings backup.
@@ -1431,8 +1607,14 @@ void test_unicode_sd_alias_is_rejected_without_mutation_on_every_store() {
             const auto result = manager.saveProfile(makeProfile(u8"école Highway", 20, "must not replace"), createOnly);
             TEST_ASSERT_FALSE(result.success);
             TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::InvalidName), static_cast<int>(result.status));
+            TEST_ASSERT_EQUAL(ProfileFailureReason::CanonicalCollision, result.reason);
             TEST_ASSERT_TRUE(before == filesSnapshot());
         }
+        const auto rollbackCollision = manager.restoreProfileForTransaction(
+            makeProfile(u8"école Highway", 20, "must not replace"));
+        TEST_ASSERT_EQUAL(ProfileStorageStatus::InvalidName, rollbackCollision.status);
+        TEST_ASSERT_EQUAL(ProfileFailureReason::CanonicalCollision, rollbackCollision.reason);
+        TEST_ASSERT_TRUE(before == filesSnapshot());
         V1Profile loaded;
         TEST_ASSERT_TRUE(manager.loadProfile(u8"École Highway", loaded));
         TEST_ASSERT_EQUAL_STRING("retain original", loaded.description.c_str());
@@ -3070,6 +3252,11 @@ void test_partial_secondary_save_intent_never_authorizes_profile_mutation() {
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_profile_result_constructors_default_to_no_failure_reason);
+    RUN_TEST(test_real_save_handler_adapter_store_preserve_create_edit_and_conflicts);
+    RUN_TEST(test_corrupt_catalog_alias_is_not_a_save_conflict_through_real_adapter);
+    RUN_TEST(test_real_save_adapter_metadata_failure_never_enters_store_or_requests_backup);
+    RUN_TEST(test_real_save_adapter_keeps_ordinary_io_failure_separate_from_conflicts);
     RUN_TEST(test_detached_store_transactions_reconcile_after_commit_cleanup_failure);
     RUN_TEST(test_partial_secondary_save_intent_never_authorizes_profile_mutation);
     RUN_TEST(test_failed_creation_and_tombstone_recreation_never_publish_rejected_payload);

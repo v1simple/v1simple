@@ -1260,19 +1260,7 @@ void test_http_profile_metadata_round_trips_storage_usb_and_backup_without_trunc
         memcpy(bytes, parsed.bytes, 6);
         return true;
     };
-    runtime.saveProfile = [](const String& name, const String& description,
-                            const V1DetectorConfiguration& detector, const V1InTheBoxSettings& inTheBox,
-                            const uint8_t bytes[6],
-                            bool createOnly, String& error, void*) {
-        V1Profile profile(name);
-        profile.description = description;
-        profile.detector = detector;
-        profile.inTheBox = inTheBox;
-        memcpy(profile.settings.bytes, bytes, 6);
-        const auto result = profileManager->saveProfile(profile, createOnly);
-        error = result.error;
-        return result.success;
-    };
+    runtime.saveProfile = WifiV1ProfileApiService::saveProfile;
     for (const std::string& description : {std::string(160, 'a'), std::string(161, 'b'),
                                            std::string(1024, 'c') + " \xc3\xa9\n",
                                            std::string(V1_PROFILE_DESCRIPTION_MAX_BYTES, 'd')}) {
@@ -1287,6 +1275,8 @@ void test_http_profile_metadata_round_trips_storage_usb_and_backup_without_trunc
         request["settings"]["xBand"] = true;
         WebServer server(80);
         const String requestBody = jsonText(request);
+        // reboot() below replaces the manager before the next iteration.
+        runtime.saveProfileCtx = profileManager.get();
         WifiV1ProfileApiService::handleApiProfileSaveBody(
             server, runtime,
             reinterpret_cast<const uint8_t*>(requestBody.c_str()), requestBody.length(), nullptr, nullptr);

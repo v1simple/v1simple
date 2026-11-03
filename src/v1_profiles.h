@@ -370,9 +370,12 @@ enum class V1ProfileAllocationFailurePoint : uint8_t {
 };
 #endif
 
+enum class ProfileFailureReason : uint8_t { None = 0, AlreadyExists, CanonicalCollision, CatalogFull };
+
 struct ProfileOperationResult {
     ProfileStorageStatus status = ProfileStorageStatus::IoError;
     String error;
+    ProfileFailureReason reason = ProfileFailureReason::None;
 
     bool success() const { return status == ProfileStorageStatus::Success; }
 };
@@ -394,12 +397,15 @@ struct ProfileSaveResult {
     bool success;
     ProfileStorageStatus status;
     String error; // Empty if success, detailed message if failed
+    ProfileFailureReason reason = ProfileFailureReason::None;
 
     ProfileSaveResult() : success(false), status(ProfileStorageStatus::IoError), error("") {}
     ProfileSaveResult(bool ok)
         : success(ok), status(ok ? ProfileStorageStatus::Success : ProfileStorageStatus::IoError), error("") {}
-    ProfileSaveResult(ProfileStorageStatus resultStatus, const String& err = "")
-        : success(resultStatus == ProfileStorageStatus::Success), status(resultStatus), error(err) {}
+    ProfileSaveResult(ProfileStorageStatus resultStatus, const String& err = "",
+                      ProfileFailureReason failureReason = ProfileFailureReason::None)
+        : success(resultStatus == ProfileStorageStatus::Success), status(resultStatus), error(err),
+          reason(failureReason) {}
     ProfileSaveResult(bool ok, const String& err)
         : success(ok), status(ok ? ProfileStorageStatus::Success : ProfileStorageStatus::IoError), error(err) {}
 };

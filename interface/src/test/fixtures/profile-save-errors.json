@@ -1,0 +1,123 @@
+[
+  {
+    "name": "busy",
+    "storageStatus": "Busy",
+    "reason": "None",
+    "diagnostic": "Profile storage busy; retry",
+    "status": 409,
+    "body": {
+      "error": "Profile storage busy; retry",
+      "message": "Profile storage busy; retry"
+    }
+  },
+  {
+    "name": "busy-reworded",
+    "storageStatus": "Busy",
+    "reason": "None",
+    "diagnostic": "Storage temporarily unavailable",
+    "status": 409,
+    "body": {
+      "error": "Storage temporarily unavailable",
+      "message": "Storage temporarily unavailable"
+    }
+  },
+  {
+    "name": "duplicate",
+    "storageStatus": "InvalidName",
+    "reason": "AlreadyExists",
+    "diagnostic": "A saved profile occupies that name",
+    "status": 409,
+    "body": {
+      "error": "A saved profile occupies that name",
+      "message": "A saved profile occupies that name"
+    }
+  },
+  {
+    "name": "canonical-collision",
+    "storageStatus": "InvalidName",
+    "reason": "CanonicalCollision",
+    "diagnostic": "Choose a distinct filesystem name",
+    "status": 409,
+    "body": {
+      "error": "Choose a distinct filesystem name",
+      "message": "Choose a distinct filesystem name"
+    }
+  },
+  {
+    "name": "catalog-full",
+    "storageStatus": "IoError",
+    "reason": "CatalogFull",
+    "diagnostic": "Remove a profile before creating another",
+    "status": 409,
+    "body": {
+      "error": "Remove a profile before creating another",
+      "message": "Remove a profile before creating another"
+    }
+  },
+  {
+    "name": "corrupt-catalog",
+    "storageStatus": "Corrupt",
+    "reason": "None",
+    "diagnostic": "Canonical profile-name collision in catalog",
+    "status": 500,
+    "body": {
+      "error": "Canonical profile-name collision in catalog",
+      "message": "Canonical profile-name collision in catalog"
+    }
+  },
+  {
+    "name": "corrupt-busy-word",
+    "storageStatus": "Corrupt",
+    "reason": "None",
+    "diagnostic": "Profile storage busy; corrupt catalog",
+    "status": 500,
+    "body": {
+      "error": "Profile storage busy; corrupt catalog",
+      "message": "Profile storage busy; corrupt catalog"
+    }
+  },
+  {
+    "name": "io-conflict-words",
+    "storageStatus": "IoError",
+    "reason": "None",
+    "diagnostic": "Profile already exists",
+    "status": 500,
+    "body": {
+      "error": "Profile already exists",
+      "message": "Profile already exists"
+    }
+  },
+  {
+    "name": "io-escaped",
+    "storageStatus": "IoError",
+    "reason": "None",
+    "diagnostic": "open \"a\\b.json\" failed\nretry\ttab",
+    "status": 500,
+    "body": {
+      "error": "open \"a\\b.json\" failed\nretry\ttab",
+      "message": "open \"a\\b.json\" failed\nretry\ttab"
+    }
+  },
+  {
+    "name": "metadata-memory",
+    "storageStatus": "IoError",
+    "reason": "None",
+    "diagnostic": "Profile metadata memory unavailable",
+    "status": 500,
+    "body": {
+      "error": "Profile metadata memory unavailable",
+      "message": "Profile metadata memory unavailable"
+    }
+  },
+  {
+    "name": "invalid-name",
+    "storageStatus": "InvalidName",
+    "reason": "None",
+    "diagnostic": "Invalid profile name",
+    "status": 500,
+    "body": {
+      "error": "Invalid profile name",
+      "message": "Invalid profile name"
+    }
+  }
+]

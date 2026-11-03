@@ -1830,6 +1830,7 @@ ProfileListResult V1ProfileManager::listProfilesUnlocked() const {
                 dir.close();
                 result.status = ProfileStorageStatus::IoError;
                 result.error = V1_PROFILE_CATALOG_LIMIT_ERROR;
+                result.reason = ProfileFailureReason::CatalogFull;
                 result.profiles.clear();
                 return result;
             }
@@ -2390,13 +2391,14 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         }
         if (scan.status == ProfileCatalogScanStatus::Collision) {
             lastError_ = "Profile name collides with existing canonical name";
-            return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_);
+            return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_,
+                                     ProfileFailureReason::CanonicalCollision);
         }
         updatingExisting = scan.targetExists;
     } else {
         const ProfileListResult catalog = listProfilesUnlocked();
         if (!catalog.success()) {
-            return ProfileSaveResult(catalog.status, catalog.error);
+            return ProfileSaveResult(catalog.status, catalog.error, catalog.reason);
         }
         catalogSize = catalog.profiles.size();
         for (const String& existing : catalog.profiles) {
@@ -2405,18 +2407,21 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
                 lastError_ = "Profile name collides with existing canonical name";
                 Serial.printf("[V1Profiles] INVALID_NAME name='%s' path='%s' reason=collision\n",
                               canonicalName.c_str(), profilePath(canonicalName).c_str());
-                return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_);
+                return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_,
+                                         ProfileFailureReason::CanonicalCollision);
             }
         }
     }
     if (createOnly && updatingExisting) {
         lastError_ = "Profile already exists";
-        return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_);
+        return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_,
+                                 ProfileFailureReason::AlreadyExists);
     }
     if (!updatingExisting && catalogSize >= V1_PROFILE_CATALOG_MAX_COUNT &&
         !allowGrandfatheredRestore) {
         lastError_ = V1_PROFILE_CATALOG_LIMIT_ERROR;
-        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_,
+                                 ProfileFailureReason::CatalogFull);
     }
 
     String path;

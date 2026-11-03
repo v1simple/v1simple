@@ -27,8 +27,7 @@ namespace {
 
 struct FakeRuntime {
     bool parseSettingsOk = true;
-    bool saveOk = true;
-    String saveError = "";
+    ProfileSaveResult saveResult{ProfileStorageStatus::Success};
     bool savedCreateOnly = false;
     bool slotVolumeOverrideConflict = false;
 
@@ -73,7 +72,6 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
                              const V1InTheBoxSettings& inTheBox,
                              const uint8_t /*inBytes*/[6],
                              bool createOnly,
-                             String& error,
                              void* ctx) {
         auto* rtp = static_cast<FakeRuntime*>(ctx);
         rtp->saveCalls++;
@@ -81,11 +79,7 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
         rtp->savedDetector = detector;
         rtp->savedInTheBox = inTheBox;
         rtp->savedCreateOnly = createOnly;
-        if (!rtp->saveOk) {
-            error = rtp->saveError;
-            return false;
-        }
-        return true;
+        return rtp->saveResult;
     };
     runtime.saveProfileCtx = &rt;
     runtime.loadProfileJsonResult = [](const String& name, String& json, void* ctx) {
@@ -170,17 +164,64 @@ void setUp() {
     mockMillis = 1000;
     mockMicros = 1000000;
     mock_reset_heap_caps();
+    mockStringCopyAssignmentsBeforeFailure = -1;
 }
 
 void tearDown() {}
 
 // Profile-save error JSON must be escaped
 
+void test_typed_save_failures_match_independent_frontend_response_vectors() {
+    const std::string fixtures = readProjectFile("interface/src/test/fixtures/profile-save-errors.json");
+    TEST_ASSERT_FALSE(fixtures.empty());
+    JsonDocument vectors;
+    TEST_ASSERT_FALSE(deserializeJson(vectors, fixtures));
+    TEST_ASSERT_EQUAL_UINT(11, vectors.size());
+    for (JsonObjectConst vector : vectors.as<JsonArrayConst>()) {
+        FakeRuntime rt;
+        const char* status = vector["storageStatus"];
+        const char* reason = vector["reason"];
+        ProfileStorageStatus storageStatus;
+        if (std::strcmp(status, "Busy") == 0) storageStatus = ProfileStorageStatus::Busy;
+        else if (std::strcmp(status, "InvalidName") == 0) storageStatus = ProfileStorageStatus::InvalidName;
+        else if (std::strcmp(status, "IoError") == 0) storageStatus = ProfileStorageStatus::IoError;
+        else if (std::strcmp(status, "Corrupt") == 0) storageStatus = ProfileStorageStatus::Corrupt;
+        else { TEST_FAIL_MESSAGE("Unknown fixture status"); return; }
+        ProfileFailureReason failureReason;
+        if (std::strcmp(reason, "None") == 0) failureReason = ProfileFailureReason::None;
+        else if (std::strcmp(reason, "AlreadyExists") == 0) failureReason = ProfileFailureReason::AlreadyExists;
+        else if (std::strcmp(reason, "CanonicalCollision") == 0) failureReason = ProfileFailureReason::CanonicalCollision;
+        else if (std::strcmp(reason, "CatalogFull") == 0) failureReason = ProfileFailureReason::CatalogFull;
+        else { TEST_FAIL_MESSAGE("Unknown fixture reason"); return; }
+        rt.saveResult = ProfileSaveResult(storageStatus, vector["diagnostic"].as<const char*>(), failureReason);
+        WebServer server;
+        const char* request = "{\"name\":\"RoadTrip\",\"createOnly\":true,\"settings\":{\"xBand\":true}}";
+        WifiV1ProfileApiService::handleApiProfileSaveBody(
+            server, makeRuntime(rt), reinterpret_cast<const uint8_t*>(request), std::strlen(request),
+            alwaysAllow, nullptr);
+        const char* label = vector["name"];
+        TEST_ASSERT_EQUAL_INT_MESSAGE(vector["status"].as<int>(), server.lastStatusCode, label);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("application/json", server.lastContentType.c_str(), label);
+        std::string expected;
+        serializeJson(vector["body"], expected);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(expected.c_str(), server.lastBody.c_str(), label);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, server.sendCount, label);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, rt.saveCalls, label);
+        TEST_ASSERT_TRUE_MESSAGE(rt.savedCreateOnly, label);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, rt.backupCalls, label);
+    }
+}
+
+void test_profile_runtime_wires_the_typed_production_save_adapter() {
+    const std::string source = readProjectFile("src/wifi_runtimes.cpp");
+    TEST_ASSERT_TRUE(source.find("WifiV1ProfileApiService::saveProfile,\n        &profiles_,") != std::string::npos);
+}
+
 void test_save_error_with_quotes_and_backslashes_stays_valid_json() {
     WebServer server(80);
     FakeRuntime rt;
-    rt.saveOk = false;
-    rt.saveError = "open \"/profiles/a\\b.json\" failed";
+    rt.saveResult = ProfileSaveResult(ProfileStorageStatus::IoError);
+    rt.saveResult.error = "open \"/profiles/a\\b.json\" failed";
     const String requestBody = "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}";
 
     WifiV1ProfileApiService::handleApiProfileSaveBody(
@@ -199,8 +240,8 @@ void test_save_error_with_quotes_and_backslashes_stays_valid_json() {
 void test_save_error_with_control_characters_stays_valid_json() {
     WebServer server(80);
     FakeRuntime rt;
-    rt.saveOk = false;
-    rt.saveError = "write failed\nretry \"once\"\ttab";
+    rt.saveResult = ProfileSaveResult(ProfileStorageStatus::IoError);
+    rt.saveResult.error = "write failed\nretry \"once\"\ttab";
     const String requestBody = "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}";
 
     WifiV1ProfileApiService::handleApiProfileSaveBody(
@@ -218,8 +259,8 @@ void test_save_error_with_control_characters_stays_valid_json() {
 void test_plain_save_error_still_reports_error_field_verbatim() {
     WebServer server(80);
     FakeRuntime rt;
-    rt.saveOk = false;
-    rt.saveError = "disk full";
+    rt.saveResult = ProfileSaveResult(ProfileStorageStatus::IoError);
+    rt.saveResult.error = "disk full";
     const String requestBody = "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}";
 
     WifiV1ProfileApiService::handleApiProfileSaveBody(
@@ -313,8 +354,11 @@ void test_profile_save_forwards_create_only_and_reports_existing_name_conflict()
     for (const bool alreadyExists : {false, true}) {
         WebServer server(80);
         FakeRuntime rt;
-        rt.saveOk = !alreadyExists;
-        rt.saveError = "Profile already exists";
+        rt.saveResult = ProfileSaveResult(
+            alreadyExists ? ProfileStorageStatus::InvalidName : ProfileStorageStatus::Success,
+            "Profile already exists",
+            alreadyExists ? ProfileFailureReason::AlreadyExists : ProfileFailureReason::None);
+        rt.saveResult.error = "Profile already exists";
         const String requestBody = "{\"name\":\"RoadTrip\",\"createOnly\":true,\"settings\":{\"xBand\":true}}";
 
         WifiV1ProfileApiService::handleApiProfileSaveBody(
@@ -955,6 +999,8 @@ void test_list_page_real_handler_invalid_query_never_reaches_storage() {
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_typed_save_failures_match_independent_frontend_response_vectors);
+    RUN_TEST(test_profile_runtime_wires_the_typed_production_save_adapter);
     RUN_TEST(test_list_page_real_handler_nonempty_cursor_preserves_order_and_metadata);
     RUN_TEST(test_list_page_real_handler_empty_last_has_null_cursor_and_legacy_owner);
     RUN_TEST(test_list_page_real_handler_busy);

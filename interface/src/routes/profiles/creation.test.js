@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import { createDefaultInTheBoxSettings } from '#lib/features/profiles/inTheBoxSettings.js';
 import Page from './+page.svelte';
+import profileSaveErrors from '../../test/fixtures/profile-save-errors.json';
 
 const existingName = 'Daily Drive';
 const catalog = (profiles = [{ name: existingName }]) => ({ schemaVersion: 4, profiles });
@@ -130,6 +131,51 @@ describe('profile creation never replaces a saved profile', () => {
             } finally {
                 unmount();
                 await act(async () => { releaseCatalog(jsonResponse(catalog([]))); });
+            }
+        }
+    );
+
+    it.each(profileSaveErrors)(
+        'retains the complete creation draft for the firmware $name response', async (response) => {
+            const sent = [];
+            const fetchMock = installPage([
+                { method: 'GET', match: '/api/v1/profiles', respond: jsonResponse(catalog([{ name: 'Other' }])) },
+                { method: 'POST', match: '/api/v1/profile', respond: ({ init }) => {
+                    sent.push(JSON.parse(init.body));
+                    return sent.length === 1
+                        ? jsonResponse(response.body, response.status)
+                        : jsonResponse({ success: true });
+                } }
+            ]);
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText('Other', { exact: true });
+                await newDraft();
+                await submitName(existingName);
+                await screen.findByText(`Failed to save: ${response.body.error}`, { exact: true, normalizer: (text) => text });
+                expectDraft(existingName);
+                expect(screen.getByLabelText('X Band')).not.toBeChecked();
+                expect(sent).toHaveLength(1);
+                expect(sent[0]).toMatchObject({
+                    name: existingName, createOnly: true, description: 'Unsaved description',
+                    settings: { xBand: false }, inTheBox: { bands: { k: { muteOutside: true } } }
+                });
+                expect(mutations(fetchMock).map(([url]) => url)).toEqual(['/api/v1/profile']);
+                expect(screen.getByText('Other', { exact: true })).toBeInTheDocument();
+                expect(screen.queryByText(existingName, { exact: true })).not.toBeInTheDocument();
+
+                // A deliberate retry sends the entire preserved draft, including
+                // detector policy and raw settings, under only the changed name.
+                await submitName('Fresh Choice');
+                await screen.findByText('Profile "Fresh Choice" saved');
+                expect(sent).toHaveLength(2);
+                expect(sent[1]).toEqual({ ...sent[0], name: 'Fresh Choice' });
+                expect(mutations(fetchMock).map(([url]) => url)).toEqual([
+                    '/api/v1/profile', '/api/v1/profile'
+                ]);
+                expect(screen.getByText('Other', { exact: true })).toBeInTheDocument();
+            } finally {
+                unmount();
             }
         }
     );

@@ -15,10 +15,27 @@
 typedef uint8_t byte;
 typedef bool boolean;
 
+// Opt-in simulation of Arduino String's non-throwing allocation failure.
+// A negative value leaves copies unchanged; zero fails the next copy assignment.
+inline int mockStringCopyAssignmentsBeforeFailure = -1;
+
 // String class stub (minimal implementation)
 class String {
 public:
     String() : data_("") {}
+    String(const String&) = default;
+    String(String&&) = default;
+    String& operator=(String&&) = default;
+    String& operator=(const String& other) {
+        if (mockStringCopyAssignmentsBeforeFailure == 0) {
+            mockStringCopyAssignmentsBeforeFailure = -1;
+            data_.clear();
+        } else {
+            if (mockStringCopyAssignmentsBeforeFailure > 0) --mockStringCopyAssignmentsBeforeFailure;
+            data_ = other.data_;
+        }
+        return *this;
+    }
     String(const char* s) : data_(s ? s : "") {}
     String(const std::string& s) : data_(s) {}
     String(int val) : data_(std::to_string(val)) {}

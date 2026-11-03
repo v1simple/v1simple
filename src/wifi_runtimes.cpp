@@ -421,26 +421,8 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             return true;
         },
         this,
-        [](const String& name, const String& description, const V1DetectorConfiguration& detector,
-           const V1InTheBoxSettings& inTheBox, const uint8_t inBytes[6], bool createOnly, String& error, void* ctx) {
-            V1Profile profile;
-            profile.name = name;
-            profile.description = description;
-            if (profile.name != name || profile.description != description) {
-                error = "Profile metadata memory unavailable";
-                return false;
-            }
-            profile.detector = detector;
-            profile.inTheBox = inTheBox;
-            memcpy(profile.settings.bytes, inBytes, 6);
-            ProfileSaveResult result = static_cast<WiFiManager*>(ctx)->profiles_.saveProfile(profile, createOnly);
-            if (!result.success) {
-                error = result.error;
-                return false;
-            }
-            return true;
-        },
-        this,
+        WifiV1ProfileApiService::saveProfile,
+        &profiles_,
         [](void* ctx) { static_cast<WiFiManager*>(ctx)->settings_.requestDeferredBackupFromCurrentState(); },
         this,
         [](const String& name, String& json, void* ctx) {

@@ -96,6 +96,7 @@ struct FakeDriveRuntime {
     bool queueBackpressured = false;
     bool liveAlertPresentation = false;
     bool warningNeedsRestore = false;
+    DriveLoopDispatch dispatch{30, true};
     std::vector<bool> powerAlertPresentationStates;
     FakeConnectionSnapshot connection;
     std::vector<Call> calls;
@@ -172,7 +173,7 @@ struct FakeDriveRuntime {
 
     DriveLoopDispatch processConnectionDispatch(bool) {
         calls.push_back(Call::CONNECTION_DISPATCH);
-        return {30, true};
+        return dispatch;
     }
 
     void processPeriodicMaintenance(uint32_t nowMs, bool bleConnected, bool bleBackpressured, bool overloaded,
@@ -436,6 +437,57 @@ void test_inactive_drive_runtime_executes_no_phase() {
     TEST_ASSERT_TRUE(runtime.calls.empty());
 }
 
+void test_settings_retains_forced_tail_arguments_under_connection_pressure() {
+    FakeDriveRuntime runtime;
+    runtime.inSettings = true;
+    runtime.connection.connected = false;
+    runtime.connection.backpressured = true;
+    runtime.connection.overloaded = true;
+    runtime.queueBackpressured = true;
+
+    DriveLoopCoordinator::tick(runtime);
+
+    TEST_ASSERT_FALSE(called(runtime, Call::BLE_QUEUE));
+    TEST_ASSERT_FALSE(called(runtime, Call::CONNECTION_DISPATCH));
+    TEST_ASSERT_EQUAL_UINT(1, runtime.maintenanceCalls.size());
+    const auto& maintenance = runtime.maintenanceCalls[0];
+    TEST_ASSERT_EQUAL_UINT32(25, maintenance.nowMs);
+    TEST_ASSERT_FALSE(maintenance.bleConnected);
+    TEST_ASSERT_FALSE(maintenance.bleBackpressured);
+    TEST_ASSERT_FALSE(maintenance.overloaded);
+    TEST_ASSERT_TRUE(maintenance.forceTailBleDrainPending);
+    TEST_ASSERT_EQUAL_UINT(1, runtime.finishCalls.size());
+    TEST_ASSERT_FALSE(runtime.finishCalls[0].bleBackpressured);
+    TEST_ASSERT_TRUE(runtime.finishCalls[0].forceBleDrain);
+}
+
+void test_normal_maintenance_uses_queue_pressure_and_dispatch_snapshot() {
+    for (bool initialPressure : {false, true}) {
+        for (bool queuePressure : {false, true}) {
+            for (bool overloaded : {false, true}) {
+                FakeDriveRuntime runtime;
+                runtime.connection.backpressured = initialPressure;
+                runtime.connection.overloaded = overloaded;
+                runtime.queueBackpressured = queuePressure;
+                runtime.dispatch = {91, false};
+
+                DriveLoopCoordinator::tick(runtime);
+
+                TEST_ASSERT_EQUAL_UINT(1, runtime.maintenanceCalls.size());
+                const auto& maintenance = runtime.maintenanceCalls[0];
+                TEST_ASSERT_EQUAL_UINT32(91, maintenance.nowMs);
+                TEST_ASSERT_FALSE(maintenance.bleConnected);
+                TEST_ASSERT_EQUAL(queuePressure, maintenance.bleBackpressured);
+                TEST_ASSERT_EQUAL(overloaded || queuePressure, maintenance.overloaded);
+                TEST_ASSERT_FALSE(maintenance.forceTailBleDrainPending);
+                TEST_ASSERT_EQUAL_UINT(1, runtime.finishCalls.size());
+                TEST_ASSERT_EQUAL(queuePressure, runtime.finishCalls[0].bleBackpressured);
+                TEST_ASSERT_FALSE(runtime.finishCalls[0].forceBleDrain);
+            }
+        }
+    }
+}
+
 void test_drive_runtime_replaces_global_provider_and_loop_wrapper_graph() {
     const std::string header = readFile(projectRoot() + "/src/drive_runtime.h");
     const std::string main = readFile(projectRoot() + "/src/main.cpp");
@@ -483,6 +535,8 @@ int main() {
     RUN_TEST(test_settings_remains_open_after_alp_processing_without_live_alert);
     RUN_TEST(test_live_alert_preempts_settings_after_single_alp_processing_pass);
     RUN_TEST(test_inactive_drive_runtime_executes_no_phase);
+    RUN_TEST(test_settings_retains_forced_tail_arguments_under_connection_pressure);
+    RUN_TEST(test_normal_maintenance_uses_queue_pressure_and_dispatch_snapshot);
     RUN_TEST(test_drive_runtime_replaces_global_provider_and_loop_wrapper_graph);
     RUN_TEST(test_drive_runtime_composition_has_no_maintenance_wifi_dependency);
     RUN_TEST(test_fatal_boot_error_transfers_frame_before_wait_and_restart);

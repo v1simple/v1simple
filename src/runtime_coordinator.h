@@ -47,45 +47,40 @@ class DriveLoopCoordinator {
         const bool inSettings = !runtime.powerOwnsPresentation() && runtime.processTouch(timing.nowMs);
         runtime.servicePowerDisplayOwnership(timing.nowMs);
         const bool powerPresentationOwned = runtime.powerOwnsPresentation();
+        const bool settingsOwnsPresentation = inSettings && !runtime.preemptSettingsForLiveAlert();
 
-        if (inSettings) {
-            if (!runtime.preemptSettingsForLiveAlert()) {
-                runtime.openBootReadyGate(timing.nowMs);
-                runtime.processBleRuntime();
-                // Local adjustment must keep OBD polling/recovery eligible so
-                // a healthy speed source cannot expire while sliders are open.
-                runtime.processConnectionCycle(timing.nowMs, bleConnected);
-                runtime.processObd(timing.nowMs, bleConnected);
-                // Keep serial input current while sliders own presentation.
-                // Otherwise old UART bytes acquire a fresh timestamp on exit.
-                runtime.processGps(timing.nowMs);
-                runtime.processSpeed(timing.nowMs);
-                runtime.processSpeedAlert(timing.nowMs);
-                runtime.observeAlpProductState(timing.nowMs);
-                // Parsed detector policy remains eligible while sliders own pixels.
-                runtime.processParsedPolicies(runtime.consumeDisplayEdges());
-                runtime.processPeriodicMaintenance(timing.nowMs, bleConnected, false, false, true);
-                runtime.finishDriveLoop(false, timing.loopStartUs, true);
-                return;
-            }
-        }
-
-        if (!powerPresentationOwned) {
+        if (!settingsOwnsPresentation && !powerPresentationOwned) {
             runtime.processTapGesture(timing.nowMs);
         }
         runtime.openBootReadyGate(timing.nowMs);
         runtime.processBleRuntime();
-        runtime.processBleQueue();
-        bleBackpressure = runtime.bleQueueBackpressured();
-        const bool overloadLate = connection.overloaded || bleBackpressure;
+        if (!settingsOwnsPresentation) {
+            runtime.processBleQueue();
+            bleBackpressure = runtime.bleQueueBackpressured();
+        }
 
+        // Connection recovery and speed inputs remain live regardless of the
+        // screen owner. Do not let local adjustment expire a healthy source.
         runtime.processConnectionCycle(timing.nowMs, bleConnected);
         runtime.processObd(timing.nowMs, bleConnected);
-        runtime.observeAlpProductState(timing.nowMs);
+        if (!settingsOwnsPresentation) {
+            runtime.observeAlpProductState(timing.nowMs);
+        }
         runtime.processGps(timing.nowMs);
         runtime.processSpeed(timing.nowMs);
         runtime.processSpeedAlert(timing.nowMs);
 
+        if (settingsOwnsPresentation) {
+            runtime.observeAlpProductState(timing.nowMs);
+            // Parsed policy stays eligible; new BLE input is drained at the
+            // tail and can preempt sliders on the following tick.
+            runtime.processParsedPolicies(runtime.consumeDisplayEdges());
+            runtime.processPeriodicMaintenance(timing.nowMs, bleConnected, false, false, true);
+            runtime.finishDriveLoop(false, timing.loopStartUs, true);
+            return;
+        }
+
+        const bool overloadLate = connection.overloaded || bleBackpressure;
         const bool liveAlertPresentation =
             powerPresentationOwned && runtime.hasLiveAlertPresentation();
         if (liveAlertPresentation) {

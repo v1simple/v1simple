@@ -383,7 +383,7 @@ void test_maintenance_entry_rolls_back_boot_request_when_return_ack_fails() {
     const std::string wiring = readFile(projectRoot() + "/src/drive_runtime.cpp");
     const std::string entryBody = extractFunctionBody(wiring, "bool DriveRuntime::requestMaintenanceBootRestart()");
     const size_t request = entryBody.find("requestMaintenanceBoot()");
-    const size_t acknowledge = entryBody.find("settingsOperations_.acknowledgeReturnToMaintenance()");
+    const size_t acknowledge = entryBody.find("settingsOperationCoordinator_.acknowledgePendingMaintenanceReturn()");
     const size_t rollback = entryBody.find("readAndClearMaintenanceBootRequest()", acknowledge);
     const size_t cleanup = entryBody.find("completeLoggingForControlledRestart(");
 
@@ -396,7 +396,7 @@ void test_maintenance_entry_rolls_back_boot_request_when_return_ack_fails() {
     TEST_ASSERT_TRUE(rollback < cleanup);
 
     const std::string ackFailure = extractFunctionBody(
-        entryBody, "if (settingsOperations_.isTerminal()");
+        entryBody, "if (!settingsOperationCoordinator_.acknowledgePendingMaintenanceReturn()");
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           ackFailure.find("readAndClearMaintenanceBootRequest()"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, ackFailure.find("restart cancelled"));

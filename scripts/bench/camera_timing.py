@@ -15,6 +15,7 @@ from artifact_privacy import sanitize_artifact_value
 
 VIDEO_TIMING_VERIFICATION_SCHEMA = 1
 FRAME_TIMING_SIDECAR_SCHEMA = 1
+VIDEO_FRAME_PROBE_TIMEOUT_S = 1200
 FRAME_STATUSES = frozenset({"written", "capture_drop", "writer_drop", "timestamp_error"})
 REQUIRED_FRAME_FIELDS = frozenset(
     {
@@ -480,6 +481,7 @@ def probe_all_video_frames(ffprobe: str, video_path: Path) -> list[dict[str, Any
         stderr=subprocess.PIPE,
         text=True,
         check=False,
+        timeout=VIDEO_FRAME_PROBE_TIMEOUT_S,
     )
     if process.returncode != 0:
         raise RuntimeError(f"ffprobe frame inspection failed with exit {process.returncode}")

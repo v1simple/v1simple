@@ -292,6 +292,12 @@ final class Player {
                 if sendEmptyAlertTable() {
                     lock.lock(); _packetsSent += 1; lock.unlock()
                 }
+                // Table and physical LED display are independent protocol
+                // owners. A zero-length quiet tail still needs one idle display
+                // before silence, or its last live meter/band/bogey remain true.
+                if options.quietAfterComplete && options.idleTail <= 0 {
+                    sendIdleFrame()
+                }
                 switch emitIdle(seconds: options.idleTail, phase: .idleTail) {
                 case .aborted:
                     return

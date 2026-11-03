@@ -176,6 +176,22 @@ final class V1PlayerTimingTests: XCTestCase {
         XCTAssertFalse(result.packets.contains { $0.phase == "finished" })
     }
 
+    func testQuietZeroTailCompletesTableAndDisplayBeforeSilence() throws {
+        let result = try record("quiet-zero-tail")
+        XCTAssertEqual(result.offsets, [0.0, 0.05])
+        XCTAssertEqual(result.packets.map { $0.bytes[3] }, [0x43, 0x31, 0x43, 0x31, 0x43, 0x31])
+        let terminal = result.packets.filter { $0.sequence == -1 }
+        XCTAssertEqual(terminal.count, 2, "Silence requires one empty table and one idle display")
+        guard terminal.count == 2 else { return }
+        XCTAssertEqual(terminal[0].bytes[3], 0x43)
+        XCTAssertEqual(Array(terminal[0].bytes[5..<12]), Array(repeating: UInt8(0), count: 7))
+        XCTAssertEqual(terminal[1].bytes[3], 0x31)
+        XCTAssertEqual(Array(terminal[1].bytes[5..<10]), [0x38, 0x38, 0, 0, 0],
+                       "Idle display must retire the live bogey, meter, band and arrow")
+        XCTAssertFalse(result.packets.contains { $0.phase == "finished" },
+                       "No packet may refresh the completed display during the quiet observation")
+    }
+
     func testAlertRequestWaitSeedsTimeSliceWithoutStartingScenario() throws {
         let result = try record("startup-gate")
         XCTAssertEqual(result.offsets, [0.4, 0.6])
@@ -271,7 +287,7 @@ final class V1Peripheral {
 
     static func main() throws {
         let mode = CommandLine.arguments[1]
-        let tailMode = ["tail", "zero-tail", "tail-display-only", "tail-no-start", "quiet-tail"].contains(mode)
+        let tailMode = ["tail", "zero-tail", "tail-display-only", "tail-no-start", "quiet-tail", "quiet-zero-tail"].contains(mode)
         let offsets = tailMode ? [0.0, 0.05] :
             (mode == "empty" ? [] : (mode == "zero" ? [0.0, 0.2] : [0.4, 0.6]))
         let encounter = Encounter(origin: .externalInput, samples: offsets.enumerated().map {
@@ -281,14 +297,14 @@ final class V1Peripheral {
         })
         var options = Player.Options()
         options.idleLead = ["lead", "restart", "loop"].contains(mode) ? 0.1 : 0
-        options.idleTail = mode == "loop" || (tailMode && mode != "zero-tail") ? 0.1 : 0
+        options.idleTail = mode == "loop" || (tailMode && !["zero-tail", "quiet-zero-tail"].contains(mode)) ? 0.1 : 0
         options.idleHz = 20
         options.waitForAlertData = mode != "tail-no-start"
         options.sendAlerts = mode != "tail-display-only"
         options.speed = mode == "double" ? 2 : 1
         options.loop = mode == "loop"
         options.startPaused = ["pause", "step"].contains(mode)
-        options.quietAfterComplete = mode == "quiet-tail"
+        options.quietAfterComplete = ["quiet-tail", "quiet-zero-tail"].contains(mode)
         let userBytes: [UInt8] = mode == "filter"
             ? [0x7F, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF]
             : Array(repeating: 0xFF, count: 6)
@@ -377,7 +393,7 @@ final class V1Peripheral {
         for _ in 0..<expected {
             precondition(arrived.wait(timeout: .now() + 2) == .success, "missing emission")
         }
-        if mode == "quiet-tail" {
+        if ["quiet-tail", "quiet-zero-tail"].contains(mode) {
             let deadline = nowSeconds() + 2
             while player.snapshot.phase != .finished {
                 precondition(nowSeconds() < deadline, "quiet tail did not reach finished phase")

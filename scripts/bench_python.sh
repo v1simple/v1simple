@@ -11,6 +11,10 @@ case "${1:-}" in
     [[ $# -eq 1 ]] || exit 2
     REQUIREMENTS="$ROOT_DIR/scripts/requirements-bench-visual.txt"
     ;;
+  --browser)
+    [[ $# -eq 1 ]] || exit 2
+    REQUIREMENTS="$ROOT_DIR/scripts/requirements-bench-browser.txt"
+    ;;
   *) exit 2 ;;
 esac
 BENCH_ENV="$ROOT_DIR/.artifacts/bench-runtime/python"

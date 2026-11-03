@@ -370,7 +370,8 @@ class CameraCapture:
                 "-",
             ]
         )
-        proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+                              timeout=30)
         if proc.returncode != 0:
             detail = proc.stderr.decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"camera calibration frame decode failed: {detail or f'exit {proc.returncode}'}")
@@ -406,6 +407,7 @@ class CameraCapture:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            timeout=30,
         )
         if proc.returncode != 0 or not still_path.is_file() or still_path.stat().st_size == 0:
             detail = proc.stderr.decode("utf-8", errors="replace").strip()
@@ -790,6 +792,7 @@ class CameraCapture:
             stderr=subprocess.PIPE,
             text=True,
             check=False,
+            timeout=30,
         )
         if proc.returncode != 0:
             detail = proc.stderr.strip().replace(str(self.out_dir), "<camera-artifact>")
@@ -832,8 +835,16 @@ class CameraCapture:
                 f"({result['average_frame_rate']:.3f} < {self.framerate - 1.0:.1f})"
             )
 
-    def stop(self, collection_completed: bool) -> dict[str, Any]:
+    def stop(self, collection_completed: bool, *,
+             after_recording: Callable[[], None] | None = None) -> dict[str, Any]:
+        """Stop acquisition, release the caller's device, then verify media.
+
+        The optional callback runs after the bounded recorder shutdown and
+        before full-movie inspection, which can take much longer than recovery.
+        """
         if self.process is None:
+            if after_recording:
+                after_recording()
             if self.result_path.is_file():
                 try:
                     existing = json.loads(self.result_path.read_text(encoding="utf-8"))
@@ -849,6 +860,8 @@ class CameraCapture:
 
         was_running = self.process is not None
         self._stop_process()
+        if after_recording:
+            after_recording()
         timing_verification = self._verify_video_timing()
         if timing_verification.get("status") != "verified":
             mismatch = timing_verification.get("first_mismatch")

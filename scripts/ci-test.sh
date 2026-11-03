@@ -184,6 +184,8 @@ run_step "Bench window regression suite" python3 scripts/test_bench_window.py
 VISUAL_PYTHON="$(./scripts/bench_python.sh --visual)" || exit 1
 run_step "Replay visual field reader regression suite" env PYTHONPATH=scripts \
   "$VISUAL_PYTHON" -m unittest scripts.test_read_replay_fields
+run_step "Unattended behavior bench regression suite" "$VISUAL_PYTHON" \
+  -m unittest discover -s scripts -p 'test_behavior_*.py'
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
 run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py

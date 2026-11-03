@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Compile the real maintenance STA owner against a deterministic WiFi boundary.
+"""Compile the real station lifecycle and retain separate manager ordering checks.
 
-WiFiManager's target WebServer cannot compile under the native mocks. Extract
-the relevant owner methods and service tail verbatim, using unique named
-boundaries; keep only unrelated hardware/settings surfaces in the adapter.
-No copied implementation is checked in, and a changed boundary fails loudly.
+The station owner, scan owner, enable transaction and policies compile directly.
+Only manager AP/start and service-tail wiring is selected from its target-bound
+translation unit; no station implementation or private state is reconstructed.
 """
 
 from pathlib import Path
@@ -39,33 +38,24 @@ def render(name: str, replacements: dict[str, str]) -> str:
 
 def build_and_run(build: Path) -> None:
     client = (ROOT / "src/wifi_client.cpp").read_text(encoding="utf-8")
-    manager = (ROOT / "src/wifi_manager.h").read_text(encoding="utf-8")
     lifecycle = (ROOT / "src/wifi_manager_lifecycle.cpp").read_text(encoding="utf-8")
     settings = (ROOT / "src/settings_types.h").read_text(encoding="utf-8")
 
     (build / "settings_types.h").write_text(render("settings_types.h.in", {
         "@SLOT_METADATA@": between(settings, "inline constexpr size_t kWifiStaSlotCount", "struct WifiStaPriorityUpdate"),
     }), encoding="utf-8")
-    (build / "owner.h").write_text(render("owner.h.in", {
-        "@CLIENT_STATE@": between(manager, "enum WifiClientState {", "inline bool wifiUiActiveSince"),
-        "@CONNECTION_FIELDS@": between(manager, "    bool apInterfaceEnabled_ =", "    enum class WifiStopPhase"),
-        "@RECONNECT_FIELDS@": between(manager, "    // WiFi reconnect failure tracking", "    // Low-DMA protection state"),
-    }), encoding="utf-8")
-
     owner = '#include "owner.h"\n'
     owner += between(lifecycle, "static bool shouldUseApSta(", "static void getWifiRuntimeThresholds(")
     owner += between(lifecycle, "bool WiFiManager::startSetupMode(", "bool WiFiManager::stopSetupModeImmediate(")
-    for start, end in (
-        ("namespace {", "String WiFiManager::getAPIPAddress()"),
-        ("int WiFiManager::findConfiguredSlotBySsid(", "bool WiFiManager::upsertSavedNetwork("),
-        ("bool WiFiManager::testSavedNetwork(", "bool WiFiManager::enableWifiClientFromSavedCredentials("),
-        ("void WiFiManager::disconnectFromNetwork()", "void WiFiManager::disconnectTrackedWifiActivity("),
-    ):
-        owner += between(client, start, end)
-    tail_start = "void WiFiManager::processWifiClientConnectPhase()"
-    if client.count(tail_start) != 1:
-        raise AssertionError("Connection owner tail missing or ambiguous")
-    owner += client[client.index(tail_start):]
+    wrapper = "WifiStationLifecycle::Environment WiFiManager::stationEnvironment() const"
+    if client.count(wrapper) != 1:
+        raise AssertionError("Manager station adapter missing or ambiguous")
+    owner += client[client.index(wrapper):]
+
+    owner += between(client, "int WiFiManager::selectSlotForNetworkConnect(",
+                     "WifiClientApiService::PriorityUpdateStatus WiFiManager::updateSavedNetworkPriorities(")
+    owner += between(client, "bool WiFiManager::disableWifiClient()",
+                     "WifiStationLifecycle::Environment WiFiManager::stationEnvironment() const")
 
     # Includes both maintenance harvest passes, HTTP servicing, staged connects,
     # timeout cadence and status checking in their actual order, plus the final }.
@@ -87,6 +77,8 @@ def build_and_run(build: Path) -> None:
         "-std=c++17", "-DUNIT_TEST", "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-g",
         "-I" + str(build), "-I" + str(FIXTURE), "-I" + str(ROOT / "test/mocks"), "-I" + str(ROOT / "src"),
         str(FIXTURE / "recovery.cpp"), str(build / "owner.cpp"),
+        str(ROOT / "src/modules/wifi/wifi_station_lifecycle.cpp"),
+        str(ROOT / "src/modules/wifi/wifi_client_enable_transaction.cpp"),
         str(ROOT / "src/modules/wifi/wifi_scan_result_owner.cpp"),
         str(policy_dir / "wifi_sta_slot_policy.cpp"), "-o", str(build / "recovery"),
     ]

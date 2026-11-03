@@ -118,8 +118,7 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
             }
         } else if (WiFi.getMode() != WIFI_AP) {
             WiFi.mode(WIFI_AP);
-            wifiClientState_ = WIFI_CLIENT_DISABLED;
-            currentConnectedSlotIndex_ = -1;
+            station_.selectSessionMode(false);
         }
 
         resetReconnectFailures();
@@ -183,21 +182,15 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
     lastTimeoutCheckMs_ = 0;
     lowDmaSinceMs_ = 0;
     lowDmaCooldownUntilMs_ = 0;
-    maintenanceAutoConnectRetryAtMs_ = 0;
-    maintenanceSettingsRecoveryPending_ = settings_.recoveryPending();
-    maintenanceAddressCollisionSlotMask_ = 0;
-    maintenanceManualDisconnect_ = false;
-    resetReconnectFailures();
+    station_.beginSession();
 
     // Check if WiFi client is enabled - use AP+STA mode
     if (apStaMode) {
         WiFi.mode(WIFI_AP_STA);
-        wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
-        currentConnectedSlotIndex_ = -1;
+        station_.selectSessionMode(true);
     } else {
         WiFi.mode(WIFI_AP);
-        wifiClientState_ = WIFI_CLIENT_DISABLED;
-        currentConnectedSlotIndex_ = -1;
+        station_.selectSessionMode(false);
     }
     WiFi.setTxPower(WIFI_POWER_5dBm);
     Serial.println("[WiFi] TX power 5dBm (low RF for BLE coex)");
@@ -206,8 +199,7 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
         Serial.println("[SetupMode] ABORT: AP bring-up failed");
         WiFi.mode(WIFI_OFF);
         apInterfaceEnabled_ = false;
-        wifiClientState_ = WIFI_CLIENT_DISABLED;
-        currentConnectedSlotIndex_ = -1;
+        station_.selectSessionMode(false);
         return false;
     }
     if (!setupWebServer()) {
@@ -230,7 +222,7 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
 
     switch (WifiSetupNetworkPolicy::selectSavedNetworkStart(maintenanceBootMode_, apStaMode)) {
     case WifiSetupNetworkPolicy::SavedNetworkStart::MaintenanceAutoConnect:
-        (void)beginMaintenanceAutoConnectScan(false);
+        (void)station_.beginMaintenanceAutoConnectScan(stationEnvironment(), false);
         break;
     case WifiSetupNetworkPolicy::SavedNetworkStart::DirectConnect:
         Serial.println("[SetupMode] STA connect queued");
@@ -259,10 +251,10 @@ bool WiFiManager::stopSetupModeImmediate(bool emergencyLowDma) {
 
     // Stop server_ first, then release STA/AP without erasing configured credentials.
     server_.stop();
-    if (modeHasSta && (wifiClientState_ == WIFI_CLIENT_CONNECTED || wifiClientState_ == WIFI_CLIENT_CONNECTING ||
+    if (modeHasSta && (station_.clientState() == WIFI_CLIENT_CONNECTED || station_.clientState() == WIFI_CLIENT_CONNECTING ||
                        WiFi.status() == WL_CONNECTED)) {
         WiFi.disconnect(false, false);
-        currentConnectedSlotIndex_ = -1;
+        station_.staDisconnectedForStop();
     }
     if (WifiApLifecyclePolicy::shouldDisableInterfaceOnStop(modeHasAp, apInterfaceEnabled_)) {
         if (!WiFi.enableAP(false)) {
@@ -285,24 +277,7 @@ void WiFiManager::finalizeStopSetupMode() {
     // ============================================================================
     setupModeState_ = SETUP_MODE_OFF;
     apInterfaceEnabled_ = false;
-    wifiClientState_ = WIFI_CLIENT_DISABLED;
-    currentConnectedSlotIndex_ = -1;
-    resetWifiScanState();
-    wifiConnectStartMs_ = 0;
-    wifiConnectPhase_ = WifiConnectPhase::IDLE;
-    wifiConnectPhaseStartMs_ = 0;
-    pendingConnectSSID_ = "";
-    pendingConnectPassword_ = "";
-    pendingConnectPersistCredentials_ = true;
-    pendingConnectSlotIndex_ = -1;
-    maintenanceAutoConnectStaDropGate_.clear();
-    maintenanceAutoConnectPhase_ = MaintenanceAutoConnectPhase::IDLE;
-    maintenanceAutoConnectScanStartMs_ = 0;
-    maintenanceAutoConnectSlotCount_ = 0;
-    maintenanceAutoConnectSlotCursor_ = 0;
-    maintenanceAutoConnectRetryAtMs_ = 0;
-    maintenanceAddressCollisionSlotMask_ = 0;
-    maintenanceManualDisconnect_ = false;
+    station_.stop();
     lastUiActivityMs_ = 0;
     lastClientSeenMs_ = 0;
     lastAnyClientSeenMs_ = 0;
@@ -311,8 +286,6 @@ void WiFiManager::finalizeStopSetupMode() {
     lastMaintenanceFastMs_ = 0;
     lastStatusCheckMs_ = 0;
     lastTimeoutCheckMs_ = 0;
-    lastReconnectAttemptMs_ = 0;
-    wifiReconnectDeferredLogged_ = false;
     wasAutoStarted_ = false;
     lowDmaSinceMs_ = 0;
     wifiStopPhase_ = WifiStopPhase::IDLE;
@@ -357,10 +330,10 @@ void WiFiManager::processStopSetupModePhase() {
     }
 
     case WifiStopPhase::DISCONNECT_STA: {
-        if (wifiStopHadSta_ && (wifiClientState_ == WIFI_CLIENT_CONNECTED ||
-                                wifiClientState_ == WIFI_CLIENT_CONNECTING || WiFi.status() == WL_CONNECTED)) {
+        if (wifiStopHadSta_ && (station_.clientState() == WIFI_CLIENT_CONNECTED ||
+                                station_.clientState() == WIFI_CLIENT_CONNECTING || WiFi.status() == WL_CONNECTED)) {
             WiFi.disconnect(false, false);
-            currentConnectedSlotIndex_ = -1;
+            station_.staDisconnectedForStop();
         }
         wifiStopPhase_ = WifiStopPhase::DISABLE_AP;
         wifiStopPhaseStartMs_ = now;
@@ -439,13 +412,7 @@ bool WiFiManager::stopSetupMode(bool manual, const char* reason) {
 
     setupModeState_ = SETUP_MODE_STOPPING;
     lastUiActivityMs_ = 0;
-    wifiConnectStartMs_ = 0;
-    wifiConnectPhase_ = WifiConnectPhase::IDLE;
-    wifiConnectPhaseStartMs_ = 0;
-    pendingConnectSSID_ = "";
-    pendingConnectPassword_ = "";
-    pendingConnectPersistCredentials_ = true;
-    pendingConnectSlotIndex_ = -1;
+    station_.clearPendingWifiConnectState();
 
     const wifi_mode_t currentMode = WiFi.getMode();
     wifiStopHadSta_ = (currentMode == WIFI_AP_STA || currentMode == WIFI_STA);
@@ -604,24 +571,10 @@ void WiFiManager::process() {
                 }
                 apInterfaceEnabled_ = false;
 
-                const wl_status_t staStatus = WiFi.status();
-                if (staStatus == WL_CONNECTED) {
-                    wifiClientState_ = WIFI_CLIENT_CONNECTED;
-                    wifiReconnectFailures_ = 0;
-                } else if (wifiClientState_ == WIFI_CLIENT_CONNECTING) {
-                    // Keep connect workflow active and let status polling settle.
-                    wifiClientState_ = WIFI_CLIENT_CONNECTING;
-                } else {
-                    wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
-                    currentConnectedSlotIndex_ = -1;
-                }
-
-                // Cancel staged mode-switch workflow; reconnect logic can resume normally.
-                wifiConnectPhase_ = WifiConnectPhase::IDLE;
-                wifiConnectPhaseStartMs_ = 0;
+                station_.apRetiredForLowDma();
                 lowDmaCooldownUntilMs_ = now + WIFI_LOW_DMA_RETRY_COOLDOWN_MS;
                 lowDmaSinceMs_ = 0;
-                Serial.printf("[WiFi] AP dropped; STA status=%s\n", wifiClientStateApiName(wifiClientState_));
+                Serial.printf("[WiFi] AP dropped; STA status=%s\n", wifiClientStateApiName(station_.clientState()));
                 return;
             }
 
@@ -648,7 +601,7 @@ void WiFiManager::process() {
         cachedApStaCount_ = 0;
     }
 
-    const bool staConnectedNow = (wifiClientState_ == WIFI_CLIENT_CONNECTED) || (WiFi.status() == WL_CONNECTED);
+    const bool staConnectedNow = (station_.clientState() == WIFI_CLIENT_CONNECTED) || (WiFi.status() == WL_CONNECTED);
     if (apInterfaceActive && apClientCount > 0) {
         lastClientSeenMs_ = now;
     }
@@ -668,13 +621,7 @@ void WiFiManager::process() {
         lastApStaCountPollMs_ = 0;
         if (staWasConnected && WiFi.status() != WL_CONNECTED) {
             Serial.println("[WiFi] WARN: STA dropped during AP retire; reconnecting");
-            wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
-            currentConnectedSlotIndex_ = -1;
-            const V1Settings& settings = settings_.get();
-            if (settings.wifiClientEnabled && settings.wifiClientSSID.length() > 0) {
-                String savedPassword = settings_.getWifiClientPassword();
-                connectToNetwork(settings.wifiClientSSID, savedPassword, false);
-            }
+            station_.linkLostDuringApRetire(stationEnvironment());
         }
         return;
     }
@@ -682,7 +629,7 @@ void WiFiManager::process() {
     WifiNoClientTimeoutInput noClientInput;
     noClientInput.maintenanceBootMode = maintenanceBootMode_;
     noClientInput.clientPresent = staConnectedNow || apClientCount > 0;
-    noClientInput.staConnectInProgress = wifiClientState_ == WIFI_CLIENT_CONNECTING;
+    noClientInput.staConnectInProgress = station_.clientState() == WIFI_CLIENT_CONNECTING;
     noClientInput.autoStarted = wasAutoStarted_;
     noClientInput.nowMs = now;
     noClientInput.lastAnyClientSeenMs = lastAnyClientSeenMs_;
@@ -702,15 +649,15 @@ void WiFiManager::process() {
     // Continue serving HTTP while STA remains online even after AP is retired.
     if (isWifiServiceActive()) {
         if (maintenanceBootMode_) {
-            processMaintenanceAutoConnect();
+            station_.processMaintenanceAutoConnect(stationEnvironment());
         }
 
         server_.handleClient();
     }
 
     if (lastMaintenanceFastMs_ == 0 || (now - lastMaintenanceFastMs_) >= WIFI_MAINTENANCE_FAST_MS) {
-        processMaintenanceAutoConnect();
-        processWifiClientConnectPhase();
+        station_.processMaintenanceAutoConnect(stationEnvironment());
+        station_.processWifiClientConnectPhase(stationEnvironment());
         lastMaintenanceFastMs_ = now;
     }
     if (lastTimeoutCheckMs_ == 0 || (now - lastTimeoutCheckMs_) >= WIFI_TIMEOUT_CHECK_MS) {
@@ -797,7 +744,10 @@ bool WiFiManager::serveLittleFSFile(const char* path, const char* contentType) {
 WiFiManager::WiFiManager(SettingsManager& settings, V1ProfileManager& profiles, V1DeviceStore& devices,
                          StorageManager& storage)
     : settings_(settings), profiles_(profiles), devices_(devices), storage_(storage), server_(80),
-      setupModeState_(SETUP_MODE_OFF), apInterfaceEnabled_(false), setupModeStartTime_(0) {}
+      setupModeState_(SETUP_MODE_OFF), apInterfaceEnabled_(false), setupModeStartTime_(0),
+      station_(settings, wifiScanOwner_, {this, [](void* context, unsigned long now) {
+          static_cast<WiFiManager*>(context)->lastClientSeenMs_ = now;
+      }}) {}
 
 bool WiFiManager::acknowledgeDeliveredSettingsOperationReturn() {
     if (!v1SettingsOperations_ || !v1SettingsOperations_->isTerminal() ||

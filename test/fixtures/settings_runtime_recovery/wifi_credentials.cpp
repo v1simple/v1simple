@@ -11,18 +11,17 @@ class WiFiManager {
 public:
     explicit WiFiManager(SettingsManager& settings) : settings_(settings) {}
     SettingsManager& settings_;
-    enum class MaintenanceAutoConnectPhase { IDLE, SCANNING, CONNECTING };
-    MaintenanceAutoConnectPhase maintenanceAutoConnectPhase_ = MaintenanceAutoConnectPhase::IDLE;
-    int currentConnectedSlotIndex_ = -1, pendingConnectSlotIndex_ = -1;
-    uint8_t maintenanceAddressCollisionSlotMask_ = 0;
-    static constexpr unsigned long WIFI_MAINTENANCE_LINK_LOSS_RETRY_MS = 5000;
     unsigned radioChanges = 0;
-    void cancelMaintenanceAutoConnect(const char*) { ++radioChanges; }
-    void disconnectTrackedWifiActivity(const char*, bool) { ++radioChanges; }
-    void scheduleMaintenanceAutoConnectRetry(unsigned long) { ++radioChanges; }
+    struct StationEffects {
+        unsigned& changes;
+        WifiSavedNetworkMutationPolicy::Decision savedNetworkMutation(size_t) const { return {}; }
+        void savedNetworkMutationCommitted(int, size_t, WifiSavedNetworkMutationPolicy::Decision, const char*) {
+            ++changes;
+        }
+    } station_{radioChanges};
+    int stationEnvironment() const { return 0; }
     std::vector<WifiClientApiService::SavedNetworkSlotPayload> getSavedNetworkSlots() const;
     int selectSlotForNetworkConnect(const String&) const;
-    int findConfiguredSlotBySsid(const String&) const;
     bool upsertSavedNetwork(const WifiClientApiService::SavedNetworkUpsertPayload&, size_t&);
 };
 

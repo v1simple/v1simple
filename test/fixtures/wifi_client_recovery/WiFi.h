@@ -4,6 +4,9 @@
 #include <functional>
 #include <cstring>
 #include <vector>
+#include <string>
+
+inline std::vector<std::string> stationEffects;
 
 using wl_status_t = int;
 enum wifi_mode_t { WIFI_OFF = 0, WIFI_STA = 1, WIFI_AP = 2, WIFI_AP_STA = 3 };
@@ -36,11 +39,14 @@ class WiFiClass {
   public:
     wifi_mode_t radioMode = WIFI_AP_STA;
     bool physicalConnected = true;
+    uint32_t stationIp = 0x6401a8c0U;
     String physicalSsid = "Saved";
     bool autoReconnect = true;
     bool publishStopImmediately = true;
     wl_status_t cachedStatus = WL_CONNECTED;
     int scanState = WIFI_SCAN_FAILED;
+    int scanStartResult = WIFI_SCAN_RUNNING;
+    String lastBeginPassword;
     int scans = 0;
     int scanStatusReads = 0;
     int scanAborts = 0;
@@ -59,6 +65,7 @@ class WiFiClass {
     bool setTxPower(int) { return true; }
     wifi_mode_t getMode() const { return radioMode; }
     bool mode(wifi_mode_t mode) {
+        stationEffects.push_back("mode:" + std::to_string(mode));
         if (mode == WIFI_AP && radioMode != WIFI_AP) {
             ++apOnlyTransitions;
             physicalConnected = false;
@@ -68,14 +75,16 @@ class WiFiClass {
         return true;
     }
     bool setSleep(bool) { return true; }
-    bool setAutoReconnect(bool enabled) { autoReconnect = enabled; return true; }
+    bool getAutoReconnect() const { return autoReconnect; }
+    bool setAutoReconnect(bool enabled) { stationEffects.push_back(enabled ? "auto:1" : "auto:0"); autoReconnect = enabled; return true; }
     bool disconnect(bool = false, bool = false) {
+        stationEffects.push_back("disconnect");
         ++disconnects;
         physicalConnected = false;
         cachedStatus = WL_DISCONNECTED;
         return true;
     }
-    void scanDelete() { scanState = WIFI_SCAN_FAILED; }
+    void scanDelete() { stationEffects.push_back("scan:delete"); scanState = WIFI_SCAN_FAILED; }
     int16_t scanNetworks(bool, bool, bool, unsigned) {
         if (beforeScan) {
             auto callback = beforeScan;
@@ -86,7 +95,8 @@ class WiFiClass {
         radioMode = WIFI_AP_STA;
         ++scans;
         startedScanConnected = physicalConnected;
-        scanState = WIFI_SCAN_RUNNING;
+        stationEffects.push_back("scan:start");
+        scanState = scanStartResult;
         return scanState;
     }
     int16_t scanComplete() { ++scanStatusReads; return scanState; }
@@ -95,9 +105,11 @@ class WiFiClass {
     int32_t RSSI(int16_t) const { return -45; }
     uint8_t encryptionType(int16_t) const { return WIFI_AUTH_OPEN; }
     FakeIP softAPIP() const { return {0x0104a8c0}; }
-    FakeIP localIP() const { return {physicalConnected ? 0x6401a8c0U : 0U}; }
+    FakeIP localIP() const { return {physicalConnected ? stationIp : 0U}; }
     // STAClass::connect() does not clear _status; asynchronous events do.
-    void begin(const char* ssid, const char*) {
+    void begin(const char* ssid, const char* password) {
+        stationEffects.push_back(std::string("connect:") + ssid);
+        lastBeginPassword = password;
         ++begins;
         lastBeginSsid = ssid;
         if (duringBegin) duringBegin();
@@ -143,6 +155,7 @@ inline bool WiFiClass::StaInterface::connect(const char* ssid, const char* passw
     return WiFi.staConnectSucceeds;
 }
 inline int esp_wifi_scan_stop() {
+    stationEffects.push_back("scan:abort");
     ++WiFi.scanAborts;
     WiFi.scanState = WIFI_SCAN_FAILED;
     return 0;

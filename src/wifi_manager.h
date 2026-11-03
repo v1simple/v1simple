@@ -22,6 +22,7 @@
 #include "v1_settings_operation.h"
 #include "modules/wifi/backup_snapshot_cache.h"
 #include "modules/wifi/wifi_scan_result_owner.h"
+#include "modules/wifi/wifi_station_lifecycle.h"
 #include "modules/wifi/wifi_status_api_service.h"
 #include "modules/wifi/wifi_maintenance_web_server.h"
 
@@ -85,15 +86,6 @@ enum SetupModeState {
     SETUP_MODE_STOPPING,
 };
 
-// WiFi client (STA) connection state
-enum WifiClientState {
-    WIFI_CLIENT_DISABLED = 0,
-    WIFI_CLIENT_DISCONNECTED,
-    WIFI_CLIENT_CONNECTING,
-    WIFI_CLIENT_CONNECTED,
-    WIFI_CLIENT_FAILED,
-};
-
 inline bool wifiUiActiveSince(unsigned long lastActivityMs, unsigned long nowMs, unsigned long timeoutMs) {
     if (lastActivityMs == 0) {
         return false;
@@ -131,17 +123,11 @@ class WiFiManager {
 
     // Reset WiFi reconnect failure counter and debounce timer
     // (call when user manually triggers WiFi)
-    void resetReconnectFailures() {
-        wifiReconnectFailures_ = 0;
-        lastReconnectAttemptMs_ = 0;
-    }
-
-    // Returns true when STA has exhausted all reconnect attempts and given up.
-    // Clears automatically when resetReconnectFailures() is called.
-    bool isReconnectGaveUp() const { return wifiReconnectFailures_ >= WIFI_MAX_RECONNECT_FAILURES; }
+    void resetReconnectFailures() { station_.resetReconnectFailures(); }
+    bool isReconnectGaveUp() const { return station_.isReconnectGaveUp(); }
 
     // Status
-    bool isConnected() const { return !isStopping() && wifiClientState_ == WIFI_CLIENT_CONNECTED; }
+    bool isConnected() const { return !isStopping() && station_.clientState() == WIFI_CLIENT_CONNECTED; }
     bool isWifiServiceReachable() const { return isWifiServiceActive() && (isSetupModeActive() || isConnected()); }
     String getIPAddress() const; // STA IP when connected
     String getAPIPAddress() const;
@@ -230,49 +216,9 @@ class WiFiManager {
     unsigned long lastStatusCheckMs_ = 0;
     unsigned long lastTimeoutCheckMs_ = 0;
 
-    // WiFi client (STA) state
-    WifiClientState wifiClientState_ = WIFI_CLIENT_DISABLED;
     WifiScanResultOwner wifiScanOwner_;
-    unsigned long wifiConnectStartMs_ = 0;
-    static constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;  // 15s connection timeout
-    static constexpr unsigned long WIFI_MODE_SWITCH_SETTLE_MS = 100; // Preserve existing settle windows, non-blocking
-    static constexpr unsigned long WIFI_STOP_PHASE_SETTLE_MS = 8;    // Spread teardown work over loop ticks
-    String pendingConnectSSID_;
-    String pendingConnectPassword_;
-    bool pendingConnectPersistCredentials_ = true;
-    int pendingConnectSlotIndex_ = -1;
-    int currentConnectedSlotIndex_ = -1;
-    enum class WifiConnectPhase : uint8_t {
-        IDLE = 0,
-        PREPARE_OFF,
-        WAIT_OFF,
-        ENABLE_AP_STA,
-        WAIT_AP_STA,
-        BEGIN_CONNECT,
-    };
-    WifiConnectPhase wifiConnectPhase_ = WifiConnectPhase::IDLE;
-    unsigned long wifiConnectPhaseStartMs_ = 0;
-
-    enum class MaintenanceAutoConnectPhase : uint8_t {
-        IDLE = 0,
-        SCANNING,
-        CONNECTING,
-        COMPLETE,
-    };
-    MaintenanceAutoConnectPhase maintenanceAutoConnectPhase_ = MaintenanceAutoConnectPhase::IDLE;
-    unsigned long maintenanceAutoConnectScanStartMs_ = 0;
-    size_t maintenanceAutoConnectSlots_[kWifiStaSlotCount] = {};
-    size_t maintenanceAutoConnectSlotCount_ = 0;
-    size_t maintenanceAutoConnectSlotCursor_ = 0;
-    WifiScanStaDropGate maintenanceAutoConnectStaDropGate_;
-    unsigned long maintenanceAutoConnectRetryAtMs_ = 0;
-    uint32_t observedSettingsRecoveryRevision_ = 0;
-    bool maintenanceSettingsRecoveryPending_ = false;
-    uint8_t maintenanceAddressCollisionSlotMask_ = 0;
-    bool maintenanceManualDisconnect_ = false;
-    static constexpr unsigned long WIFI_MAINTENANCE_SCAN_TIMEOUT_MS = 15000;
-    static constexpr unsigned long WIFI_MAINTENANCE_LINK_LOSS_RETRY_MS = 5000;
-    static constexpr unsigned long WIFI_MAINTENANCE_RETRY_INTERVAL_MS = 30000;
+    WifiStationLifecycle station_;
+    static constexpr unsigned long WIFI_STOP_PHASE_SETTLE_MS = 8;
 
     enum class WifiStopPhase : uint8_t {
         IDLE = 0,
@@ -289,15 +235,6 @@ class WiFiManager {
     bool wifiStopManual_ = false;
     bool wifiStopHadSta_ = false;
     bool wifiStopHadAp_ = false;
-
-    // WiFi reconnect failure tracking prevents repeated attempts from leaking memory.
-    int wifiReconnectFailures_ = 0;
-    // Reset with each WiFi session.
-    unsigned long lastReconnectAttemptMs_ = 0;
-    static constexpr int WIFI_MAX_RECONNECT_FAILURES = 5;                 // Give up after 5 failures
-    static constexpr unsigned long WIFI_RECONNECT_INTERVAL_MS = 30000;    // 30s between attempts
-    static constexpr unsigned long WIFI_RECONNECT_DEFER_NO_V1_MS = 90000; // Protect BLE acquisition on boot
-    bool wifiReconnectDeferredLogged_ = false;
 
     // Web activity tracking for maintenance-session idle deadlines
     unsigned long lastUiActivityMs_ = 0;
@@ -379,7 +316,6 @@ class WiFiManager {
     bool setupAP();
     bool setupWebServer();
     void checkAutoTimeout();
-    void processWifiClientConnectPhase();
     std::vector<WifiClientApiService::SavedNetworkSlotPayload> getSavedNetworkSlots() const;
     bool upsertSavedNetwork(const WifiClientApiService::SavedNetworkUpsertPayload& request, size_t& indexOut);
     bool deleteSavedNetwork(size_t index);
@@ -387,18 +323,7 @@ class WiFiManager {
         const std::vector<WifiClientApiService::SavedNetworkPriorityUpdate>& updates);
     bool testSavedNetwork(size_t index);
     int selectSlotForNetworkConnect(const String& ssid) const;
-    int findConfiguredSlotBySsid(const String& ssid) const;
-    bool beginMaintenanceAutoConnectScan(bool explicitEnableRequest);
-    void processMaintenanceAutoConnect();
-    bool queueNextMaintenanceAutoConnectSlot();
-    void finishMaintenanceAutoConnect(const char* reason, bool dropStaRadio);
-    void cancelMaintenanceAutoConnect(const char* reason);
-    void clearPendingWifiConnectState();
-    void disconnectTrackedWifiActivity(const char* reason, bool disableClientState);
-    void scheduleMaintenanceAutoConnectRetry(unsigned long delayMs);
-    bool maintenanceAddressCollision() const;
-    void applyDeferredMaintenanceStaRadioDrop();
-    void resetWifiScanState();
+    WifiStationLifecycle::Environment stationEnvironment() const;
     bool enableWifiClientFromSavedCredentials();
     bool disableWifiClient();
     bool forgetWifiClient();

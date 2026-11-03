@@ -1,5 +1,6 @@
 #pragma once
 #include "Arduino.h"
+#include "WiFi.h"
 
 @SLOT_METADATA@
 
@@ -21,7 +22,30 @@ class SettingsManager {
   public:
     V1Settings value;
     struct PersistResult { bool success; };
-    PersistResult setWifiClientEnabled(bool enabled) { value.wifiClientEnabled = enabled; return {true}; }
+    bool enabledWriteSucceeds = true;
+    bool credentialWriteSucceeds = true;
+    bool clearSucceeds = true;
+    bool resolveSucceeds = true;
+    std::function<void()> beforeMark;
+    PersistResult setWifiClientEnabled(bool enabled) {
+        stationEffects.push_back(enabled ? "enabled:1" : "enabled:0");
+        if (enabledWriteSucceeds) value.wifiClientEnabled = enabled;
+        return {enabledWriteSucceeds};
+    }
+    bool clearWifiStaSlot(size_t index) {
+        stationEffects.push_back("clear:" + std::to_string(index));
+        if (clearSucceeds) value.wifiStaSlots[index].ssid = "";
+        return clearSucceeds;
+    }
+    bool clearWifiClientCredentials() {
+        stationEffects.push_back("forget");
+        if (clearSucceeds) {
+            value.wifiClientEnabled = false;
+            value.wifiClientSSID = "";
+            for (auto& slot : value.wifiStaSlots) slot.ssid = "";
+        }
+        return clearSucceeds;
+    }
     uint32_t recoveredRevision = 0;
     uint32_t recoveryRevision() const { return recoveredRevision; }
     bool pendingRecovery = false;
@@ -30,18 +54,26 @@ class SettingsManager {
     int markCalls = 0;
     size_t markedIndex = kWifiStaSlotCount;
     const V1Settings& get() const { return value; }
-    bool resolveStorageTransactionsForMutation() { return true; }
-    String getWifiStaSlotPassword(size_t) const { return "password"; }
-    String getWifiClientPassword() const { return "password"; }
-    bool setWifiStaSlotCredentials(size_t, const String&, const String&, const String&, uint8_t) {
+    bool resolveStorageTransactionsForMutation() { stationEffects.push_back("storage:resolve"); return resolveSucceeds; }
+    String getWifiStaSlotPassword(size_t index, bool* failed = nullptr) const {
+        if (failed) *failed = false;
+        stationEffects.push_back("password:" + std::to_string(index));
+        return "password";
+    }
+    String getWifiClientPassword() const { stationEffects.push_back("password:legacy"); return "password"; }
+    bool setWifiStaSlotCredentials(size_t index, const String& ssid, const String&, const String&, uint8_t) {
+        stationEffects.push_back("slot:" + std::to_string(index));
         ++credentialWrites;
-        return true;
+        if (credentialWriteSucceeds) value.wifiStaSlots[index].ssid = ssid;
+        return credentialWriteSucceeds;
     }
     bool setWifiClientCredentials(const String&, const String&) {
         ++credentialWrites;
         return true;
     }
     bool markWifiStaSlotConnected(size_t index) {
+        if (beforeMark) beforeMark();
+        stationEffects.push_back("recency:" + std::to_string(index));
         ++markCalls;
         markedIndex = index;
         return true;

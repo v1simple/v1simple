@@ -13,21 +13,22 @@ void require(bool condition, const char* message) {
 void loseSavedConnection(WiFiManager& manager) {
     WiFi = WiFiClass{};
     manager.settings_.value.wifiStaSlots[0].ssid = "Saved";
-    manager.wifiClientState_ = WIFI_CLIENT_CONNECTED;
-    manager.currentConnectedSlotIndex_ = 0;
-    manager.maintenanceAutoConnectPhase_ = WiFiManager::MaintenanceAutoConnectPhase::COMPLETE;
+    manager.station_.selectSessionMode(true);
+    mockMillis = 500;
+    manager.checkWifiClientStatus();
+    manager.settings_.markCalls = 0;
     mockMillis = 1000;
     WiFi.lost();
     manager.runOwnerPass();
-    require(manager.maintenanceAutoConnectRetryAtMs_ == 6000, "link loss must schedule the real retry");
+    require(manager.station_.retryAt() == 6000, "link loss must schedule the real retry");
 }
 
 void requireRecovered(const WiFiManager& manager) {
-    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTED, "app must be connected");
-    require(manager.currentConnectedSlotIndex_ == 0, "saved slot must be reconciled");
+    require(manager.station_.clientState() == WIFI_CLIENT_CONNECTED, "app must be connected");
+    require(manager.station_.connectedSlot() == 0, "saved slot must be reconciled");
     require(WiFi.physicalConnected && WiFi.radioMode == WIFI_AP_STA, "reconciliation removed the recovered STA");
     require(WiFi.apOnlyTransitions == 0 && WiFi.disconnects == 0, "reconciliation must not tear down STA");
-    require(manager.maintenanceAutoConnectRetryAtMs_ == 0, "recovered link must not retain a retry");
+    require(manager.station_.retryAt() == 0, "recovered link must not retain a retry");
     require(manager.settings_.markCalls == 1, "physical reconciliation must advance recency exactly once");
     require(manager.settings_.markedIndex == 0, "physical reconciliation advanced the wrong saved slot");
 }
@@ -94,7 +95,7 @@ void scanCompletedBeforeHarvest() {
     manager.runOwnerPass();
     // This control reaches candidate queuing instead of reconciliation. It does
     // not claim anything about the subsequent explicit WiFi.begin() sequence.
-    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTING, "completed scan must queue its candidate");
+    require(manager.station_.clientState() == WIFI_CLIENT_CONNECTING, "completed scan must queue its candidate");
     require(WiFi.physicalConnected && WiFi.apOnlyTransitions == 0, "completed scan control removed STA");
     require(WiFi.scanAborts == 0, "completed scan must not be aborted");
 }
@@ -107,16 +108,15 @@ void cancelConnectingCandidate() {
     WiFi.scanState = 1;
     mockMillis = 6050;
     manager.runOwnerPass();
-    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTING, "candidate must be connecting");
+    require(manager.station_.clientState() == WIFI_CLIENT_CONNECTING, "candidate must be connecting");
     mockMillis = 6060;
     manager.runOwnerPass();
     require(WiFi.begins == 1, "candidate must reach the real staged begin");
 
-    manager.cancelMaintenanceAutoConnect("slot_test");
+    manager.station_.cancelMaintenanceAutoConnect(manager.stationEnvironment(), "slot_test");
     require(WiFi.disconnects == 1 && !WiFi.physicalConnected, "explicit cancellation must disconnect its candidate");
-    require(manager.wifiClientState_ == WIFI_CLIENT_DISCONNECTED, "cancelled candidate must not claim connected");
-    require(manager.wifiConnectPhase_ == WiFiManager::WifiConnectPhase::IDLE, "cancelled connect phase remained active");
-    require(manager.pendingConnectSSID_.length() == 0, "cancelled candidate retained credentials");
+    require(manager.station_.clientState() == WIFI_CLIENT_DISCONNECTED, "cancelled candidate must not claim connected");
+    require(manager.station_.pendingSlot() == -1, "cancelled candidate retained credentials");
     require(WiFi.radioMode == WIFI_AP, "unneeded STA must still be retired after explicit cancellation");
 }
 
@@ -131,8 +131,8 @@ void explicitDisconnectStillSuppressesReconnect() {
     mockMillis = 5950;
     manager.runOwnerPass();
     require(!WiFi.physicalConnected && WiFi.disconnects == 2, "explicit disconnect must reject late framework recovery");
-    require(manager.wifiClientState_ == WIFI_CLIENT_DISCONNECTED, "suppressed reconnect must remain disconnected");
-    require(manager.maintenanceAutoConnectRetryAtMs_ == 0, "explicit disconnect must not schedule automatic retry");
+    require(manager.station_.clientState() == WIFI_CLIENT_DISCONNECTED, "suppressed reconnect must remain disconnected");
+    require(manager.station_.retryAt() == 0, "explicit disconnect must not schedule automatic retry");
 }
 
 void successWithoutPendingSlotAdvancesResolvedSlotOnce(bool persistUnchangedCredentials) {
@@ -143,18 +143,18 @@ void successWithoutPendingSlotAdvancesResolvedSlotOnce(bool persistUnchangedCred
     manager.settings_.value.wifiStaSlots[0].priority = 0;
     mockMillis = 1000;
     require(manager.connectToNetwork("Saved", "password", persistUnchangedCredentials), "direct attempt admission");
-    manager.processWifiClientConnectPhase();
+    manager.station_.processWifiClientConnectPhase(manager.stationEnvironment());
     mockMillis = 1010;
-    manager.processWifiClientConnectPhase();
+    manager.station_.processWifiClientConnectPhase(manager.stationEnvironment());
     WiFi.restored();
 
     manager.checkWifiClientStatus();
 
-    require(manager.currentConnectedSlotIndex_ == 0, "direct success must resolve the configured slot by SSID");
+    require(manager.station_.connectedSlot() == 0, "direct success must resolve the configured slot by SSID");
     require(manager.settings_.markCalls == 1, "direct success must advance recency exactly once");
     require(manager.settings_.markedIndex == 0, "direct success advanced the wrong slot");
     require(manager.settings_.credentialWrites == 0, "recency resolution must not rewrite unchanged credentials");
-    require(manager.pendingConnectSSID_.length() == 0 && manager.pendingConnectSlotIndex_ == -1,
+    require(manager.station_.pendingSlot() == -1,
             "direct success must clear pending connection state");
 }
 
@@ -166,9 +166,9 @@ void startSecondCandidate(WiFiManager& manager, wl_status_t firstFailure) {
     manager.settings_.value.wifiStaSlots[0].priority = 0;
     manager.settings_.value.wifiStaSlots[1].ssid = "Working";
     manager.settings_.value.wifiStaSlots[1].priority = 1;
-    manager.wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+    manager.station_.selectSessionMode(true);
     mockMillis = 1000;
-    require(manager.beginMaintenanceAutoConnectScan(false), "candidate scan must start");
+    require(manager.station_.beginMaintenanceAutoConnectScan(manager.stationEnvironment(), false), "candidate scan must start");
     WiFi.scanState = 2;
     manager.runOwnerPass();
     mockMillis = 1010;
@@ -178,7 +178,7 @@ void startSecondCandidate(WiFiManager& manager, wl_status_t firstFailure) {
     mockMillis = 2000;
     WiFi.failure("Missing", firstFailure);
     manager.runOwnerPass();
-    require(manager.pendingConnectSSID_ == "Working", "fresh first failure must queue the next candidate");
+    require(manager.station_.pendingSlot() == 1, "fresh first failure must queue the next candidate");
     mockMillis = 2010;
     manager.runOwnerPass();
     mockMillis = 2020;
@@ -194,14 +194,14 @@ void candidateRetry(wl_status_t firstFailure, bool associationBeforePoll, bool l
     if (associationBeforePoll) WiFi.cachedStatus = WL_IDLE_STATUS;
     mockMillis = 2050;
     manager.runOwnerPass();
-    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTING,
+    require(manager.station_.clientState() == WIFI_CLIENT_CONNECTING,
             "the prior candidate's cached status or late event must not fail the new attempt");
     require(WiFi.radioMode == WIFI_AP_STA && WiFi.apOnlyTransitions == 0 && WiFi.disconnects == 0,
             "candidate retry must preserve the AP and STA radio");
     mockMillis = 2100;
     WiFi.restored();
     manager.runOwnerPass();
-    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTED && manager.currentConnectedSlotIndex_ == 1,
+    require(manager.station_.clientState() == WIFI_CLIENT_CONNECTED && manager.station_.connectedSlot() == 1,
             "second candidate must connect after its own GOT_IP");
     require(manager.settings_.markCalls == 1 && manager.settings_.markedIndex == 1,
             "only the successful candidate may advance recency");
@@ -225,7 +225,7 @@ void secondCandidateFailure(wl_status_t secondFailure, bool duringBegin) {
     }
     mockMillis = 2050;
     manager.runOwnerPass();
-    require(manager.maintenanceAutoConnectPhase_ == WiFiManager::MaintenanceAutoConnectPhase::COMPLETE,
+    require(manager.station_.retryAt() != 0,
             "fresh second-candidate failure must finish promptly even when cached status did not change");
     require(WiFi.radioMode == WIFI_AP && manager.settings_.markCalls == 0,
             "all failed candidates must release STA without marking any slot connected");
@@ -245,7 +245,7 @@ void synchronousStartFailure(bool beginFailure) {
     manager.runOwnerPass();
     mockMillis = 1050;
     manager.runOwnerPass();
-    require(manager.wifiClientState_ == WIFI_CLIENT_FAILED,
+    require(manager.station_.clientState() == WIFI_CLIENT_FAILED,
             "synchronous driver rejection must fail promptly without an asynchronous event");
     require(manager.settings_.markCalls == 0, "start failure must not mark a connection");
 }
@@ -255,10 +255,10 @@ void unreportedCandidateFailureTimesOut() {
     startSecondCandidate(manager, WL_NO_SSID_AVAIL);
     mockMillis = 17000;
     manager.runOwnerPass();
-    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTING, "old status must not shorten connection timeout");
+    require(manager.station_.clientState() == WIFI_CLIENT_CONNECTING, "old status must not shorten connection timeout");
     mockMillis = 17100;
     manager.runOwnerPass();
-    require(manager.maintenanceAutoConnectPhase_ == WiFiManager::MaintenanceAutoConnectPhase::COMPLETE,
+    require(manager.station_.retryAt() != 0,
             "missing events must still hit the bounded connection timeout");
     require(WiFi.radioMode == WIFI_AP && manager.settings_.markCalls == 0,
             "timed-out candidate must release STA without claiming success");
@@ -271,14 +271,14 @@ void transientCandidateDisconnect(wl_status_t firstFailure, uint8_t reason, bool
     WiFi.emitDisconnected("Working", reason);
     mockMillis = 2050;
     manager.runOwnerPass();
-    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTING,
+    require(manager.station_.clientState() == WIFI_CLIENT_CONNECTING,
             "a transient disconnect must not inherit the preceding candidate's terminal status");
     require(WiFi.radioMode == WIFI_AP_STA && manager.settings_.markCalls == 0,
             "transient retries must retain STA without marking a successful connection");
     mockMillis = 2100;
     WiFi.restored();
     manager.runOwnerPass();
-    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTED && manager.currentConnectedSlotIndex_ == 1,
+    require(manager.station_.clientState() == WIFI_CLIENT_CONNECTED && manager.station_.connectedSlot() == 1,
             "candidate must remain eligible to connect after the framework retry");
     require(manager.settings_.markCalls == 1 && manager.settings_.markedIndex == 1,
             "the successful retry must advance only its own recency");
@@ -295,7 +295,7 @@ void recoverSettingsAfterApOnlyBoot(bool enabled, bool hasSlot, bool manualDisco
     manager.settings_.pendingRecovery = true;
     mockMillis = 100;
     require(manager.startSetupMode(false), "AP-only startup must succeed with provisional defaults");
-    require(manager.wifiClientState_ == WIFI_CLIENT_DISABLED, "provisional client must be disabled");
+    require(manager.station_.clientState() == WIFI_CLIENT_DISABLED, "provisional client must be disabled");
     if (manualDisconnect) manager.disconnectFromNetwork();
     manager.settings_.value.wifiClientEnabled = enabled;
     if (hasSlot) {
@@ -329,7 +329,7 @@ void recoverSettingsAfterApOnlyBoot(bool enabled, bool hasSlot, bool manualDisco
     WiFi.restored();
     mockMillis = 1250;
     manager.runOwnerPass();
-    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTED && manager.currentConnectedSlotIndex_ == 0,
+    require(manager.station_.clientState() == WIFI_CLIENT_CONNECTED && manager.station_.connectedSlot() == 0,
             "recovered network must connect without reboot or user action");
     ++manager.settings_.recoveredRevision;
     mockMillis = 1300;
@@ -358,28 +358,29 @@ void switchFromExistingLink(bool automatic, bool sameSsid, int outcome) {
     WiFi = WiFiClass{};
     manager.settings_.value.wifiStaSlots[0].ssid = "Saved";
     manager.settings_.value.wifiStaSlots[1].ssid = "Working";
-    manager.wifiClientState_ = WIFI_CLIENT_CONNECTED;
-    manager.currentConnectedSlotIndex_ = 0;
-    manager.maintenanceAutoConnectPhase_ = WiFiManager::MaintenanceAutoConnectPhase::COMPLETE;
+    manager.station_.selectSessionMode(true);
+    mockMillis = 500;
+    manager.checkWifiClientStatus();
+    manager.settings_.markCalls = 0;
     const int targetSlot = sameSsid ? 0 : 1;
     const String target = sameSsid ? "Saved" : "Working";
     mockMillis = 1000;
     if (automatic) {
         // The old connection returns between a disconnected snapshot and
         // candidate admission. Exercise the actual scan/candidate owners.
-        manager.wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+        manager.station_.selectSessionMode(true);
         WiFi.scanSsids = {target};
-        require(manager.beginMaintenanceAutoConnectScan(false), "scan admission");
+        require(manager.station_.beginMaintenanceAutoConnectScan(manager.stationEnvironment(), false), "scan admission");
         WiFi.scanState = 1;
-        manager.processMaintenanceAutoConnect();
+        manager.station_.processMaintenanceAutoConnect(manager.stationEnvironment());
     } else {
         require(manager.testSavedNetwork(targetSlot), "saved-network test admission");
     }
     WiFi.staBeginSucceeds = outcome != 0;
     WiFi.staConnectSucceeds = outcome != 1;
-    manager.processWifiClientConnectPhase();
+    manager.station_.processWifiClientConnectPhase(manager.stationEnvironment());
     mockMillis = 1010;
-    manager.processWifiClientConnectPhase();
+    manager.station_.processWifiClientConnectPhase(manager.stationEnvironment());
     require(WiFi.begins == (outcome == 0 ? 0 : 1), "actual start owner must run");
     if (outcome == 2) {
         // A terminal attempt event is authoritative even if an old cached
@@ -397,26 +398,26 @@ void switchFromExistingLink(bool automatic, bool sameSsid, int outcome) {
     mockMillis = 1050;
     manager.checkWifiClientStatus();
     if (outcome < 3) {
-        require(manager.wifiClientState_ != WIFI_CLIENT_CONNECTED, "failed attempt accepted an old connection");
-        require(manager.currentConnectedSlotIndex_ == -1 && manager.settings_.markCalls == 0,
+        require(manager.station_.clientState() != WIFI_CLIENT_CONNECTED, "failed attempt accepted an old connection");
+        require(manager.station_.connectedSlot() == -1 && manager.settings_.markCalls == 0,
                 "failed attempt published target slot or recency");
         // Later physical reconciliation may legitimately publish the actual
         // old network, but must never claim a switch to the failed target.
         mockMillis = 1100;
         manager.checkWifiClientStatus();
-        if (!sameSsid) require(manager.currentConnectedSlotIndex_ != 1, "later poll misattributed old connection");
+        if (!sameSsid) require(manager.station_.connectedSlot() != 1, "later poll misattributed old connection");
     } else if (outcome == 3) {
-        require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTING, "old status/SSID completed the pending attempt");
+        require(manager.station_.clientState() == WIFI_CLIENT_CONNECTING, "old status/SSID completed the pending attempt");
         require(manager.settings_.markCalls == 0, "old status advanced recency");
         mockMillis = 1100;
         WiFi.restored();
         manager.checkWifiClientStatus();
-        require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTED && manager.currentConnectedSlotIndex_ == targetSlot,
+        require(manager.station_.clientState() == WIFI_CLIENT_CONNECTED && manager.station_.connectedSlot() == targetSlot,
                 "fresh target association must finish the attempt");
         require(manager.settings_.markCalls == 1 && manager.settings_.markedIndex == static_cast<size_t>(targetSlot),
                 "only fresh target association advances recency");
     } else {
-        require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTED && manager.currentConnectedSlotIndex_ == targetSlot,
+        require(manager.station_.clientState() == WIFI_CLIENT_CONNECTED && manager.station_.connectedSlot() == targetSlot,
                 "successful target switch rejected");
         require(manager.settings_.markCalls == 1 && manager.settings_.markedIndex == static_cast<size_t>(targetSlot),
                 "successful target switch must advance its recency exactly once");
@@ -425,6 +426,8 @@ void switchFromExistingLink(bool automatic, bool sameSsid, int outcome) {
     }
     require(manager.settings_.credentialWrites == 0, "saved-network test must not rewrite credentials");
 }
+
+#include "contract_cases.h"
 
 int main() {
     int failures = 0;
@@ -483,5 +486,27 @@ int main() {
     run("manual_successful_switch", []() { switchFromExistingLink(false, false, 4); });
     run("auto_successful_switch", []() { switchFromExistingLink(true, false, 4); });
     run("manual_successful_same_ssid", []() { switchFromExistingLink(false, true, 4); });
+    run("enable_empty_saved_list", enableWithNoSavedSlot);
+    run("enable_admitted_noop", enabledAdmittedConnectionIsNoop);
+    run("enable_rollback_pending", []() { enableRollbackPreservesPending(false); });
+    run("enable_rollback_shared_ui", []() { enableRollbackPreservesPending(true); });
+    run("enable_rollback_sole_scan", enableRollbackCancelsOnlyItsScan);
+    run("upsert_failed_commit_keeps_link", []() { mutationCommitsBeforeRadio(false, true); });
+    run("upsert_commits_before_disconnect", []() { mutationCommitsBeforeRadio(false, false); });
+    run("delete_failed_commit_keeps_link", []() { mutationCommitsBeforeRadio(true, true); });
+    run("delete_commits_before_disconnect", []() { mutationCommitsBeforeRadio(true, false); });
+    run("disable_failed_commit_keeps_link", []() { disableAndForgetCommitOrdering(false, true); });
+    run("disable_commits_before_disconnect", []() { disableAndForgetCommitOrdering(false, false); });
+    run("forget_failed_commit_keeps_link", []() { disableAndForgetCommitOrdering(true, true); });
+    run("forget_commits_before_disconnect", []() { disableAndForgetCommitOrdering(true, false); });
+    run("connected_effect_before_recency", connectedEffectPrecedesRecency);
+    run("connect_timeout_exact_boundary", connectTimeoutBoundary);
+    run("normal_boot_grace_exact_boundary", normalBootDeferralBoundary);
+    run("connect_nonblocking_settle_boundaries", nonblockingSettleBoundaries);
+    run("scan_timeout_sole_consumer", []() { scanTimeoutKeepsUiConsumer(false); });
+    run("scan_timeout_shared_ui", []() { scanTimeoutKeepsUiConsumer(true); });
+    run("collision_candidate_and_mask", collisionAdvancesCandidateAndRetainsMask);
+    run("normal_retry_interval_and_give_up", []() { normalRetryIntervalAndGiveUp(1000u); });
+    run("normal_retry_uint32_wrap", []() { normalRetryIntervalAndGiveUp(0xffffff00u); });
     return failures == 0 ? 0 : 1;
 }

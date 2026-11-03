@@ -129,6 +129,13 @@ The drive lifecycle suite covers successful SD and non-SD reload plus busy
 writer, SD-lock failure and write failure. It models graceful durability, not
 arbitrary flash power loss.
 
+Station connection and retry transitions live in `WifiStationLifecycle`;
+`WiFiManager` retains request validation, durable credential commits, and
+AP/server orchestration. Credential edits notify the lifecycle only after
+successful persistence. Enable rollback restores one lifecycle state value
+without copying scan-owner state. `test_wifi_client_recovery.py` exercises
+the actual station owner and the manager transaction boundaries.
+
 WiFi rollback discovery in `settings_nvs.cpp` distinguishes proven absence,
 single-slot rollback, forget-all rollback and unavailable authority. A failed
 namespace/key read or invalid header cannot be treated as absence. Set, delete,

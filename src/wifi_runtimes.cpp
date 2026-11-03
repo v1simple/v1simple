@@ -253,7 +253,7 @@ WifiStatusApiService::StatusRuntime WiFiManager::makeStatusRuntime() {
     return WifiStatusApiService::StatusRuntime{
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->isSetupModeActive(); },
         this,
-        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->wifiClientState_ == WIFI_CLIENT_CONNECTED; },
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->station_.clientState() == WIFI_CLIENT_CONNECTED; },
         this,
         [](void* /*ctx*/) { return WiFi.localIP().toString(); },
         nullptr,
@@ -335,17 +335,17 @@ WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
         this,
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->settings_.get().wifiClientSSID; },
         this,
-        [](void* ctx) { return wifiClientStateApiName(static_cast<WiFiManager*>(ctx)->wifiClientState_); },
+        [](void* ctx) { return wifiClientStateApiName(static_cast<WiFiManager*>(ctx)->station_.clientState()); },
         this,
         [](void* ctx) { return static_cast<WiFiManager*>(ctx)->isWifiScanRunning(); },
         this,
-        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->wifiClientState_ == WIFI_CLIENT_CONNECTED; },
+        [](void* ctx) { return static_cast<WiFiManager*>(ctx)->station_.clientState() == WIFI_CLIENT_CONNECTED; },
         this,
         [](void* ctx) {
             auto* self = static_cast<WiFiManager*>(ctx);
             WifiClientApiService::ConnectedNetworkPayload payload;
             payload.ssid = WiFi.SSID();
-            payload.connectedSlotIndex = self->currentConnectedSlotIndex_;
+            payload.connectedSlotIndex = self->station_.connectedSlot();
             payload.ip = WiFi.localIP().toString();
             payload.rssi = WiFi.RSSI();
             return payload;

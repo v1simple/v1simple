@@ -10,10 +10,11 @@ import subprocess
 import sys
 
 
-LITTLEFS_VERSION = "0.18.0"
+import host_tools
 
 
 def prepare(pio: str, environment: str) -> None:
+    littlefs_version = host_tools.load().get("littlefs-python")
     result = subprocess.run(
         [pio, "system", "info", "--json-output"],
         check=True, text=True, capture_output=True,
@@ -28,10 +29,10 @@ def prepare(pio: str, environment: str) -> None:
          "print(version('littlefs-python'))"],
         text=True, capture_output=True, check=False,
     )
-    if probe.returncode != 0 or probe.stdout.strip() != LITTLEFS_VERSION:
-        command = shlex.join([python, "-m", "pip", "install", f"littlefs-python=={LITTLEFS_VERSION}"])
+    if probe.returncode != 0 or probe.stdout.strip() != littlefs_version:
+        command = shlex.join([python, "-m", "pip", "install", f"littlefs-python=={littlefs_version}"])
         raise ValueError(
-            f"The selected PlatformIO Python requires littlefs-python=={LITTLEFS_VERSION}.\n"
+            f"The selected PlatformIO Python requires littlefs-python=={littlefs_version}.\n"
             f"Install it in that interpreter before building:\n  {command}"
         )
     # Deployment reads the platform builder and framework SDK configuration.

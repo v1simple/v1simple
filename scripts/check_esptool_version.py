@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 
-REQUIRED_VERSION = (5, 4, 0)
+import host_tools
 
 
 def parse_version(raw: str) -> tuple[int, ...] | None:
@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--required-version",
-        default=format_version(REQUIRED_VERSION),
+        default=host_tools.load().get("esptool"),
         help="Exact required esptool version",
     )
     return parser.parse_args()

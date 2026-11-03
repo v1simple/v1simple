@@ -13,6 +13,8 @@ import subprocess
 import sys
 import zlib
 
+import host_tools
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTES = frozenset(("alp", "audio", "autopush", "colors", "devices", "first-use", "gps",
@@ -63,11 +65,21 @@ def inputs(root: Path) -> dict[str, bytes]:
     files = {"interface/" + name: data
              for name, data in tree(root / "interface", EXCLUDED_INPUT_DIRS).items()}
     for name in ("tools/compress_web_assets.sh", "scripts/generate_web_bundle.py",
-                 "scripts/embed_web_assets.py"):
+                 "scripts/embed_web_assets.py", "scripts/host_tools.py"):
         path = root / name
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"missing or unsafe build input: {name}")
         files[name] = path.read_bytes()
+    declaration = root / "config/host_tools.json"
+    if declaration.is_symlink() or not declaration.is_file():
+        raise ValueError("missing or unsafe build input: config/host_tools.json")
+    tools = host_tools.load(declaration)
+    # Only tools executing the frontend build affect this stamp. Firmware,
+    # filesystem and Swift tool changes do not require rebuilding web assets.
+    files["config/host_tools.json"] = json.dumps(
+        {name: tools.get(name) for name in ("python", "node", "npm")},
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
     for name in ("interface/package.json", "interface/package-lock.json", "interface/vite.config.js"):
         if name not in files:
             raise ValueError(f"missing required build input: {name}")

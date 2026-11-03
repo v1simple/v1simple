@@ -23,7 +23,8 @@ class FreshBuildTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         for name in (
-            "build.sh", "scripts/prepare_web_build.py", "interface/package.json",
+            "build.sh", "scripts/prepare_web_build.py", "scripts/host_tools.py",
+            "config/host_tools.json", "interface/package.json",
             "interface/scripts/deploy.js", "interface/scripts/audio-manifest.js",
             "interface/scripts/littlefs-capacity.py", "platformio.ini", "partitions_v1.csv",
         ):

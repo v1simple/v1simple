@@ -24,26 +24,30 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Read qualified macOS tools
+        id: host_tools
+        run: python3 scripts/host_tools.py workflow macos >> "$GITHUB_OUTPUT"
+
       - name: Build v1replay bench executable
         env:
-          DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+          DEVELOPER_DIR: ${{ steps.host_tools.outputs.macos_developer_dir }}
         run: ./tools/v1replay/scripts/build.sh
 
       - name: Run v1replay Swift tests
         env:
-          DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+          DEVELOPER_DIR: ${{ steps.host_tools.outputs.macos_developer_dir }}
           CLANG_MODULE_CACHE_PATH: ${{ github.workspace }}/tools/v1replay/.build/module-cache
           SWIFTPM_MODULECACHE_OVERRIDE: ${{ github.workspace }}/tools/v1replay/.build/module-cache
         run: swift test --package-path tools/v1replay
 
       - name: Run v1replay peripheral lifecycle tests
         env:
-          DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+          DEVELOPER_DIR: ${{ steps.host_tools.outputs.macos_developer_dir }}
         run: python3 tools/v1replay/Tests/test_peripheral_lifecycle.py
 
       - name: Check native camera recorder
         env:
-          DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+          DEVELOPER_DIR: ${{ steps.host_tools.outputs.macos_developer_dir }}
         run: |
           mkdir -p tools/v1replay/.build/camera-module-cache
           xcrun swiftc -warnings-as-errors -module-cache-path tools/v1replay/.build/camera-module-cache -typecheck scripts/bench/camera_recorder.swift
@@ -62,15 +66,19 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      - name: Read qualified host tools
+        id: host_tools
+        run: python3 scripts/host_tools.py workflow linux >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22.23.3'
+          node-version: ${{ steps.host_tools.outputs.node }}
           cache: 'npm'
           cache-dependency-path: interface/package-lock.json
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: ${{ steps.host_tools.outputs.python }}
 
       - name: Cache PlatformIO
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -79,7 +87,7 @@ jobs:
             ~/.platformio/packages
             ~/.platformio/platforms
             ~/.platformio/.cache
-          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini', 'scripts/patch_*.py', 'scripts/verify_esp32s3_framework.py', 'scripts/check_platformio_core_version.py') }}
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini', 'scripts/patch_*.py', 'scripts/verify_esp32s3_framework.py', 'scripts/check_platformio_core_version.py', 'config/host_tools.json', 'scripts/host_tools.py') }}
 
       - name: Bootstrap Linux validation environment
         run: |

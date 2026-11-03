@@ -15,17 +15,10 @@ from pathlib import Path
 
 import check_esptool_version
 import check_platformio_core_version
+import host_tools
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_NODE = "22.23.3"
-EXPECTED_NPM = "10.9.9"
-EXPECTED_PYTHON = "3.12"
-EXPECTED_PIO = "6.2.0"
-EXPECTED_ESPTOOL = "5.4.0"
-EXPECTED_RUFF = "0.16.0"
-EXPECTED_SHELLCHECK = "0.11.0"
-EXPECTED_SWIFT = "6.3.3"
 
 
 @dataclass(frozen=True)
@@ -146,46 +139,39 @@ def collect_snapshot(profile_name: str, root: Path) -> EnvironmentSnapshot:
     )
 
 
-def validate_snapshot(snapshot: EnvironmentSnapshot) -> list[str]:
+def validate_snapshot(snapshot: EnvironmentSnapshot, tools: host_tools.HostTools | None = None) -> list[str]:
+    tools = tools or host_tools.load()
     errors: list[str] = []
-    expected = {
-        "os_id": "ubuntu",
-        "os_version": "24.04",
-        "node_version": EXPECTED_NODE,
-        "npm_version": EXPECTED_NPM,
-        "pioarduino_version": EXPECTED_PIO,
-        "esptool_version": EXPECTED_ESPTOOL,
-    }
-    for field, value in expected.items():
-        actual = getattr(snapshot, field)
+    if snapshot.profile not in {"ci", "release"}:
+        return [f"unsupported validation profile {snapshot.profile!r}"]
+    required = tools.required_tools(snapshot.profile)
+    for field_name, value in (("os_id", tools.get("linux_id")), ("os_version", tools.get("linux_version"))):
+        actual = getattr(snapshot, field_name)
         if actual != value:
-            errors.append(f"{field} is {actual or 'missing'}; required {value}")
-    if not snapshot.python_version.startswith(f"{EXPECTED_PYTHON}."):
-        errors.append(
-            f"python_version is {snapshot.python_version or 'missing'}; "
-            f"required {EXPECTED_PYTHON}.x"
-        )
+            errors.append(f"{field_name} is {actual or 'missing'}; required {value}")
+    version_fields = {
+        "node": "node_version", "npm": "npm_version", "pioarduino": "pioarduino_version",
+        "esptool": "esptool_version", "ruff": "ruff_version", "shellcheck": "shellcheck_version",
+        "swift": "swift_version",
+    }
+    for tool, field_name in version_fields.items():
+        if tool not in required:
+            continue
+        actual = getattr(snapshot, field_name)
+        expected = tools.get(tool)
+        if actual != expected:
+            errors.append(f"{field_name} is {actual or 'missing'}; required {expected}")
+    python_version = tools.get("python")
+    if "python" in required and not snapshot.python_version.startswith(python_version + "."):
+        errors.append(f"python_version is {snapshot.python_version or 'missing'}; required {python_version}.x")
     if not re.fullmatch(r"[0-9a-f]{40}", snapshot.source_commit):
         errors.append("source_commit is missing or not a full Git commit")
     if not snapshot.source_clean:
         errors.append("tracked source does not match the recorded commit")
-
-    if snapshot.profile == "ci":
-        ci_expected = {
-            "ruff_version": EXPECTED_RUFF,
-            "shellcheck_version": EXPECTED_SHELLCHECK,
-            "swift_version": EXPECTED_SWIFT,
-        }
-        for field, value in ci_expected.items():
-            actual = getattr(snapshot, field)
-            if actual != value:
-                errors.append(f"{field} is {actual or 'missing'}; required {value}")
-        if not snapshot.ffmpeg_version:
-            errors.append("ffmpeg is missing")
-        if not snapshot.libpcre3_available:
-            errors.append("libpcre3 runtime is missing for the pinned cppcheck binary")
-    elif snapshot.profile != "release":
-        errors.append(f"unsupported validation profile {snapshot.profile!r}")
+    if "ffmpeg" in required and not snapshot.ffmpeg_version:
+        errors.append("ffmpeg is missing")
+    if "libpcre3" in required and not snapshot.libpcre3_available:
+        errors.append("libpcre3 runtime is missing for the pinned cppcheck binary")
     return errors
 
 

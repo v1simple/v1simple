@@ -75,7 +75,24 @@ if [[ -n "${_platformio_pio_path}" ]]; then
   fi
 fi
 
-_platformio_add_python_candidate "${_platformio_root_dir}/.artifacts/pio-core-6.2.0/bin/python"
+# Discover an available interpreter before asking for the optional versioned
+# fallback. Reading the declaration must not require that fallback to exist.
+_platformio_manifest_python="$(command -v python3 2>/dev/null || true)"
+if [[ -z "${_platformio_manifest_python}" ]]; then
+  for _platformio_candidate in "${_platformio_python_candidates[@]}"; do
+    if [[ -x "${_platformio_candidate}" ]]; then
+      _platformio_manifest_python="${_platformio_candidate}"
+      break
+    fi
+  done
+fi
+if [[ -n "${_platformio_manifest_python}" ]]; then
+  if ! _platformio_venv_name="$("${_platformio_manifest_python}" "${_platformio_root_dir}/scripts/host_tools.py" get pio_venv_name)"; then
+    _platformio_ca_fail "Unable to read the declared PlatformIO fallback."
+    return 1 2>/dev/null || exit 1
+  fi
+  _platformio_add_python_candidate "${_platformio_root_dir}/.artifacts/${_platformio_venv_name}/bin/python"
+fi
 _platformio_add_python_candidate "python3"
 
 _platformio_ca_bundle=""

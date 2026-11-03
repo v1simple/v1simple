@@ -117,15 +117,19 @@ jobs:
             --prepare \
             --resume-tag "$RESUME_TAG"
 
+      - name: Read qualified host tools
+        id: host_tools
+        run: python3 scripts/host_tools.py workflow linux >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22.23.3'
+          node-version: ${{ steps.host_tools.outputs.node }}
           cache: 'npm'
           cache-dependency-path: interface/package-lock.json
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: ${{ steps.host_tools.outputs.python }}
 
       - name: Cache PlatformIO
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -134,7 +138,7 @@ jobs:
             ~/.platformio/packages
             ~/.platformio/platforms
             ~/.platformio/.cache
-          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini', 'scripts/patch_*.py', 'scripts/verify_esp32s3_framework.py', 'scripts/check_platformio_core_version.py') }}
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini', 'scripts/patch_*.py', 'scripts/verify_esp32s3_framework.py', 'scripts/check_platformio_core_version.py', 'config/host_tools.json', 'scripts/host_tools.py') }}
 
       - name: Install release toolchain
         run: ./scripts/bootstrap_linux_validation.sh release

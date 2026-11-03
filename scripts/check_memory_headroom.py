@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 
+import host_tools
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT_DIR = ROOT / ".artifacts" / "test_reports" / "memory-headroom"
 PIO_MEMORY_RE = re.compile(
@@ -130,7 +132,7 @@ def platformio_python_candidates(pio_cmd: str) -> list[Path]:
         candidates.append(Path(configured))
     candidates.extend(
         [
-            ROOT / ".artifacts" / "pio-core-6.2.0" / "bin" / "python",
+            ROOT / ".artifacts" / host_tools.load().get("pio_venv_name") / "bin" / "python",
             Path.home() / ".platformio" / "penv" / "bin" / "python",
             Path(sys.executable),
         ]

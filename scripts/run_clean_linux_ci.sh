@@ -4,9 +4,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-IMAGE="docker.io/library/ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55"
-NODE_VERSION="22.23.3"
-NODE_SHA256="df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de"
+# Only base Python is needed to read image/download identities before launch.
+IMAGE="$(python3 "$ROOT_DIR/scripts/host_tools.py" get linux_image)"
+NODE_VERSION="$(python3 "$ROOT_DIR/scripts/host_tools.py" get node)"
+NODE_SHA256="$(python3 "$ROOT_DIR/scripts/host_tools.py" get node_sha256)"
 ENGINE=""
 RUN_FULL_GATE=true
 
@@ -15,7 +16,7 @@ usage() {
 Usage: scripts/run_clean_linux_ci.sh [options]
 
   --engine docker|podman  Select the available container engine.
-  --image IMAGE           Override the pinned Ubuntu 24.04 image.
+  --image IMAGE           Override the declared Ubuntu image.
   --preflight-only        Bootstrap and verify prerequisites without the full gate.
   --help                  Show this message.
 EOF
@@ -116,7 +117,7 @@ echo "[clean-linux] output: $OUTPUT_DIR"
     trap retain_reports EXIT
     export V1_VALIDATION_MANIFEST=/host-artifacts/linux-validation-environment.txt
     export V1_PIO_VENV=/opt/v1-pio-venv
-    export V1_SWIFT_ROOT=/opt/swift-6.3.3
+    export V1_SWIFT_ROOT="/opt/swift-$(python3 scripts/host_tools.py get swift)"
     set -o pipefail
     ./scripts/bootstrap_linux_validation.sh ci 2>&1 | tee /host-artifacts/bootstrap.log
     if [[ "$RUN_FULL_GATE" == "true" ]]; then

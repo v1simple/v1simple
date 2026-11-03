@@ -93,7 +93,7 @@ def test_clean_linux_runner_binds_exact_source_and_cold_amd64_image() -> None:
         "container checkout must match the recorded source commit",
     )
     require(
-        "docker.io/library/ubuntu@sha256:" in runner,
+        'scripts/host_tools.py" get linux_image' in runner,
         "clean Linux runner must use an immutable Ubuntu image",
     )
     require(
@@ -112,7 +112,7 @@ def test_clean_linux_runner_binds_exact_source_and_cold_amd64_image() -> None:
         "clean Linux runner must give its CI tool environment one explicit owner",
     )
     require(
-        runner.count('export V1_SWIFT_ROOT=/opt/swift-6.3.3') == 1,
+        runner.count('export V1_SWIFT_ROOT="/opt/swift-$(python3 scripts/host_tools.py get swift)"') == 1,
         "clean Linux runner must give its Swift toolchain one explicit owner",
     )
     require(
@@ -173,7 +173,7 @@ def test_macos_local_and_hosted_gates_run_both_swift_suites() -> None:
         require(macos_job.count(invocation) == 1, f"macOS CI must run {invocation} once")
         step = next(step for step in macos_job.split("      - name:") if invocation in step)
         require(
-            "DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer" in step,
+            "DEVELOPER_DIR: ${{ steps.host_tools.outputs.macos_developer_dir }}" in step,
             "Swift suites must use the hosted job's selected Xcode toolchain",
         )
 

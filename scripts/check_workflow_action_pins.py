@@ -7,6 +7,8 @@ import re
 import sys
 from pathlib import Path
 
+import host_tools
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS_DIR = ROOT / ".github" / "workflows"
 USES_LINE_RE = re.compile(
@@ -14,15 +16,14 @@ USES_LINE_RE = re.compile(
 )
 USES_PREFIX_RE = re.compile(r"^(?:-\s*)?uses\s*:")
 PINNED_ACTION_RE = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
-PINNED_LINUX_RUNNER = "ubuntu-24.04"
-PINNED_PYTHON = "python-version: '3.12'"
-PINNED_NODE = "node-version: '22.23.3'"
+HOST_OUTPUT_COMMAND = 'python3 scripts/host_tools.py workflow linux >> "$GITHUB_OUTPUT"'
+PYTHON_INPUT = "python-version: ${{ steps.host_tools.outputs.python }}"
+NODE_INPUT = "node-version: ${{ steps.host_tools.outputs.node }}"
 PIO_CACHE_HASH = (
     "hashFiles('platformio.ini', 'scripts/patch_*.py', "
     "'scripts/verify_esp32s3_framework.py', "
-    "'scripts/check_platformio_core_version.py')"
+    "'scripts/check_platformio_core_version.py', 'config/host_tools.json', 'scripts/host_tools.py')"
 )
-PIOARDUINO_CORE_PIN = '"pioarduino==6.2.0"'
 CPP_CHECK_RUNTIME = "libpcre3"
 BOOTSTRAP = ROOT / "scripts" / "bootstrap_linux_validation.sh"
 
@@ -73,13 +74,31 @@ def check_reproducible_linux_contract(path: Path) -> list[str]:
 
     text = path.read_text(encoding="utf-8")
     errors: list[str] = []
+    linux_runner = host_tools.load().get("linux_runner")
     if "ubuntu-latest" in text:
-        errors.append(f"{relative}: Linux jobs must pin {PINNED_LINUX_RUNNER}")
+        errors.append(f"{relative}: Linux jobs must pin {linux_runner}")
 
-    if text.count(PINNED_PYTHON) != 1:
-        errors.append(f"{relative}: expected one shared Python 3.12 toolchain pin")
-    if text.count(PINNED_NODE) != 1:
-        errors.append(f"{relative}: expected one shared Node.js 22.23.3 toolchain pin")
+    for declaration, label in ((PYTHON_INPUT, "Python"), (NODE_INPUT, "Node.js")):
+        if text.count(declaration) != 1:
+            errors.append(f"{relative}: {label} setup must consume the shared host-tools output")
+    if text.count(HOST_OUTPUT_COMMAND) != 1:
+        errors.append(f"{relative}: expected one bootstrap-Python host-tools read")
+    for job in re.split(r"(?m)^  [A-Za-z0-9_-]+:\s*$", text):
+        if "actions/setup-node@" not in job and "actions/setup-python@" not in job:
+            continue
+        read_at = job.find(HOST_OUTPUT_COMMAND)
+        checkout_at = job.find("actions/checkout@")
+        setup_positions = [job.find(action) for action in ("actions/setup-node@", "actions/setup-python@")]
+        if (checkout_at < 0 or read_at < checkout_at or "id: host_tools" not in job
+                or any(position < read_at for position in setup_positions if position >= 0)):
+            errors.append(f"{relative}: checkout and base-Python declaration read must precede tool setup")
+    if relative.endswith("/ci.yml"):
+        mac_read = 'python3 scripts/host_tools.py workflow macos >> "$GITHUB_OUTPUT"'
+        mac_input = "DEVELOPER_DIR: ${{ steps.host_tools.outputs.macos_developer_dir }}"
+        if text.count(mac_read) != 1 or text.count(mac_input) != 4:
+            errors.append(f"{relative}: macOS jobs must consume the declared Xcode selection")
+        elif text.index(mac_read) > text.index(mac_input):
+            errors.append(f"{relative}: read the Xcode selection before using it")
 
     profile = "ci" if relative.endswith("/ci.yml") else "release"
     bootstrap_call = f"./scripts/bootstrap_linux_validation.sh {profile}"
@@ -89,7 +108,7 @@ def check_reproducible_linux_contract(path: Path) -> list[str]:
         errors.append(f"{relative}: dependency installation must stay in the bootstrap owner")
 
     expected_runner_count = 1 if relative.endswith("/ci.yml") else 2
-    actual_runner_count = text.count(f"runs-on: {PINNED_LINUX_RUNNER}")
+    actual_runner_count = text.count(f"runs-on: {linux_runner}")
     if actual_runner_count != expected_runner_count:
         errors.append(
             f"{relative}: expected {expected_runner_count} pinned Linux runners, "
@@ -113,10 +132,10 @@ def check_bootstrap_contract() -> list[str]:
         return ["scripts/bootstrap_linux_validation.sh: shared bootstrap is missing"]
     text = BOOTSTRAP.read_text(encoding="utf-8")
     errors: list[str] = []
-    if text.count(PIOARDUINO_CORE_PIN) != 1:
-        errors.append(
-            "scripts/bootstrap_linux_validation.sh: expected one pioarduino 6.2.0 pin"
-        )
+    if text.count('package_lines="$(host_tool packages "$PROFILE")"') != 1:
+        errors.append("scripts/bootstrap_linux_validation.sh: install the declared profile package list")
+    if 'host_tool() { "$PYTHON_CMD" "$HOST_TOOLS" "$@"; }' not in text:
+        errors.append("scripts/bootstrap_linux_validation.sh: read tools using the available bootstrap Python")
     if "platformio==" in text:
         errors.append(
             "scripts/bootstrap_linux_validation.sh: overlapping platformio package is forbidden"
@@ -125,14 +144,12 @@ def check_bootstrap_contract() -> list[str]:
         errors.append(
             f"scripts/bootstrap_linux_validation.sh: install {CPP_CHECK_RUNTIME} exactly once"
         )
-    if 'NODE_VERSION="22.23.3"' not in text:
-        errors.append(
-            "scripts/bootstrap_linux_validation.sh: Node.js bootstrap pin must match workflows"
-        )
-    if 'SWIFT_VERSION="6.3.3"' not in text:
-        errors.append(
-            "scripts/bootstrap_linux_validation.sh: Swift bootstrap pin must match the CI runner"
-        )
+    for key in ("node", "python", "swift", "swift_sha256", "shellcheck"):
+        if f"$(host_tool get {key})" not in text:
+            errors.append(f"scripts/bootstrap_linux_validation.sh: missing declared {key} requirement")
+    for tool in ("swift", "shellcheck"):
+        if f'host_tool requires "$PROFILE" {tool}' not in text:
+            errors.append(f"scripts/bootstrap_linux_validation.sh: {tool} must follow profile membership")
     return errors
 
 

@@ -2,6 +2,7 @@
 """Exercise the actual bundler with temporary frontend trees, not device data."""
 
 import gzip
+import json
 from pathlib import Path
 import runpy
 import subprocess
@@ -28,6 +29,8 @@ class WebBundleTests(unittest.TestCase):
             'tools/compress_web_assets.sh': b'gzip -n -9 -k -f',
             'scripts/generate_web_bundle.py': b'generator fixture identity',
             'scripts/embed_web_assets.py': b'prehook fixture identity',
+            'config/host_tools.json': (Path(__file__).resolve().parents[1] / 'config/host_tools.json').read_bytes(),
+            'scripts/host_tools.py': b'host reader identity',
         }.items():
             self.write(name, data)
         self.assets = {route + '.html': ('<html>' + route + '</html>').encode()
@@ -88,7 +91,8 @@ class WebBundleTests(unittest.TestCase):
         for name in ('interface/src/routes/+page.svelte', 'interface/package.json',
                      'interface/package-lock.json', 'interface/vite.config.js',
                      'interface/static/branding/logo.png', 'tools/compress_web_assets.sh',
-                     'scripts/generate_web_bundle.py', 'scripts/embed_web_assets.py'):
+                     'scripts/generate_web_bundle.py', 'scripts/embed_web_assets.py',
+                     'scripts/host_tools.py'):
             with self.subTest(name=name):
                 self.stamp()
                 path = self.root / name
@@ -97,6 +101,58 @@ class WebBundleTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'stale or modified|branding differs'):
                     bundle.validate(self.root)
                 path.write_bytes(old)
+
+    def test_frontend_host_tool_values_invalidate_stamp(self):
+        path = self.root / 'config/host_tools.json'
+        original = path.read_bytes()
+        for key, value in (('python', '3.13'), ('node', '22.24.7'), ('npm', '10.9.8')):
+            with self.subTest(key=key):
+                self.stamp()
+                tools = json.loads(original)
+                if key == 'python':
+                    tools['python'] = value
+                else:
+                    tools['node']['version' if key == 'node' else 'npm'] = value
+                path.write_text(json.dumps(tools))
+                with self.assertRaisesRegex(ValueError, 'stale or modified'):
+                    bundle.validate(self.root)
+                path.write_bytes(original)
+
+    def test_unrelated_host_tools_and_json_format_do_not_invalidate_stamp(self):
+        self.stamp()
+        path = self.root / 'config/host_tools.json'
+        tools = json.loads(path.read_bytes())
+        tools['swift']['version'] = '6.3.4'
+        tools['swift']['ubuntu_archive_sha256'] = 'a' * 64
+        tools['node']['linux_x64_sha256'] = 'b' * 64
+        tools['linux']['version'] = '26.04'
+        tools['linux']['image'] = 'docker.io/library/ubuntu@sha256:' + 'c' * 64
+        tools['macos']['developer_dir'] = '/Applications/Xcode_16.5.app/Contents/Developer'
+        tools['python_packages']['pioarduino'] = '==6.2.1'
+        tools['python_packages']['esptool'] = '==5.4.1'
+        tools['python_packages']['littlefs-python'] = '==0.18.1'
+        tools['profiles']['release'].append('ruff')
+        path.write_text(json.dumps(tools, indent=4, sort_keys=True))
+        bundle.validate(self.root)
+        self.assertEqual(json.loads(bundle.inputs(self.root)['config/host_tools.json']),
+                         {'python': '3.12', 'node': '22.23.3', 'npm': '10.9.9'})
+
+    def test_missing_invalid_or_symlink_host_declaration_fails_closed(self):
+        self.stamp()
+        path = self.root / 'config/host_tools.json'
+        original = path.read_bytes()
+        path.unlink()
+        with self.assertRaisesRegex(ValueError, 'missing or unsafe'):
+            bundle.validate(self.root)
+        path.write_text('{"schema":true}')
+        with self.assertRaises(ValueError):
+            bundle.validate(self.root)
+        target = self.root / 'elsewhere.json'
+        target.write_bytes(original)
+        path.unlink()
+        path.symlink_to(target)
+        with self.assertRaisesRegex(ValueError, 'missing or unsafe'):
+            bundle.validate(self.root)
 
     def test_new_input_is_detected_and_build_caches_are_excluded(self):
         self.stamp()

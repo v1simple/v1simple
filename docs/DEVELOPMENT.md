@@ -5,11 +5,11 @@ Run the commands below from the repository root.
 
 ## Build from source
 
-Install pioarduino Core 6.2.0, plus a Node.js version accepted by
-`interface/package.json`:
+Install the pioarduino Core version declared in [host_tools.json](../config/host_tools.json),
+plus a Node.js version accepted by `interface/package.json`:
 
 ```sh
-python3 -m pip install 'pioarduino==6.2.0'
+python3 -m pip install "$(python3 scripts/host_tools.py get pioarduino_requirement)"
 ```
 
 From the repository root:
@@ -28,7 +28,8 @@ npm dependencies. If using an existing PlatformIO installation, set `PIO_CMD` to
 its executable.
 
 Without `--skip-web`, filesystem operations (`--upload-fs`, `--all`, and `--reset`) also require
-`littlefs-python==0.18.0` in the Python interpreter reported by the selected
+the `littlefs-python` version from `python3 scripts/host_tools.py get littlefs-python`
+in the Python interpreter reported by the selected
 PlatformIO executable. Before staging audio, `build.sh` checks that version and
 prepares the platform and framework packages with `pio pkg install`. A missing
 dependency reports the installation command for that exact Python interpreter.

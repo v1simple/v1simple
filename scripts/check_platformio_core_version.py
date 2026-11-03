@@ -11,8 +11,9 @@ import shutil
 import subprocess
 import sys
 
-REQUIRED_VERSION = (6, 2, 0)
-REQUIRED_DISTRIBUTION = "pioarduino"
+import host_tools
+
+REQUIRED_DISTRIBUTION = host_tools.load().get("pio_distribution")
 
 
 def parse_args() -> argparse.Namespace:
@@ -20,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pio", default="pio", help="PlatformIO executable to check")
     parser.add_argument(
         "--required-version",
-        default=".".join(str(part) for part in REQUIRED_VERSION),
+        default=host_tools.load().get("pioarduino"),
         help="Exact required PlatformIO Core version",
     )
     return parser.parse_args()
@@ -153,15 +154,17 @@ def main() -> int:
         f"the required release pin {format_version(required_version)}.",
         file=sys.stderr,
     )
+    pin = format_version(required_version)
+    venv_path = f".artifacts/pio-core-{pin}"
     print(
         "[toolchain] Install the exact release toolchain, for example:\n"
-        "  python3 -m pip install 'pioarduino==6.2.0'\n"
+        f"  python3 -m pip install '{REQUIRED_DISTRIBUTION}=={pin}'\n"
         "\n"
         "[toolchain] Or use an isolated repo-local toolchain:\n"
-        "  python3 -m venv .artifacts/pio-core-6.2.0\n"
-        "  .artifacts/pio-core-6.2.0/bin/python -m pip install --upgrade pip setuptools wheel\n"
-        "  .artifacts/pio-core-6.2.0/bin/python -m pip install 'pioarduino==6.2.0'\n"
-        "  export PIO_CMD=\"$PWD/.artifacts/pio-core-6.2.0/bin/pio\"\n"
+        f"  python3 -m venv {venv_path}\n"
+        f"  {venv_path}/bin/python -m pip install --upgrade pip setuptools wheel\n"
+        f"  {venv_path}/bin/python -m pip install '{REQUIRED_DISTRIBUTION}=={pin}'\n"
+        f"  export PIO_CMD=\"$PWD/{venv_path}/bin/pio\"\n"
         "\n"
         "[toolchain] Repo scripts automatically export certifi's CA bundle for PlatformIO TLS downloads.",
         file=sys.stderr,

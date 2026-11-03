@@ -544,40 +544,28 @@ void restoreBackupBool(const JsonDocument& doc, const char* key, bool& target) {
     if (parseBoolVariant(doc[key], parsed)) target = parsed;
 }
 
-struct BackupColorField {
-    const char* key;
-    uint16_t V1Settings::*target;
-    uint16_t fallback;
-    bool critical;
-};
-
 void applyBackupSignalBarColors(const JsonDocument& doc, V1Settings& settings) {
     const int backupVersion = backupDocumentVersion(doc);
     bool haveDirect = false;
     for (int i = 0; i < 6; ++i) {
-        char key[16];
-        std::snprintf(key, sizeof(key), "colorBar%d", i + 1);
+        const char* key = DisplaySettingsContract::kBars[i].backupKey;
         haveDirect = haveDirect || doc[key].is<int>();
     }
     bool haveSegments = false;
     for (int i = 0; i < 8; ++i) {
-        char key[16];
-        std::snprintf(key, sizeof(key), "colorBarS%d", i + 1);
+        const char* key = DisplaySettingsContract::kLegacyBars[i].backupKey;
         haveSegments = haveSegments || doc[key].is<int>();
     }
-    static constexpr uint16_t defaults[6] = {0x07E0, 0x07E0, 0xFFE0, 0xFFE0, 0xF800, 0xF800};
     if ((backupVersion >= 19 || !haveSegments) && haveDirect) {
         for (int i = 0; i < 6; ++i) {
-            char key[16];
-            std::snprintf(key, sizeof(key), "colorBar%d", i + 1);
-            if (doc[key].is<int>()) settings.colorBars[i] = sanitizeRgb565Color(doc[key], defaults[i]);
+            const char* key = DisplaySettingsContract::kBars[i].backupKey;
+            if (doc[key].is<int>()) settings.colorBars[i] = sanitizeRgb565Color(doc[key], DisplaySettingsContract::kBarDefaults[i]);
         }
     } else if (haveSegments) {
         uint16_t segments[8];
         DisplayVisualContract::expandSixBarColorsToEight(settings.colorBars, segments);
         for (int i = 0; i < 8; ++i) {
-            char key[16];
-            std::snprintf(key, sizeof(key), "colorBarS%d", i + 1);
+            const char* key = DisplaySettingsContract::kLegacyBars[i].backupKey;
             if (doc[key].is<int>()) segments[i] = sanitizeRgb565Color(doc[key], segments[i]);
         }
         DisplayVisualContract::collapseEightBarColorsToSix(segments, settings.colorBars);
@@ -646,51 +634,22 @@ bool applyBackupNetworkFields(const JsonDocument& doc, V1Settings& settings, Sto
 }
 
 void applyBackupDisplayFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope) {
-    if (doc["brightness"].is<int>()) settings.brightness = clampU8(doc["brightness"], 1, 255);
-    static constexpr BackupColorField colors[] = {
-        {"colorBogey", &V1Settings::colorBogey, 0xF800, true},
-        {"colorFrequency", &V1Settings::colorFrequency, 0xF800, true},
-        {"colorArrowFront", &V1Settings::colorArrowFront, 0xF800, true},
-        {"colorArrowSide", &V1Settings::colorArrowSide, 0xF800, true},
-        {"colorArrowRear", &V1Settings::colorArrowRear, 0xF800, true},
-        {"colorBandL", &V1Settings::colorBandL, 0x001F, true},
-        {"colorBandKa", &V1Settings::colorBandKa, 0xF800, true},
-        {"colorBandK", &V1Settings::colorBandK, 0x001F, true},
-        {"colorBandX", &V1Settings::colorBandX, 0x07E0, true},
-        {"colorBandPhoto", &V1Settings::colorBandPhoto, 0x780F, true},
-        {"colorWiFiConnected", &V1Settings::colorWiFiConnected, 0x07E0, false},
-        {"colorBleConnected", &V1Settings::colorBleConnected, 0x07E0, false},
-        {"colorBleDisconnected", &V1Settings::colorBleDisconnected, 0x001F, false},
-        {"colorMuted", &V1Settings::colorMuted, 0x4A49, false},
-        {"colorPersisted", &V1Settings::colorPersisted, 0x4208, false},
-        {"colorVolumeMain", &V1Settings::colorVolumeMain, 0xF800, false},
-        {"colorVolumeMute", &V1Settings::colorVolumeMute, 0x7BEF, false},
-        {"colorRssiV1", &V1Settings::colorRssiV1, 0x07E0, false},
-        {"colorRssiProxy", &V1Settings::colorRssiProxy, 0x001F, false},
-        {"colorObd", &V1Settings::colorObd, 0x001F, true},
-        {"colorAlpConnected", &V1Settings::colorAlpConnected, 0x07E0, true},
-        {"colorAlpDli", &V1Settings::colorAlpDli, 0xFD20, true},
-        {"colorAlpLidActive", &V1Settings::colorAlpLidActive, 0x001F, true},
-        {"colorAlpAlert", &V1Settings::colorAlpAlert, 0xF800, true},
-    };
-    for (const BackupColorField& field : colors) {
-        if ((field.critical || scope == BackupRestoreScope::Full) && doc[field.key].is<int>())
-            settings.*(field.target) = sanitizeRgb565Color(doc[field.key], field.fallback);
+    const bool full = scope == BackupRestoreScope::Full;
+    const auto& brightness = DisplaySettingsContract::kBrightness;
+    if ((full || brightness.criticalRecovery) && doc[brightness.backupKey].is<int>()) {
+        settings.*(brightness.value) = clampU8(doc[brightness.backupKey],
+            DisplaySettingsContract::kBrightnessMin, DisplaySettingsContract::kBrightnessMax);
     }
-    if (scope == BackupRestoreScope::Full && !doc["colorWiFiConnected"].is<int>() && doc["colorWiFiIcon"].is<int>())
-        settings.colorWiFiConnected = sanitizeRgb565Color(doc["colorWiFiIcon"], 0x07E0);
-    if (scope == BackupRestoreScope::Full) {
-        applyBackupSignalBarColors(doc, settings);
-        restoreBackupBool(doc, "freqUseBandColor", settings.freqUseBandColor);
+    DisplaySettingsContract::forEachColor([&](const DisplaySettingsContract::DisplayField<uint16_t>& field) {
+        if (!full && !field.criticalRecovery) return;
+        const char* key = field.backupKey;
+        if (!doc[key].is<int>() && field.legacyBackupKey) key = field.legacyBackupKey;
+        if (doc[key].is<int>()) settings.*(field.value) = sanitizeRgb565Color(doc[key], field.defaultValue);
+    });
+    if (full) applyBackupSignalBarColors(doc, settings);
+    for (const auto& field : DisplaySettingsContract::kFlags) {
+        if (full || field.criticalRecovery) restoreBackupBool(doc, field.backupKey, settings.*(field.value));
     }
-    static constexpr const char* uiFlags[] = {"hideWifiIcon", "hideProfileIndicator", "hideBatteryIcon",
-                                               "showBatteryPercent", "hideBleIcon", "hideVolumeIndicator",
-                                               "hideRssiIndicator"};
-    bool* uiTargets[] = {&settings.hideWifiIcon, &settings.hideProfileIndicator, &settings.hideBatteryIcon,
-                         &settings.showBatteryPercent, &settings.hideBleIcon, &settings.hideVolumeIndicator,
-                         &settings.hideRssiIndicator};
-    for (size_t i = 0; i < sizeof(uiFlags) / sizeof(uiFlags[0]); ++i)
-        restoreBackupBool(doc, uiFlags[i], *uiTargets[i]);
 }
 
 void applyBackupAudioFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope) {
@@ -1095,6 +1054,51 @@ bool currentJsonEncodedPasswordIsValid(JsonVariantConst value) {
     return ExactJsonInput::validSemanticString(decodedBytes, decodedLength);
 }
 
+template <typename Visitor>
+void forEachDisplayBackupKey(Visitor&& visitor) {
+    DisplaySettingsContract::forEachScalar([&](const auto& field) {
+        visitor(field.backupKey);
+        if (field.legacyBackupKey) visitor(field.legacyBackupKey);
+    });
+    for (const auto& bar : DisplaySettingsContract::kBars) visitor(bar.backupKey);
+    for (const auto& bar : DisplaySettingsContract::kLegacyBars) visitor(bar.backupKey);
+}
+
+bool isDisplayBackupKey(JsonString key) {
+    bool found = false;
+    forEachDisplayBackupKey([&](const char* allowed) { if (!found) found = jsonKeyEquals(key, allowed); });
+    return found;
+}
+
+bool currentDisplayBackupFieldsAreValid(const JsonDocument& doc) {
+    bool valid = true;
+    forEachDisplayBackupKey([&](const char* key) { valid &= !doc[key].isUnbound(); });
+    DisplaySettingsContract::forEachColor([&](const DisplaySettingsContract::DisplayField<uint16_t>& field) {
+        valid &= optionalExactIntRange(doc, field.backupKey, 1, 0xFFFF);
+        if (field.legacyBackupKey) {
+            valid &= optionalExactIntRange(doc, field.legacyBackupKey, 1, 0xFFFF);
+            valid &= doc[field.backupKey].as<int>() == doc[field.legacyBackupKey].as<int>();
+        }
+    });
+    for (const auto& field : DisplaySettingsContract::kFlags) valid &= optionalExactBool(doc, field.backupKey);
+    valid &= optionalExactIntRange(doc, DisplaySettingsContract::kBrightness.backupKey,
+                                  DisplaySettingsContract::kBrightnessMin, DisplaySettingsContract::kBrightnessMax);
+    uint16_t colors[6];
+    for (int index = 0; index < 6; ++index) {
+        const char* key = DisplaySettingsContract::kBars[index].backupKey;
+        valid &= optionalExactIntRange(doc, key, 1, 0xFFFF);
+        colors[index] = doc[key].as<uint16_t>();
+    }
+    uint16_t shadow[8];
+    DisplayVisualContract::expandSixBarColorsToEight(colors, shadow);
+    for (int index = 0; index < 8; ++index) {
+        const char* key = DisplaySettingsContract::kLegacyBars[index].backupKey;
+        valid &= optionalExactIntRange(doc, key, 1, 0xFFFF);
+        valid &= doc[key].as<uint16_t>() == shadow[index];
+    }
+    return valid;
+}
+
 bool validateCurrentBackupSchema(const JsonDocument& doc) {
     static constexpr const char* kTopLevelKeys[] = {
         "_type", "_version", "_timestamp", "timestamp", "_crc32",
@@ -1103,17 +1107,7 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
         "obdEnabled", "obdSavedAddress", "obdSavedName", "obdSavedAddrType", "obdMinRssi",
         "obdScanWindowMs", "obdRetryIntervalMs", "proxyOpenWindowMs", "v1SettleQuietMs",
         "v1SettleFallbackMs", "cycleTeardownAckTimeoutMs", "alpEnabled", "alpAlertPersistSec",
-        "alpDisableV1LaserOnPush", "gpsEnabled", "gpsBaud", "brightness",
-        "colorBogey", "colorFrequency", "colorArrowFront", "colorArrowSide", "colorArrowRear",
-        "colorBandL", "colorBandKa", "colorBandK", "colorBandX", "colorBandPhoto",
-        "colorWiFiIcon", "colorWiFiConnected", "colorBleConnected", "colorBleDisconnected",
-        "colorBar1", "colorBar2", "colorBar3", "colorBar4", "colorBar5", "colorBar6",
-        "colorBarS1", "colorBarS2", "colorBarS3", "colorBarS4", "colorBarS5", "colorBarS6",
-        "colorBarS7", "colorBarS8", "colorMuted", "colorPersisted", "colorVolumeMain",
-        "colorVolumeMute", "colorRssiV1", "colorRssiProxy", "colorObd", "colorAlpConnected",
-        "colorAlpDli", "colorAlpLidActive", "colorAlpAlert", "freqUseBandColor",
-        "hideWifiIcon", "hideProfileIndicator", "hideBatteryIcon", "showBatteryPercent",
-        "hideBleIcon", "hideVolumeIndicator", "hideRssiIndicator", "voiceAlertMode",
+        "alpDisableV1LaserOnPush", "gpsEnabled", "gpsBaud", "voiceAlertMode",
         "voiceDirectionEnabled", "announceBogeyCount", "muteVoiceIfVolZero", "voiceVolume",
         "announceSecondaryAlerts", "secondaryLaser", "secondaryKa", "secondaryK", "secondaryX",
         "alertVolumeFadeEnabled", "alertVolumeFadeDelaySec", "alertVolumeFadeVolume",
@@ -1128,9 +1122,18 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
         "slot2AlertPersist", "slot2PriorityArrow", "slot2ProfileName", "slot2Mode", "profiles",
     };
     const JsonObjectConst root = doc.as<JsonObjectConst>();
-    if (!jsonObjectHasOnlyKeys(root, kTopLevelKeys, sizeof(kTopLevelKeys) / sizeof(kTopLevelKeys[0]))) {
-        return false;
+    for (JsonPairConst entry : root) {
+        const JsonString key = entry.key();
+        bool allowed = false;
+        for (const char* candidate : kTopLevelKeys) {
+            if (jsonKeyEquals(key, candidate)) {
+                allowed = true;
+                break;
+            }
+        }
+        if (!allowed && !isDisplayBackupKey(key)) return false;
     }
+    if (!currentDisplayBackupFieldsAreValid(doc)) return false;
 
     // Version 21 is the first exact backup schema. Every field emitted by its
     // respective writer is required so a truncated/current-looking document can
@@ -1182,8 +1185,7 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
 
     static constexpr const char* kBoolKeys[] = {
         "wifiClientEnabled", "proxyBLE", "obdEnabled", "alpEnabled", "alpDisableV1LaserOnPush",
-        "gpsEnabled", "freqUseBandColor", "hideWifiIcon", "hideProfileIndicator", "hideBatteryIcon",
-        "showBatteryPercent", "hideBleIcon", "hideVolumeIndicator", "hideRssiIndicator",
+        "gpsEnabled",
         "voiceDirectionEnabled", "announceBogeyCount", "muteVoiceIfVolZero",
         "announceSecondaryAlerts", "secondaryLaser", "secondaryKa", "secondaryK", "secondaryX",
         "alertVolumeFadeEnabled", "speedMuteEnabled", "speedMuteVoice", "stealthEnabled",
@@ -1195,36 +1197,11 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
         if (!optionalExactBool(doc, key)) return false;
     }
 
-    static constexpr const char* kColorKeys[] = {
-        "colorBogey", "colorFrequency", "colorArrowFront", "colorArrowSide", "colorArrowRear",
-        "colorBandL", "colorBandKa", "colorBandK", "colorBandX", "colorBandPhoto",
-        "colorWiFiIcon", "colorWiFiConnected", "colorBleConnected", "colorBleDisconnected",
-        "colorBar1", "colorBar2", "colorBar3", "colorBar4", "colorBar5", "colorBar6",
-        "colorBarS1", "colorBarS2", "colorBarS3", "colorBarS4", "colorBarS5", "colorBarS6",
-        "colorBarS7", "colorBarS8", "colorMuted", "colorPersisted", "colorVolumeMain",
-        "colorVolumeMute", "colorRssiV1", "colorRssiProxy", "colorObd", "colorAlpConnected",
-        "colorAlpDli", "colorAlpLidActive", "colorAlpAlert", "slot0Color", "slot1Color", "slot2Color",
-    };
-    for (const char* key : kColorKeys) {
+    for (const char* key : {"slot0Color", "slot1Color", "slot2Color"}) {
         if (!optionalExactIntRange(doc, key, 1, 0xFFFF)) return false;
     }
-    uint16_t configuredBarColors[6];
-    for (int index = 0; index < 6; ++index) {
-        char key[16];
-        std::snprintf(key, sizeof(key), "colorBar%d", index + 1);
-        configuredBarColors[index] = doc[key].as<uint16_t>();
-    }
-    uint16_t expectedCompatibilityColors[8];
-    DisplayVisualContract::expandSixBarColorsToEight(configuredBarColors,
-                                                      expectedCompatibilityColors);
-    for (int index = 0; index < 8; ++index) {
-        char key[16];
-        std::snprintf(key, sizeof(key), "colorBarS%d", index + 1);
-        if (doc[key].as<uint16_t>() != expectedCompatibilityColors[index]) return false;
-    }
 
-    if (!optionalExactIntRange(doc, "brightness", 1, 255) ||
-        !optionalExactIntRange(doc, "autoPowerOffMinutes", 0, 60) ||
+    if (!optionalExactIntRange(doc, "autoPowerOffMinutes", 0, 60) ||
         !optionalExactIntRange(doc, "obdSavedAddrType", 0, 1) ||
         !optionalExactIntRange(doc, "obdMinRssi", -100, -40) ||
         !optionalExactIntRange(doc, "alpAlertPersistSec", 0, 5) ||
@@ -1262,8 +1239,6 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
                                   kConnectionCycleTeardownAckTimeoutMsMax)) return false;
     if (!doc["_timestamp"].isUnbound() && !doc["timestamp"].isUnbound() &&
         doc["_timestamp"].as<uint32_t>() != doc["timestamp"].as<uint32_t>()) return false;
-    if (!doc["colorWiFiIcon"].isUnbound() && !doc["colorWiFiConnected"].isUnbound() &&
-        doc["colorWiFiIcon"].as<int>() != doc["colorWiFiConnected"].as<int>()) return false;
 
     if (doc["proxyBLE"].as<bool>() && doc["obdEnabled"].as<bool>()) return false;
     const int expectedProfileSchema = doc["_version"].as<int>() >= 23

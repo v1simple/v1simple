@@ -376,6 +376,40 @@ void test_display_modern_partial_save_does_not_update_other_bars() {
     for (int i = 1; i < 6; ++i) TEST_ASSERT_FALSE(probe.displayUpdate.hasColorBar[i]);
 }
 
+void test_display_form_conversion_and_brightness_redraw_policies() {
+    Probe probe;
+    WebServer empty(80);
+    WifiDisplayColorsApiService::handleApiSave(empty, makeDisplayRuntime(probe), nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, empty.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, probe.previewCalls);
+    TEST_ASSERT_EQUAL_INT(0, probe.redrawCalls);
+    for (int input : {-5, 999}) {
+        WebServer brightness(80);
+        brightness.setArg("brightness", String(input));
+        brightness.setArg("skipPreview", "true");
+        WifiDisplayColorsApiService::handleApiSave(brightness, makeDisplayRuntime(probe), nullptr, nullptr);
+        TEST_ASSERT_TRUE(probe.displayUpdate.hasBrightness);
+        TEST_ASSERT_EQUAL_UINT8(input < 0 ? 1 : 255, probe.displayUpdate.brightness);
+        TEST_ASSERT_EQUAL_INT(0, probe.redrawCalls);
+        TEST_ASSERT_EQUAL_INT(1, probe.previewCalls);
+    }
+    TEST_ASSERT_EQUAL_INT(2, probe.brightnessCalls);
+    WebServer form(80);
+    form.setArg("bogey", "-1");
+    form.setArg("freq", "not a number");
+    form.setArg("hideWifiIcon", "1");
+    form.setArg("hideBatteryIcon", "true");
+    form.setArg("hideBleIcon", "TRUE");
+    WifiDisplayColorsApiService::handleApiSave(form, makeDisplayRuntime(probe), nullptr, nullptr);
+    TEST_ASSERT_EQUAL_UINT16(65535, probe.displayUpdate.colorBogey);
+    TEST_ASSERT_EQUAL_UINT16(0, probe.displayUpdate.colorFrequency);
+    TEST_ASSERT_TRUE(probe.displayUpdate.hideWifiIcon);
+    TEST_ASSERT_TRUE(probe.displayUpdate.hideBatteryIcon);
+    TEST_ASSERT_FALSE(probe.displayUpdate.hideBleIcon);
+    TEST_ASSERT_EQUAL_INT(1, probe.redrawCalls);
+    TEST_ASSERT_EQUAL_INT(2, probe.previewCalls);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_quiet_get_preserves_its_exact_field_set);
@@ -394,5 +428,6 @@ int main() {
     RUN_TEST(test_display_legacy_read_save_preserves_all_six_colors);
     RUN_TEST(test_display_partial_legacy_save_preserves_omitted_colors_and_modern_precedence);
     RUN_TEST(test_display_modern_partial_save_does_not_update_other_bars);
+    RUN_TEST(test_display_form_conversion_and_brightness_redraw_policies);
     return UNITY_END();
 }

@@ -40,7 +40,8 @@ function capturedResponse(capture) {
 }
 
 /**
- * Build exact method/path matchers backed by a real firmware response capture.
+ * Build exact method/path matchers from independently pinned response vectors.
+ * The display vector is also checked through the native service/settings/NVS test.
  * Ordered responses advance once per matching request and then repeat the final
  * response so terminal polling states remain stable.
  */

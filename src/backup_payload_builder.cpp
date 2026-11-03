@@ -115,20 +115,11 @@ bool settingsCurrentBackupStateIsCanonical(const V1Settings& settings) {
     // represented without canonicalization or command drift.
     if (settings.autoPushProfileSchemaVersion != V1_PROFILE_SCHEMA_VERSION) return false;
 
-    const uint16_t scalarColors[] = {
-        settings.colorBogey, settings.colorFrequency, settings.colorArrowFront,
-        settings.colorArrowSide, settings.colorArrowRear, settings.colorBandL,
-        settings.colorBandKa, settings.colorBandK, settings.colorBandX,
-        settings.colorBandPhoto, settings.colorWiFiConnected, settings.colorBleConnected,
-        settings.colorBleDisconnected, settings.colorMuted, settings.colorPersisted,
-        settings.colorVolumeMain, settings.colorVolumeMute, settings.colorRssiV1,
-        settings.colorRssiProxy, settings.colorObd, settings.colorAlpConnected,
-        settings.colorAlpDli, settings.colorAlpLidActive, settings.colorAlpAlert,
-        settings.slot0Color, settings.slot1Color, settings.slot2Color,
-    };
-    for (uint16_t color : scalarColors) {
-        if (color == 0) return false;
-    }
+    bool canonicalColors = true;
+    DisplaySettingsContract::forEachColor([&](const auto& field) {
+        if (settings.*(field.value) == 0) canonicalColors = false;
+    });
+    if (!canonicalColors || settings.slot0Color == 0 || settings.slot1Color == 0 || settings.slot2Color == 0) return false;
     for (uint16_t color : settings.colorBars) {
         if (color == 0) return false;
     }
@@ -312,59 +303,29 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     // GPS settings
     doc["gpsEnabled"] = settings.gpsEnabled;
     doc["gpsBaud"] = settings.gpsBaud;
-    doc["brightness"] = settings.brightness;
-
-    doc["colorBogey"] = settings.colorBogey;
-    doc["colorFrequency"] = settings.colorFrequency;
-    doc["colorArrowFront"] = settings.colorArrowFront;
-    doc["colorArrowSide"] = settings.colorArrowSide;
-    doc["colorArrowRear"] = settings.colorArrowRear;
-    doc["colorBandL"] = settings.colorBandL;
-    doc["colorBandKa"] = settings.colorBandKa;
-    doc["colorBandK"] = settings.colorBandK;
-    doc["colorBandX"] = settings.colorBandX;
-    doc["colorBandPhoto"] = settings.colorBandPhoto;
-    // Compatibility alias for older backup readers; both keys represent the
-    // one active WiFi indicator colour.
-    doc["colorWiFiIcon"] = settings.colorWiFiConnected;
-    doc["colorWiFiConnected"] = settings.colorWiFiConnected;
-    doc["colorBleConnected"] = settings.colorBleConnected;
-    doc["colorBleDisconnected"] = settings.colorBleDisconnected;
+    // Descriptor names have static lifetime, preserving literal-key storage.
+    const auto& brightness = DisplaySettingsContract::kBrightness;
+    doc[JsonString(brightness.backupKey, true)] = settings.*(brightness.value);
+    const auto writeColor = [&](const auto& field) {
+        if (field.legacyBackupKey) doc[JsonString(field.legacyBackupKey, true)] = settings.*(field.value);
+        doc[JsonString(field.backupKey, true)] = settings.*(field.value);
+    };
+    for (const auto& field : DisplaySettingsContract::kColorsBeforeBars) writeColor(field);
     // Six physical-segment colours are authoritative in v19 backups.
     for (int barIndex = 0; barIndex < 6; ++barIndex) {
-        char key[16];
-        std::snprintf(key, sizeof(key), "colorBar%d", barIndex + 1);
-        doc[key] = settings.colorBars[barIndex];
+        doc[JsonString(DisplaySettingsContract::kBars[barIndex].backupKey, true)] = settings.colorBars[barIndex];
     }
     // Keep an expanded v11-shaped shadow so older firmware can consume a new
     // backup without losing the theme.
     uint16_t compatibilitySegments[8];
     DisplayVisualContract::expandSixBarColorsToEight(settings.colorBars, compatibilitySegments);
     for (int barIndex = 0; barIndex < 8; ++barIndex) {
-        char key[16];
-        std::snprintf(key, sizeof(key), "colorBarS%d", barIndex + 1);
-        doc[key] = compatibilitySegments[barIndex];
+        doc[JsonString(DisplaySettingsContract::kLegacyBars[barIndex].backupKey, true)] = compatibilitySegments[barIndex];
     }
-    doc["colorMuted"] = settings.colorMuted;
-    doc["colorPersisted"] = settings.colorPersisted;
-    doc["colorVolumeMain"] = settings.colorVolumeMain;
-    doc["colorVolumeMute"] = settings.colorVolumeMute;
-    doc["colorRssiV1"] = settings.colorRssiV1;
-    doc["colorRssiProxy"] = settings.colorRssiProxy;
-    doc["colorObd"] = settings.colorObd;
-    doc["colorAlpConnected"] = settings.colorAlpConnected;
-    doc["colorAlpDli"] = settings.colorAlpDli;
-    doc["colorAlpLidActive"] = settings.colorAlpLidActive;
-    doc["colorAlpAlert"] = settings.colorAlpAlert;
-    doc["freqUseBandColor"] = settings.freqUseBandColor;
-
-    doc["hideWifiIcon"] = settings.hideWifiIcon;
-    doc["hideProfileIndicator"] = settings.hideProfileIndicator;
-    doc["hideBatteryIcon"] = settings.hideBatteryIcon;
-    doc["showBatteryPercent"] = settings.showBatteryPercent;
-    doc["hideBleIcon"] = settings.hideBleIcon;
-    doc["hideVolumeIndicator"] = settings.hideVolumeIndicator;
-    doc["hideRssiIndicator"] = settings.hideRssiIndicator;
+    for (const auto& field : DisplaySettingsContract::kColorsAfterBars) writeColor(field);
+    for (const auto& field : DisplaySettingsContract::kFlags) {
+        doc[JsonString(field.backupKey, true)] = settings.*(field.value);
+    }
 
     // Voice alert settings
     doc["voiceAlertMode"] = static_cast<int>(settings.voiceAlertMode);

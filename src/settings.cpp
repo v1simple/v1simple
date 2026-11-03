@@ -353,54 +353,19 @@ void SettingsManager::load() {
 
     loaded.proxyBLE = reader.getBool(kNvsProxyBle, true);
     loaded.proxyName = loadedText(reader, reader.getString(kNvsProxyName, "V1-Proxy"), MAX_PROXY_NAME_LEN, false, false, "V1-Proxy");
-    loaded.brightness =
-        std::max<uint8_t>(1, reader.getUChar(kNvsBrightness, 200)); // Min 1 to avoid blank screen
-    loaded.colorBogey = sanitizeRgb565Color(reader.getUShort(kNvsColorBogey, 0xF800), 0xF800);
-    loaded.colorFrequency = sanitizeRgb565Color(reader.getUShort(kNvsColorFreq, 0xF800), 0xF800);
-    loaded.colorArrowFront = sanitizeRgb565Color(reader.getUShort(kNvsColorArrowFront, 0xF800), 0xF800);
-    loaded.colorArrowSide = sanitizeRgb565Color(reader.getUShort(kNvsColorArrowSide, 0xF800), 0xF800);
-    loaded.colorArrowRear = sanitizeRgb565Color(reader.getUShort(kNvsColorArrowRear, 0xF800), 0xF800);
-    loaded.colorBandL = sanitizeRgb565Color(reader.getUShort(kNvsColorBandLaser, 0x001F), 0x001F);
-    loaded.colorBandKa = sanitizeRgb565Color(reader.getUShort(kNvsColorBandKa, 0xF800), 0xF800);
-    loaded.colorBandK = sanitizeRgb565Color(reader.getUShort(kNvsColorBandK, 0x001F), 0x001F);
-    loaded.colorBandX = sanitizeRgb565Color(reader.getUShort(kNvsColorBandX, 0x07E0), 0x07E0);
-    loaded.colorBandPhoto =
-        sanitizeRgb565Color(reader.getUShort(kNvsColorBandPhoto, 0x780F), 0x780F); // Purple (photo radar)
-    loaded.colorWiFiConnected = sanitizeRgb565Color(reader.getUShort(kNvsColorWifiConnected, 0x07E0), 0x07E0);
-    loaded.colorBleConnected = sanitizeRgb565Color(reader.getUShort(kNvsColorBleConnected, 0x07E0), 0x07E0);
-    loaded.colorBleDisconnected =
-        sanitizeRgb565Color(reader.getUShort(kNvsColorBleDisconnected, 0x001F), 0x001F);
+    const auto& brightness = DisplaySettingsContract::kBrightness;
+    loaded.*(brightness.value) = std::max(DisplaySettingsContract::kBrightnessMin,
+                                        reader.getUChar(brightness.nvsKey, brightness.defaultValue));
+    const auto readColor = [&](const auto& field) {
+        loaded.*(field.value) = sanitizeRgb565Color(reader.getUShort(field.nvsKey, field.defaultValue),
+                                                   field.defaultValue);
+    };
+    for (const auto& field : DisplaySettingsContract::kColorsBeforeBars) readColor(field);
     loadSignalBarColors(reader, loaded);
-    loaded.colorMuted =
-        sanitizeRgb565Color(reader.getUShort(kNvsColorMuted, 0x4A49), 0x4A49); // Subdued grey muted color
-    loaded.colorPersisted = sanitizeRgb565Color(reader.getUShort(kNvsColorPersisted, 0x4208),
-                                                   0x4208); // Subdued grey for persisted alerts
-    loaded.colorVolumeMain =
-        sanitizeRgb565Color(reader.getUShort(kNvsColorVolumeMain, 0xF800), 0xF800); // Red for main volume
-    loaded.colorVolumeMute =
-        sanitizeRgb565Color(reader.getUShort(kNvsColorVolumeMute, 0x7BEF), 0x7BEF); // Grey for mute volume
-    loaded.colorRssiV1 =
-        sanitizeRgb565Color(reader.getUShort(kNvsColorRssiV1, 0x07E0), 0x07E0); // Green for V1 RSSI label
-    loaded.colorRssiProxy =
-        sanitizeRgb565Color(reader.getUShort(kNvsColorRssiProxy, 0x001F), 0x001F); // Blue for Proxy RSSI label
-    loaded.colorObd =
-        sanitizeRgb565Color(reader.getUShort(kNvsColorObd, 0x001F), 0x001F); // Blue OBD badge color
-    loaded.colorAlpConnected =
-        sanitizeRgb565Color(reader.getUShort(kNvsColorAlpConn, 0x07E0), 0x07E0); // Green ALP connected
-    loaded.colorAlpDli =
-        sanitizeRgb565Color(reader.getUShort(kNvsColorAlpDli, 0xFD20), 0xFD20); // Orange ALP DLI active
-    loaded.colorAlpLidActive =
-        sanitizeRgb565Color(reader.getUShort(kNvsColorAlpLid, 0x001F), 0x001F); // Blue ALP LID active
-    loaded.colorAlpAlert = sanitizeRgb565Color(reader.getUShort(kNvsColorAlpAlert, 0xF800),
-                                                  0xF800);                       // Red ALP alert (solid during session)
-    loaded.freqUseBandColor = reader.getBool(kNvsFreqBandColor, false); // Use custom freq color by default
-    loaded.hideWifiIcon = reader.getBool(kNvsHideWifi, false);
-    loaded.hideProfileIndicator = reader.getBool(kNvsHideProfile, false);
-    loaded.hideBatteryIcon = reader.getBool(kNvsHideBattery, false);
-    loaded.showBatteryPercent = reader.getBool(kNvsBatteryPercent, false);
-    loaded.hideBleIcon = reader.getBool(kNvsHideBle, false);
-    loaded.hideVolumeIndicator = reader.getBool(kNvsHideVolume, false);
-    loaded.hideRssiIndicator = reader.getBool(kNvsHideRssi, false);
+    for (const auto& field : DisplaySettingsContract::kColorsAfterBars) readColor(field);
+    for (const auto& field : DisplaySettingsContract::kFlags) {
+        loaded.*(field.value) = reader.getBool(field.nvsKey, field.defaultValue);
+    }
 
     loaded.voiceAlertMode = clampVoiceAlertModeValue(reader.getUChar(kNvsVoiceMode, VOICE_MODE_BAND_FREQ));
     loaded.voiceDirectionEnabled = reader.getBool(kNvsVoiceDirection, true);
@@ -687,31 +652,22 @@ SettingsManager::NvsDiagnostic SettingsManager::getNvsDiagnostic() const {
 // Load six physical-segment colours while preserving v11 eight-segment themes.
 // Detection remains per-key so an interrupted migration cannot reset a theme.
 static void loadSignalBarColors(SettingsNvsReader& reader, V1Settings& loaded) {
-    static constexpr const char* kDirectKeys[6] = {
-        kNvsLegacyColorBar1, kNvsLegacyColorBar2, kNvsLegacyColorBar3,
-        kNvsLegacyColorBar4, kNvsLegacyColorBar5, kNvsLegacyColorBar6,
-    };
-    static constexpr uint16_t kDirectDefaults[6] = {
-        0x07E0, 0x07E0, 0xFFE0, 0xFFE0, 0xF800, 0xF800,
-    };
-    static constexpr const char* kSegmentKeys[8] = {
-        kNvsColorBarSeg1, kNvsColorBarSeg2, kNvsColorBarSeg3, kNvsColorBarSeg4,
-        kNvsColorBarSeg5, kNvsColorBarSeg6, kNvsColorBarSeg7, kNvsColorBarSeg8,
-    };
+    using namespace DisplaySettingsContract;
+    // Retain v11's historical interpolated defaults for absent shadow keys.
     static constexpr uint16_t kSegmentDefaults[8] = {
         0x07E0, 0x07E0, 0x6FE0, 0xFFE0, 0xFFE0, 0xFB80, 0xF800, 0xF800,
     };
 
     bool haveDirect = false;
     for (int i = 0; i < 6; ++i) {
-        if (reader.isKey(kDirectKeys[i])) {
+        if (reader.isKey(kBars[i].nvsKey)) {
             haveDirect = true;
             break;
         }
     }
     bool haveSegments = false;
     for (int i = 0; i < 8; ++i) {
-        if (reader.isKey(kSegmentKeys[i])) {
+        if (reader.isKey(kLegacyBars[i].nvsKey)) {
             haveSegments = true;
             break;
         }
@@ -721,7 +677,7 @@ static void loadSignalBarColors(SettingsNvsReader& reader, V1Settings& loaded) {
     if (storedVersion >= 12 && haveDirect) {
         for (int i = 0; i < 6; ++i) {
             loaded.colorBars[i] =
-                sanitizeRgb565Color(reader.getUShort(kDirectKeys[i], kDirectDefaults[i]), kDirectDefaults[i]);
+                sanitizeRgb565Color(reader.getUShort(kBars[i].nvsKey, kBarDefaults[i]), kBarDefaults[i]);
         }
         return;
     }
@@ -730,7 +686,7 @@ static void loadSignalBarColors(SettingsNvsReader& reader, V1Settings& loaded) {
         uint16_t segments[8];
         for (int i = 0; i < 8; ++i) {
             segments[i] =
-                sanitizeRgb565Color(reader.getUShort(kSegmentKeys[i], kSegmentDefaults[i]), kSegmentDefaults[i]);
+                sanitizeRgb565Color(reader.getUShort(kLegacyBars[i].nvsKey, kSegmentDefaults[i]), kSegmentDefaults[i]);
         }
         DisplayVisualContract::collapseEightBarColorsToSix(segments, loaded.colorBars);
         return;
@@ -739,7 +695,7 @@ static void loadSignalBarColors(SettingsNvsReader& reader, V1Settings& loaded) {
     for (int i = 0; i < 6; ++i) {
         loaded.colorBars[i] =
             haveDirect
-                ? sanitizeRgb565Color(reader.getUShort(kDirectKeys[i], kDirectDefaults[i]), kDirectDefaults[i])
-                : kDirectDefaults[i];
+                ? sanitizeRgb565Color(reader.getUShort(kBars[i].nvsKey, kBarDefaults[i]), kBarDefaults[i])
+                : kBarDefaults[i];
     }
 }

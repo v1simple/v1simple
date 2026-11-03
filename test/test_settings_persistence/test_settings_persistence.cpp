@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -6196,6 +6197,13 @@ void test_current_backup_schema_rejects_unknown_or_invalid_fields_before_any_mut
     };
     for (const char* key : kColorKeys) {
         rejectsWithoutMutation([&](JsonDocument& doc) { doc[key] = 0; });
+        rejectsWithoutMutation([&](JsonDocument& doc) { doc[key] = "123"; });
+        rejectsWithoutMutation([&](JsonDocument& doc) { doc.remove(key); });
+    }
+    for (const char* key : {"freqUseBandColor", "hideWifiIcon", "hideProfileIndicator", "hideBatteryIcon",
+                            "showBatteryPercent", "hideBleIcon", "hideVolumeIndicator", "hideRssiIndicator"}) {
+        rejectsWithoutMutation([&](JsonDocument& doc) { doc[key] = 1; });
+        rejectsWithoutMutation([&](JsonDocument& doc) { doc.remove(key); });
     }
     rejectsWithoutMutation([](JsonDocument& doc) { doc.remove("_type"); });
     rejectsWithoutMutation([](JsonDocument& doc) { doc.remove("brightness"); });
@@ -8256,6 +8264,8 @@ void test_settings_backup_replacement_preserves_valid_previous_across_errors_and
 #include "wifi_journal_payload_tests.h"
 #include "wifi_password_lookup_tests.h"
 
+#include "display_contract_tests.h"
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_wifi_password_lookup_open_failure_does_not_restore_stale_sd);
@@ -8516,6 +8526,10 @@ int main() {
     RUN_TEST(test_device_settings_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state);
     RUN_TEST(test_audio_and_quiet_http_reject_actual_nvs_failures_and_roll_back_ram);
     RUN_TEST(test_display_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state);
+    RUN_TEST(test_display_backup_literal_keys_retain_static_storage);
+    RUN_TEST(test_display_http_persistence_matches_independent_browser_fixture);
+    RUN_TEST(test_display_all_fields_cross_http_nvs_backup_and_reset_boundaries);
+    RUN_TEST(test_display_missing_black_and_legacy_critical_policies_remain_distinct);
     RUN_TEST(test_gps_http_rejects_actual_nvs_failure_and_skips_live_apply);
     RUN_TEST(test_gps_http_rejects_non_exact_json_before_persistence_and_accepts_valid_body);
     RUN_TEST(test_gps_http_reports_dom_allocation_failure_before_persistence);

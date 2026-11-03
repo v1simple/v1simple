@@ -17,6 +17,7 @@
 #include <limits>
 
 #include "color_themes.h"
+#include "settings_keys.h"
 
 // V1 operating modes (from ESP library)
 enum V1Mode {
@@ -310,92 +311,7 @@ struct V1Settings {
     uint32_t gpsBaud;            // UART baud rate (9600 / 38400 / 115200)
 
     // Default constructor with sensible defaults
-    V1Settings()
-        : apSSID("V1-Simple"), apPassword("setupv1simple"),
-          wifiClientEnabled(false),                                   // WiFi client disabled by default
-          wifiClientSSID(""),                                         // No saved network
-          proxyBLE(true), proxyName("V1-Proxy"),                      // Must match NVS load() default
-          brightness(200), colorBogey(0xF800), // Red (same as KA)
-          colorFrequency(0xF800),                                     // Red (same as KA)
-          colorArrowFront(0xF800),                                    // Red (front)
-          colorArrowSide(0xF800),                                     // Red (side)
-          colorArrowRear(0xF800),                                     // Red (rear)
-          colorBandL(0x001F),                                         // Blue (laser)
-          colorBandKa(0xF800),                                        // Red
-          colorBandK(0x001F),                                         // Blue
-          colorBandX(0x07E0),                                         // Green
-          colorBandPhoto(0x780F),                                     // Purple (photo radar)
-          colorWiFiConnected(0x07E0),                                 // Green (WiFi client connected)
-          colorBleConnected(0x07E0),                                  // Green (BLE connected)
-          colorBleDisconnected(0x001F),                               // Blue (BLE disconnected)
-          // One color per six physical segments, weakest to strongest.
-          colorBars{0x07E0, 0x07E0, 0xFFE0, 0xFFE0, 0xF800, 0xF800},
-          colorMuted(0x4A49),                   // Subdued grey (muted alerts) — matches NVS default
-          colorPersisted(0x4208),               // Subdued grey (persisted alerts) — matches NVS default
-          colorVolumeMain(0xF800),              // Red (volume bar) — matches NVS default
-          colorVolumeMute(0x7BEF),              // Grey (muted volume) — matches NVS default
-          colorRssiV1(0x07E0),                  // Green (V1 RSSI label) — matches NVS default
-          colorRssiProxy(0x001F),               // Blue (proxy RSSI label) — matches NVS default
-          colorObd(0x001F),                     // Blue OBD badge (matches existing BLE disconnected icon default)
-          colorAlpConnected(0x07E0),            // Green ALP badge — connected, idle
-          colorAlpDli(0xFD20),                  // Orange ALP badge — DLI active (below LID speed limit)
-          colorAlpLidActive(0x001F),            // Blue ALP badge — LID active (above LID speed limit)
-          colorAlpAlert(0xF800),                // Red ALP badge — active laser alert (solid)
-          freqUseBandColor(false),              // Use custom freq color by default
-          hideWifiIcon(false),                  // Show WiFi icon by default
-          hideProfileIndicator(false),          // Show profile indicator by default
-          hideBatteryIcon(false),               // Show battery icon by default
-          showBatteryPercent(false),            // Hide battery % text by default — matches NVS default
-          hideBleIcon(false),                   // Show BLE icon by default
-          hideVolumeIndicator(false),           // Show volume indicator by default
-          hideRssiIndicator(false),             // Show RSSI indicator by default — matches NVS default
-          voiceAlertMode(VOICE_MODE_BAND_FREQ), // Full band+freq announcements by default
-          voiceDirectionEnabled(true),          // Include direction by default
-          announceBogeyCount(true),             // Announce bogey count by default
-          muteVoiceIfVolZero(false),            // Don't mute voice alerts at vol 0 by default
-          voiceVolume(75),                      // Voice alerts at 75% volume by default
-          announceSecondaryAlerts(false),       // Secondary alerts off by default (opt-in)
-          secondaryLaser(true),                 // Laser always important
-          secondaryKa(true),                    // Ka usually real threats
-          secondaryK(false),                    // K has more false positives
-          secondaryX(false),                    // X is rare
-          alertVolumeFadeEnabled(false),        // Volume fade disabled by default
-          alertVolumeFadeDelaySec(2),           // 2 seconds at full volume before fade
-          alertVolumeFadeVolume(1),             // Fade to volume 1 (quiet but audible)
-          speedMuteEnabled(false),              // Speed mute disabled by default
-          speedMuteThresholdMph(25),            // 25 mph default (city driving)
-          speedMuteHysteresisMph(3),            // 3 mph hysteresis band
-          speedMuteVolume(0),                   // Silent by default
-          speedMuteVoice(true),                 // Suppress voice when speed-muted
-          stealthEnabled(false),                // Stealth mode disabled by default
-          autoPushEnabled(kDefaultAutoPushEnabled), autoPushProfileSchemaVersion(0), activeSlot(0), slot0Name("DEFAULT"), slot1Name("HIGHWAY"),
-          slot2Name("COMFORT"), slot0Color(0x400A), slot1Color(0x07E0), slot2Color(0x8410), slot0Volume(0xFF),
-          slot1Volume(0xFF), slot2Volume(0xFF), slot0MuteVolume(0xFF), slot1MuteVolume(0xFF), slot2MuteVolume(0xFF),
-          slot0DarkMode(false), slot1DarkMode(false), slot2DarkMode(false),
-          slot0VolumeOverride(false), slot1VolumeOverride(false), slot2VolumeOverride(false),
-          slot0DarkModeOverride(false), slot1DarkModeOverride(false), slot2DarkModeOverride(false),
-          slot0MuteToZero(false), slot1MuteToZero(false), slot2MuteToZero(false),
-          slot0AlertPersist(0), slot1AlertPersist(0),
-          slot2AlertPersist(0), slot0PriorityArrow(false), slot1PriorityArrow(false), slot2PriorityArrow(false),
-          slot0_default(), slot1_highway(), slot2_comfort(), lastV1Address(""),
-          autoPowerOffMinutes(0), // Default: disabled
-          apTimeoutMinutes(0),    // Default: always on (0=unlimited)
-          obdEnabled(false),      // OBD disabled by default
-          obdSavedAddress(""),    // No saved device
-          obdSavedName(""),       // No friendly name
-          obdSavedAddrType(0),    // Default PUBLIC address type
-          obdMinRssi(-90),        // Default -90 dBm minimum RSSI
-          obdScanWindowMs(kConnectionCycleObdScanWindowMsDefault),
-          obdRetryIntervalMs(kConnectionCycleObdRetryIntervalMsDefault),
-          proxyOpenWindowMs(kConnectionCycleProxyOpenWindowMsDefault),
-          v1SettleQuietMs(kConnectionCycleV1SettleQuietMsDefault),
-          v1SettleFallbackMs(kConnectionCycleV1SettleFallbackMsDefault),
-          cycleTeardownAckTimeoutMs(kConnectionCycleTeardownAckTimeoutMsDefault),
-          alpEnabled(false),             // ALP disabled by default
-          alpAlertPersistSec(0),         // ALP display persist off by default
-          alpDisableV1LaserOnPush(true), // When ALP is enabled, let ALP own laser alerting
-          gpsEnabled(false), // GPS disabled by default until module is installed
-          gpsBaud(9600) {}   // Default UART baud for MTK3339
+    V1Settings();
 
     int primaryWifiStaSlotIndex() const {
         int best = -1;
@@ -740,6 +656,249 @@ struct DisplaySettingsUpdate {
     bool hasBrightness = false;
     uint8_t brightness = 0;
 };
+
+// Membership, names and defaults are shared; each transport retains its own
+// validation and fallback rules. The split preserves the installed backup order.
+namespace DisplaySettingsContract {
+
+template <typename T>
+struct DisplayField {
+    T V1Settings::* value;
+    bool DisplaySettingsUpdate::* present;
+    T DisplaySettingsUpdate::* incoming;
+    const char* nvsKey;
+    const char* backupKey;
+    const char* httpKey;
+    const char* legacyBackupKey;
+    const char* legacyHttpKey;
+    T defaultValue;
+    bool criticalRecovery;
+    bool resetTheme;
+    bool renderedVisual;
+};
+
+inline constexpr DisplayField<uint16_t> kColorsBeforeBars[] = {
+    {&V1Settings::colorBogey, &DisplaySettingsUpdate::hasColorBogey,
+     &DisplaySettingsUpdate::colorBogey, kNvsColorBogey, "colorBogey", "bogey",
+     nullptr, nullptr, 0xF800, true, true, true},
+    {&V1Settings::colorFrequency, &DisplaySettingsUpdate::hasColorFrequency,
+     &DisplaySettingsUpdate::colorFrequency, kNvsColorFreq, "colorFrequency", "freq",
+     nullptr, nullptr, 0xF800, true, true, true},
+    {&V1Settings::colorArrowFront, &DisplaySettingsUpdate::hasColorArrowFront,
+     &DisplaySettingsUpdate::colorArrowFront, kNvsColorArrowFront, "colorArrowFront", "arrowFront",
+     nullptr, nullptr, 0xF800, true, true, true},
+    {&V1Settings::colorArrowSide, &DisplaySettingsUpdate::hasColorArrowSide,
+     &DisplaySettingsUpdate::colorArrowSide, kNvsColorArrowSide, "colorArrowSide", "arrowSide",
+     nullptr, nullptr, 0xF800, true, true, true},
+    {&V1Settings::colorArrowRear, &DisplaySettingsUpdate::hasColorArrowRear,
+     &DisplaySettingsUpdate::colorArrowRear, kNvsColorArrowRear, "colorArrowRear", "arrowRear",
+     nullptr, nullptr, 0xF800, true, true, true},
+    {&V1Settings::colorBandL, &DisplaySettingsUpdate::hasColorBandL,
+     &DisplaySettingsUpdate::colorBandL, kNvsColorBandLaser, "colorBandL", "bandL",
+     nullptr, nullptr, 0x001F, true, true, true},
+    {&V1Settings::colorBandKa, &DisplaySettingsUpdate::hasColorBandKa,
+     &DisplaySettingsUpdate::colorBandKa, kNvsColorBandKa, "colorBandKa", "bandKa",
+     nullptr, nullptr, 0xF800, true, true, true},
+    {&V1Settings::colorBandK, &DisplaySettingsUpdate::hasColorBandK,
+     &DisplaySettingsUpdate::colorBandK, kNvsColorBandK, "colorBandK", "bandK",
+     nullptr, nullptr, 0x001F, true, true, true},
+    {&V1Settings::colorBandX, &DisplaySettingsUpdate::hasColorBandX,
+     &DisplaySettingsUpdate::colorBandX, kNvsColorBandX, "colorBandX", "bandX",
+     nullptr, nullptr, 0x07E0, true, true, true},
+    {&V1Settings::colorBandPhoto, &DisplaySettingsUpdate::hasColorBandPhoto,
+     &DisplaySettingsUpdate::colorBandPhoto, kNvsColorBandPhoto, "colorBandPhoto", "bandPhoto",
+     nullptr, nullptr, 0x780F, true, true, true},
+    {&V1Settings::colorWiFiConnected, &DisplaySettingsUpdate::hasColorWiFiConnected,
+     &DisplaySettingsUpdate::colorWiFiConnected, kNvsColorWifiConnected, "colorWiFiConnected", "wifiConnected",
+     "colorWiFiIcon", "wifiIcon", 0x07E0, false, true, true},
+    {&V1Settings::colorBleConnected, &DisplaySettingsUpdate::hasColorBleConnected,
+     &DisplaySettingsUpdate::colorBleConnected, kNvsColorBleConnected, "colorBleConnected", "bleConnected",
+     nullptr, nullptr, 0x07E0, false, true, true},
+    {&V1Settings::colorBleDisconnected, &DisplaySettingsUpdate::hasColorBleDisconnected,
+     &DisplaySettingsUpdate::colorBleDisconnected, kNvsColorBleDisconnected, "colorBleDisconnected", "bleDisconnected",
+     nullptr, nullptr, 0x001F, false, true, true},
+};
+
+inline constexpr DisplayField<uint16_t> kColorsAfterBars[] = {
+    {&V1Settings::colorMuted, &DisplaySettingsUpdate::hasColorMuted,
+     &DisplaySettingsUpdate::colorMuted, kNvsColorMuted, "colorMuted", "muted",
+     nullptr, nullptr, 0x4A49, false, true, true},
+    {&V1Settings::colorPersisted, &DisplaySettingsUpdate::hasColorPersisted,
+     &DisplaySettingsUpdate::colorPersisted, kNvsColorPersisted, "colorPersisted", "persisted",
+     nullptr, nullptr, 0x4208, false, true, true},
+    {&V1Settings::colorVolumeMain, &DisplaySettingsUpdate::hasColorVolumeMain,
+     &DisplaySettingsUpdate::colorVolumeMain, kNvsColorVolumeMain, "colorVolumeMain", "volumeMain",
+     nullptr, nullptr, 0xF800, false, true, true},
+    {&V1Settings::colorVolumeMute, &DisplaySettingsUpdate::hasColorVolumeMute,
+     &DisplaySettingsUpdate::colorVolumeMute, kNvsColorVolumeMute, "colorVolumeMute", "volumeMute",
+     nullptr, nullptr, 0x7BEF, false, true, true},
+    {&V1Settings::colorRssiV1, &DisplaySettingsUpdate::hasColorRssiV1,
+     &DisplaySettingsUpdate::colorRssiV1, kNvsColorRssiV1, "colorRssiV1", "rssiV1",
+     nullptr, nullptr, 0x07E0, false, true, true},
+    {&V1Settings::colorRssiProxy, &DisplaySettingsUpdate::hasColorRssiProxy,
+     &DisplaySettingsUpdate::colorRssiProxy, kNvsColorRssiProxy, "colorRssiProxy", "rssiProxy",
+     nullptr, nullptr, 0x001F, false, true, true},
+    {&V1Settings::colorObd, &DisplaySettingsUpdate::hasColorObd,
+     &DisplaySettingsUpdate::colorObd, kNvsColorObd, "colorObd", "obd",
+     nullptr, nullptr, 0x001F, true, true, true},
+    {&V1Settings::colorAlpConnected, &DisplaySettingsUpdate::hasColorAlpConnected,
+     &DisplaySettingsUpdate::colorAlpConnected, kNvsColorAlpConn, "colorAlpConnected", "alpConnected",
+     nullptr, nullptr, 0x07E0, true, true, true},
+    {&V1Settings::colorAlpDli, &DisplaySettingsUpdate::hasColorAlpDli,
+     &DisplaySettingsUpdate::colorAlpDli, kNvsColorAlpDli, "colorAlpDli", "alpDli",
+     nullptr, nullptr, 0xFD20, true, true, true},
+    {&V1Settings::colorAlpLidActive, &DisplaySettingsUpdate::hasColorAlpLidActive,
+     &DisplaySettingsUpdate::colorAlpLidActive, kNvsColorAlpLid, "colorAlpLidActive", "alpLidActive",
+     nullptr, nullptr, 0x001F, true, true, true},
+    {&V1Settings::colorAlpAlert, &DisplaySettingsUpdate::hasColorAlpAlert,
+     &DisplaySettingsUpdate::colorAlpAlert, kNvsColorAlpAlert, "colorAlpAlert", "alpAlert",
+     nullptr, nullptr, 0xF800, true, true, true},
+};
+
+inline constexpr DisplayField<bool> kFlags[] = {
+    {&V1Settings::freqUseBandColor, &DisplaySettingsUpdate::hasFreqUseBandColor,
+     &DisplaySettingsUpdate::freqUseBandColor, kNvsFreqBandColor, "freqUseBandColor", "freqUseBandColor",
+     nullptr, nullptr, false, false, true, true},
+    {&V1Settings::hideWifiIcon, &DisplaySettingsUpdate::hasHideWifiIcon,
+     &DisplaySettingsUpdate::hideWifiIcon, kNvsHideWifi, "hideWifiIcon", "hideWifiIcon",
+     nullptr, nullptr, false, true, false, true},
+    {&V1Settings::hideProfileIndicator, &DisplaySettingsUpdate::hasHideProfileIndicator,
+     &DisplaySettingsUpdate::hideProfileIndicator, kNvsHideProfile, "hideProfileIndicator", "hideProfileIndicator",
+     nullptr, nullptr, false, true, false, true},
+    {&V1Settings::hideBatteryIcon, &DisplaySettingsUpdate::hasHideBatteryIcon,
+     &DisplaySettingsUpdate::hideBatteryIcon, kNvsHideBattery, "hideBatteryIcon", "hideBatteryIcon",
+     nullptr, nullptr, false, true, false, true},
+    {&V1Settings::showBatteryPercent, &DisplaySettingsUpdate::hasShowBatteryPercent,
+     &DisplaySettingsUpdate::showBatteryPercent, kNvsBatteryPercent, "showBatteryPercent", "showBatteryPercent",
+     nullptr, nullptr, false, true, false, true},
+    {&V1Settings::hideBleIcon, &DisplaySettingsUpdate::hasHideBleIcon,
+     &DisplaySettingsUpdate::hideBleIcon, kNvsHideBle, "hideBleIcon", "hideBleIcon",
+     nullptr, nullptr, false, true, false, true},
+    {&V1Settings::hideVolumeIndicator, &DisplaySettingsUpdate::hasHideVolumeIndicator,
+     &DisplaySettingsUpdate::hideVolumeIndicator, kNvsHideVolume, "hideVolumeIndicator", "hideVolumeIndicator",
+     nullptr, nullptr, false, true, false, true},
+    {&V1Settings::hideRssiIndicator, &DisplaySettingsUpdate::hasHideRssiIndicator,
+     &DisplaySettingsUpdate::hideRssiIndicator, kNvsHideRssi, "hideRssiIndicator", "hideRssiIndicator",
+     nullptr, nullptr, false, true, false, true},
+};
+
+inline constexpr DisplayField<uint8_t> kBrightness = {
+    &V1Settings::brightness, &DisplaySettingsUpdate::hasBrightness,
+    &DisplaySettingsUpdate::brightness, kNvsBrightness, "brightness", "brightness",
+    nullptr, nullptr, 200, true, false, false,
+};
+inline constexpr uint8_t kBrightnessMin = 1;
+inline constexpr uint8_t kBrightnessMax = 255;
+
+struct BarKeys {
+    const char* nvsKey;
+    const char* backupKey;
+    const char* httpKey;
+};
+inline constexpr uint16_t kBarDefaults[SIGNAL_BAR_COLOR_COUNT] = {
+    0x07E0, 0x07E0, 0xFFE0, 0xFFE0, 0xF800, 0xF800,
+};
+inline constexpr BarKeys kBars[] = {
+    {kNvsLegacyColorBar1, "colorBar1", "bar1"},
+    {kNvsLegacyColorBar2, "colorBar2", "bar2"},
+    {kNvsLegacyColorBar3, "colorBar3", "bar3"},
+    {kNvsLegacyColorBar4, "colorBar4", "bar4"},
+    {kNvsLegacyColorBar5, "colorBar5", "bar5"},
+    {kNvsLegacyColorBar6, "colorBar6", "bar6"},
+};
+inline constexpr BarKeys kLegacyBars[] = {
+    {kNvsColorBarSeg1, "colorBarS1", "barS1"},
+    {kNvsColorBarSeg2, "colorBarS2", "barS2"},
+    {kNvsColorBarSeg3, "colorBarS3", "barS3"},
+    {kNvsColorBarSeg4, "colorBarS4", "barS4"},
+    {kNvsColorBarSeg5, "colorBarS5", "barS5"},
+    {kNvsColorBarSeg6, "colorBarS6", "barS6"},
+    {kNvsColorBarSeg7, "colorBarS7", "barS7"},
+    {kNvsColorBarSeg8, "colorBarS8", "barS8"},
+};
+
+template <typename Visitor>
+inline void forEachColor(Visitor&& visitor) {
+    for (const auto& field : kColorsBeforeBars) visitor(field);
+    for (const auto& field : kColorsAfterBars) visitor(field);
+}
+
+template <typename Visitor>
+inline void forEachScalar(Visitor&& visitor) {
+    forEachColor(visitor);
+    for (const auto& field : kFlags) visitor(field);
+    visitor(kBrightness);
+}
+
+inline constexpr size_t kDescriptorBytes = sizeof(kColorsBeforeBars) + sizeof(kColorsAfterBars) +
+    sizeof(kFlags) + sizeof(kBrightness) + sizeof(kBars) + sizeof(kLegacyBars) + sizeof(kBarDefaults);
+// Member pointers are wider in host fixtures; this is the production budget.
+static_assert(sizeof(void*) != 4 || kDescriptorBytes <= 2048, "Display descriptors exceed flash budget");
+static_assert(sizeof(kBars) / sizeof(kBars[0]) == SIGNAL_BAR_COLOR_COUNT, "Display bar count changed");
+
+} // namespace DisplaySettingsContract
+
+inline void initializeDisplayDefaults(V1Settings& settings) {
+    DisplaySettingsContract::forEachScalar([&](const auto& field) {
+        settings.*(field.value) = field.defaultValue;
+    });
+    for (int index = 0; index < SIGNAL_BAR_COLOR_COUNT; ++index) {
+        settings.colorBars[index] = DisplaySettingsContract::kBarDefaults[index];
+    }
+}
+
+inline V1Settings::V1Settings()
+        : apSSID("V1-Simple"), apPassword("setupv1simple"),
+          wifiClientEnabled(false),                                   // WiFi client disabled by default
+          wifiClientSSID(""),                                         // No saved network
+          proxyBLE(true), proxyName("V1-Proxy"),                      // Must match NVS load() default
+          voiceAlertMode(VOICE_MODE_BAND_FREQ), // Full band+freq announcements by default
+          voiceDirectionEnabled(true),          // Include direction by default
+          announceBogeyCount(true),             // Announce bogey count by default
+          muteVoiceIfVolZero(false),            // Don't mute voice alerts at vol 0 by default
+          voiceVolume(75),                      // Voice alerts at 75% volume by default
+          announceSecondaryAlerts(false),       // Secondary alerts off by default (opt-in)
+          secondaryLaser(true),                 // Laser always important
+          secondaryKa(true),                    // Ka usually real threats
+          secondaryK(false),                    // K has more false positives
+          secondaryX(false),                    // X is rare
+          alertVolumeFadeEnabled(false),        // Volume fade disabled by default
+          alertVolumeFadeDelaySec(2),           // 2 seconds at full volume before fade
+          alertVolumeFadeVolume(1),             // Fade to volume 1 (quiet but audible)
+          speedMuteEnabled(false),              // Speed mute disabled by default
+          speedMuteThresholdMph(25),            // 25 mph default (city driving)
+          speedMuteHysteresisMph(3),            // 3 mph hysteresis band
+          speedMuteVolume(0),                   // Silent by default
+          speedMuteVoice(true),                 // Suppress voice when speed-muted
+          stealthEnabled(false),                // Stealth mode disabled by default
+          autoPushEnabled(kDefaultAutoPushEnabled), autoPushProfileSchemaVersion(0), activeSlot(0), slot0Name("DEFAULT"), slot1Name("HIGHWAY"),
+          slot2Name("COMFORT"), slot0Color(0x400A), slot1Color(0x07E0), slot2Color(0x8410), slot0Volume(0xFF),
+          slot1Volume(0xFF), slot2Volume(0xFF), slot0MuteVolume(0xFF), slot1MuteVolume(0xFF), slot2MuteVolume(0xFF),
+          slot0DarkMode(false), slot1DarkMode(false), slot2DarkMode(false),
+          slot0VolumeOverride(false), slot1VolumeOverride(false), slot2VolumeOverride(false),
+          slot0DarkModeOverride(false), slot1DarkModeOverride(false), slot2DarkModeOverride(false),
+          slot0MuteToZero(false), slot1MuteToZero(false), slot2MuteToZero(false),
+          slot0AlertPersist(0), slot1AlertPersist(0),
+          slot2AlertPersist(0), slot0PriorityArrow(false), slot1PriorityArrow(false), slot2PriorityArrow(false),
+          slot0_default(), slot1_highway(), slot2_comfort(), lastV1Address(""),
+          autoPowerOffMinutes(0), // Default: disabled
+          apTimeoutMinutes(0),    // Default: always on (0=unlimited)
+          obdEnabled(false),      // OBD disabled by default
+          obdSavedAddress(""),    // No saved device
+          obdSavedName(""),       // No friendly name
+          obdSavedAddrType(0),    // Default PUBLIC address type
+          obdMinRssi(-90),        // Default -90 dBm minimum RSSI
+          obdScanWindowMs(kConnectionCycleObdScanWindowMsDefault),
+          obdRetryIntervalMs(kConnectionCycleObdRetryIntervalMsDefault),
+          proxyOpenWindowMs(kConnectionCycleProxyOpenWindowMsDefault),
+          v1SettleQuietMs(kConnectionCycleV1SettleQuietMsDefault),
+          v1SettleFallbackMs(kConnectionCycleV1SettleFallbackMsDefault),
+          cycleTeardownAckTimeoutMs(kConnectionCycleTeardownAckTimeoutMsDefault),
+          alpEnabled(false),             // ALP disabled by default
+          alpAlertPersistSec(0),         // ALP display persist off by default
+          alpDisableV1LaserOnPush(true), // When ALP is enabled, let ALP own laser alerting
+          gpsEnabled(false), // GPS disabled by default until module is installed
+          gpsBaud(9600) { initializeDisplayDefaults(*this); }   // Default UART baud for MTK3339
 
 struct ObdSettingsUpdate {
     bool hasEnabled = false;

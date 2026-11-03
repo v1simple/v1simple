@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <string>
@@ -171,7 +172,8 @@ public:
         data_ = std::string(first, last);
     }
     
-    int toInt() const { return std::stoi(data_); }
+    // Match Arduino's non-throwing numeric-prefix conversion for native fixtures.
+    long toInt() const { return std::atol(data_.c_str()); }
     float toFloat() const { return std::stof(data_); }
 
     size_t write(const uint8_t* data, size_t length) {

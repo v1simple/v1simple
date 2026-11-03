@@ -477,38 +477,13 @@ SettingsPersistResult SettingsManager::applyDisplaySettingsUpdate(const DisplayS
     const V1Settings before = settings_;
     bool changed = false;
 
-    // Sanitize all incoming color values: reject 0x0000 (display-blackout value) and
-    // fall back to the current stored color. Mirrors the sanitization applied on the
-    // NVS-load and SD-restore paths.
-#define APPLY_COLOR(field, incoming)                                                                                   \
-    changed |= assignIfChanged(settings_.field, sanitizeRgb565Color((incoming), settings_.field))
-
-    if (update.hasColorBogey)
-        APPLY_COLOR(colorBogey, update.colorBogey);
-    if (update.hasColorFrequency)
-        APPLY_COLOR(colorFrequency, update.colorFrequency);
-    if (update.hasColorArrowFront)
-        APPLY_COLOR(colorArrowFront, update.colorArrowFront);
-    if (update.hasColorArrowSide)
-        APPLY_COLOR(colorArrowSide, update.colorArrowSide);
-    if (update.hasColorArrowRear)
-        APPLY_COLOR(colorArrowRear, update.colorArrowRear);
-    if (update.hasColorBandL)
-        APPLY_COLOR(colorBandL, update.colorBandL);
-    if (update.hasColorBandKa)
-        APPLY_COLOR(colorBandKa, update.colorBandKa);
-    if (update.hasColorBandK)
-        APPLY_COLOR(colorBandK, update.colorBandK);
-    if (update.hasColorBandX)
-        APPLY_COLOR(colorBandX, update.colorBandX);
-    if (update.hasColorBandPhoto)
-        APPLY_COLOR(colorBandPhoto, update.colorBandPhoto);
-    if (update.hasColorWiFiConnected)
-        APPLY_COLOR(colorWiFiConnected, update.colorWiFiConnected);
-    if (update.hasColorBleConnected)
-        APPLY_COLOR(colorBleConnected, update.colorBleConnected);
-    if (update.hasColorBleDisconnected)
-        APPLY_COLOR(colorBleDisconnected, update.colorBleDisconnected);
+    // Partial updates reject black by retaining the current color.
+    DisplaySettingsContract::forEachColor([&](const auto& field) {
+        if (update.*(field.present)) {
+            auto& current = settings_.*(field.value);
+            changed |= assignIfChanged(current, sanitizeRgb565Color(update.*(field.incoming), current));
+        }
+    });
     for (int barIndex = 0; barIndex < SIGNAL_BAR_COLOR_COUNT; ++barIndex) {
         if (update.hasColorBar[barIndex]) {
             const uint16_t sanitized = sanitizeRgb565Color(update.colorBars[barIndex], settings_.colorBars[barIndex]);
@@ -518,50 +493,15 @@ SettingsPersistResult SettingsManager::applyDisplaySettingsUpdate(const DisplayS
             }
         }
     }
-    if (update.hasColorMuted)
-        APPLY_COLOR(colorMuted, update.colorMuted);
-    if (update.hasColorPersisted)
-        APPLY_COLOR(colorPersisted, update.colorPersisted);
-    if (update.hasColorVolumeMain)
-        APPLY_COLOR(colorVolumeMain, update.colorVolumeMain);
-    if (update.hasColorVolumeMute)
-        APPLY_COLOR(colorVolumeMute, update.colorVolumeMute);
-    if (update.hasColorRssiV1)
-        APPLY_COLOR(colorRssiV1, update.colorRssiV1);
-    if (update.hasColorRssiProxy)
-        APPLY_COLOR(colorRssiProxy, update.colorRssiProxy);
-    if (update.hasColorObd)
-        APPLY_COLOR(colorObd, update.colorObd);
-    if (update.hasColorAlpConnected)
-        APPLY_COLOR(colorAlpConnected, update.colorAlpConnected);
-    if (update.hasColorAlpDli)
-        APPLY_COLOR(colorAlpDli, update.colorAlpDli);
-    if (update.hasColorAlpLidActive)
-        APPLY_COLOR(colorAlpLidActive, update.colorAlpLidActive);
-    if (update.hasColorAlpAlert)
-        APPLY_COLOR(colorAlpAlert, update.colorAlpAlert);
-
-#undef APPLY_COLOR
-    if (update.hasFreqUseBandColor)
-        changed |= assignIfChanged(settings_.freqUseBandColor, update.freqUseBandColor);
-    if (update.hasHideWifiIcon)
-        changed |= assignIfChanged(settings_.hideWifiIcon, update.hideWifiIcon);
-    if (update.hasHideProfileIndicator) {
-        changed |= assignIfChanged(settings_.hideProfileIndicator, update.hideProfileIndicator);
+    for (const auto& field : DisplaySettingsContract::kFlags) {
+        if (update.*(field.present)) {
+            changed |= assignIfChanged(settings_.*(field.value), update.*(field.incoming));
+        }
     }
-    if (update.hasHideBatteryIcon)
-        changed |= assignIfChanged(settings_.hideBatteryIcon, update.hideBatteryIcon);
-    if (update.hasShowBatteryPercent)
-        changed |= assignIfChanged(settings_.showBatteryPercent, update.showBatteryPercent);
-    if (update.hasHideBleIcon)
-        changed |= assignIfChanged(settings_.hideBleIcon, update.hideBleIcon);
-    if (update.hasHideVolumeIndicator) {
-        changed |= assignIfChanged(settings_.hideVolumeIndicator, update.hideVolumeIndicator);
+    const auto& brightness = DisplaySettingsContract::kBrightness;
+    if (update.*(brightness.present)) {
+        changed |= assignIfChanged(settings_.*(brightness.value), update.*(brightness.incoming));
     }
-    if (update.hasHideRssiIndicator)
-        changed |= assignIfChanged(settings_.hideRssiIndicator, update.hideRssiIndicator);
-    if (update.hasBrightness)
-        changed |= assignIfChanged(settings_.brightness, update.brightness);
 
     return finishSettingsMutation(before, changed, persistMode);
 }
@@ -569,37 +509,12 @@ SettingsPersistResult SettingsManager::applyDisplaySettingsUpdate(const DisplayS
 SettingsPersistResult SettingsManager::resetDisplaySettings(SettingsPersistMode persistMode) {
     if (!ensureSettingsLoaded()) return {};
     const V1Settings before = settings_;
-    settings_.colorBogey = 0xF800;
-    settings_.colorFrequency = 0xF800;
-    settings_.colorArrowFront = 0xF800;
-    settings_.colorArrowSide = 0xF800;
-    settings_.colorArrowRear = 0xF800;
-    settings_.colorBandL = 0x001F;
-    settings_.colorBandKa = 0xF800;
-    settings_.colorBandK = 0x001F;
-    settings_.colorBandX = 0x07E0;
-    settings_.colorBandPhoto = 0x780F;
-    settings_.colorWiFiConnected = 0x07E0;
-    settings_.colorBleConnected = 0x07E0;
-    settings_.colorBleDisconnected = 0x001F;
-    static constexpr uint16_t kBarDefaults[SIGNAL_BAR_COLOR_COUNT] = {
-        0x07E0, 0x07E0, 0xFFE0, 0xFFE0, 0xF800, 0xF800,
-    };
-    for (int barIndex = 0; barIndex < SIGNAL_BAR_COLOR_COUNT; ++barIndex) {
-        settings_.colorBars[barIndex] = kBarDefaults[barIndex];
+    DisplaySettingsContract::forEachScalar([&](const auto& field) {
+        if (field.resetTheme) settings_.*(field.value) = field.defaultValue;
+    });
+    for (int index = 0; index < SIGNAL_BAR_COLOR_COUNT; ++index) {
+        settings_.colorBars[index] = DisplaySettingsContract::kBarDefaults[index];
     }
-    settings_.colorMuted = 0x4A49;
-    settings_.colorPersisted = 0x4208;
-    settings_.colorVolumeMain = 0xF800; // Red — matches constructor & NVS default
-    settings_.colorVolumeMute = 0x7BEF; // Grey — matches constructor & NVS default
-    settings_.colorRssiV1 = 0x07E0;
-    settings_.colorRssiProxy = 0x001F;
-    settings_.colorObd = 0x001F;
-    settings_.colorAlpConnected = 0x07E0;
-    settings_.colorAlpDli = 0xFD20;
-    settings_.colorAlpLidActive = 0x001F;
-    settings_.colorAlpAlert = 0xF800;
-    settings_.freqUseBandColor = false;
 
     return finishSettingsMutation(before, true, persistMode);
 }

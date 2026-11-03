@@ -1965,55 +1965,24 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns, uint32_t generati
     }
     written += prefs.putBool(kNvsProxyBle, settings_.proxyBLE);
     written.putString(prefs, kNvsProxyName, settings_.proxyName);
-    written += prefs.putUChar(kNvsBrightness, settings_.brightness);
-    written += prefs.putUShort(kNvsColorBogey, settings_.colorBogey);
-    written += prefs.putUShort(kNvsColorFreq, settings_.colorFrequency);
-    written += prefs.putUShort(kNvsColorArrowFront, settings_.colorArrowFront);
-    written += prefs.putUShort(kNvsColorArrowSide, settings_.colorArrowSide);
-    written += prefs.putUShort(kNvsColorArrowRear, settings_.colorArrowRear);
-    written += prefs.putUShort(kNvsColorBandLaser, settings_.colorBandL);
-    written += prefs.putUShort(kNvsColorBandKa, settings_.colorBandKa);
-    written += prefs.putUShort(kNvsColorBandK, settings_.colorBandK);
-    written += prefs.putUShort(kNvsColorBandX, settings_.colorBandX);
-    written += prefs.putUShort(kNvsColorBandPhoto, settings_.colorBandPhoto);
-    written += prefs.putUShort(kNvsColorWifiConnected, settings_.colorWiFiConnected);
-    written += prefs.putUShort(kNvsColorBleConnected, settings_.colorBleConnected);
-    written += prefs.putUShort(kNvsColorBleDisconnected, settings_.colorBleDisconnected);
-    static constexpr const char* kDirectKeys[6] = {
-        kNvsLegacyColorBar1, kNvsLegacyColorBar2, kNvsLegacyColorBar3,
-        kNvsLegacyColorBar4, kNvsLegacyColorBar5, kNvsLegacyColorBar6,
+    const auto& brightness = DisplaySettingsContract::kBrightness;
+    written += prefs.putUChar(brightness.nvsKey, settings_.*(brightness.value));
+    const auto writeColor = [&](const auto& field) {
+        written += prefs.putUShort(field.nvsKey, settings_.*(field.value));
     };
+    for (const auto& field : DisplaySettingsContract::kColorsBeforeBars) writeColor(field);
     for (int barIndex = 0; barIndex < 6; ++barIndex) {
-        written += prefs.putUShort(kDirectKeys[barIndex], settings_.colorBars[barIndex]);
+        written += prefs.putUShort(DisplaySettingsContract::kBars[barIndex].nvsKey, settings_.colorBars[barIndex]);
     }
-    static constexpr const char* kSegmentKeys[8] = {
-        kNvsColorBarSeg1, kNvsColorBarSeg2, kNvsColorBarSeg3, kNvsColorBarSeg4,
-        kNvsColorBarSeg5, kNvsColorBarSeg6, kNvsColorBarSeg7, kNvsColorBarSeg8,
-    };
     uint16_t compatibilitySegments[8];
     DisplayVisualContract::expandSixBarColorsToEight(settings_.colorBars, compatibilitySegments);
     for (int barIndex = 0; barIndex < 8; ++barIndex) {
-        written += prefs.putUShort(kSegmentKeys[barIndex], compatibilitySegments[barIndex]);
+        written += prefs.putUShort(DisplaySettingsContract::kLegacyBars[barIndex].nvsKey, compatibilitySegments[barIndex]);
     }
-    written += prefs.putUShort(kNvsColorMuted, settings_.colorMuted);
-    written += prefs.putUShort(kNvsColorPersisted, settings_.colorPersisted);
-    written += prefs.putUShort(kNvsColorVolumeMain, settings_.colorVolumeMain);
-    written += prefs.putUShort(kNvsColorVolumeMute, settings_.colorVolumeMute);
-    written += prefs.putUShort(kNvsColorRssiV1, settings_.colorRssiV1);
-    written += prefs.putUShort(kNvsColorRssiProxy, settings_.colorRssiProxy);
-    written += prefs.putUShort(kNvsColorObd, settings_.colorObd);
-    written += prefs.putUShort(kNvsColorAlpConn, settings_.colorAlpConnected);
-    written += prefs.putUShort(kNvsColorAlpDli, settings_.colorAlpDli);
-    written += prefs.putUShort(kNvsColorAlpLid, settings_.colorAlpLidActive);
-    written += prefs.putUShort(kNvsColorAlpAlert, settings_.colorAlpAlert);
-    written += prefs.putBool(kNvsFreqBandColor, settings_.freqUseBandColor);
-    written += prefs.putBool(kNvsHideWifi, settings_.hideWifiIcon);
-    written += prefs.putBool(kNvsHideProfile, settings_.hideProfileIndicator);
-    written += prefs.putBool(kNvsHideBattery, settings_.hideBatteryIcon);
-    written += prefs.putBool(kNvsBatteryPercent, settings_.showBatteryPercent);
-    written += prefs.putBool(kNvsHideBle, settings_.hideBleIcon);
-    written += prefs.putBool(kNvsHideVolume, settings_.hideVolumeIndicator);
-    written += prefs.putBool(kNvsHideRssi, settings_.hideRssiIndicator);
+    for (const auto& field : DisplaySettingsContract::kColorsAfterBars) writeColor(field);
+    for (const auto& field : DisplaySettingsContract::kFlags) {
+        written += prefs.putBool(field.nvsKey, settings_.*(field.value));
+    }
     written += prefs.putUChar(kNvsVoiceMode, (uint8_t)settings_.voiceAlertMode);
     written += prefs.putBool(kNvsVoiceDirection, settings_.voiceDirectionEnabled);
     written += prefs.putBool(kNvsVoiceBogeys, settings_.announceBogeyCount);

@@ -30,6 +30,11 @@ Its regression section distinguishes production code from test substitutes.
 
 ## Maintenance transfer and log lifecycles
 
+`src/modules/wifi/maintenance_write_routes.h` declares each maintenance POST
+route's body reader, size limit and query/multipart admission. Both socket
+preflight and typed route registration use that table; domain services retain
+payload validation and mutation.
+
 The pinned NetworkClient repair in `scripts/patch_arduino_network_progress.py`
 services an enrolled task watchdog only when bytes move. Plain/raw/multipart
 request bodies, response headers, static files, streamed JSON and cached JSON

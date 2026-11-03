@@ -14,6 +14,9 @@
 #include <WiFi.h>
 #include <FS.h>
 #include <WebServer.h>
+#include <type_traits>
+#include <utility>
+#include "modules/wifi/maintenance_write_routes.h"
 #include "wifi_rate_limiter.h"
 #include "settings_types.h"
 #include "v1_settings_operation.h"
@@ -322,8 +325,22 @@ class WiFiManager {
     bool maintenanceWritePreAdmitted_ = false;
     bool hasMaintenanceWriteRequestShape() const;
     bool requireMaintenanceWriteRequestShape();
-    void registerMaintenanceWriteRoute(const char* uri, WebServer::THandlerFunction handler);
-    void registerMaintenanceExactBodyWriteRoute(const char* uri, size_t maxBytes,
+    template <MaintenanceWriteRoutes::Id id, typename Handler>
+    void registerMaintenanceWriteRoute(Handler handler) {
+        constexpr const auto& route = MaintenanceWriteRoutes::get<id>();
+        if constexpr (route.reader == MaintenanceWriteRoutes::Reader::Exact) {
+            static_assert(std::is_invocable_r_v<void, Handler, const uint8_t*, size_t, const char*, size_t>,
+                          "Exact maintenance route requires a byte-preserving body handler");
+            registerMaintenanceExactBodyWriteRoute(route, std::move(handler));
+        } else {
+            static_assert(std::is_invocable_r_v<void, Handler>,
+                          "Framework maintenance route requires a framework argument handler");
+            registerMaintenanceFrameworkWriteRoute(route, std::move(handler));
+        }
+    }
+    void registerMaintenanceFrameworkWriteRoute(const MaintenanceWriteRoutes::Route& route,
+                                                 WebServer::THandlerFunction handler);
+    void registerMaintenanceExactBodyWriteRoute(const MaintenanceWriteRoutes::Route& route,
                                                 std::function<void(const uint8_t*, size_t,
                                                                    const char*, size_t)> handler);
     static const char* maintenanceApiWriteHeader();

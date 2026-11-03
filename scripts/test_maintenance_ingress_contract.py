@@ -4,6 +4,11 @@
 from pathlib import Path
 import ast
 import re
+import os
+import shlex
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 
@@ -13,36 +18,71 @@ MANAGER = ROOT / "src" / "wifi_manager.h"
 FRONTEND_SRC = ROOT / "interface" / "src"
 
 
+def write_boundary_sources(root: Path, out: Path) -> None:
+    """Compile the real registration API, wrapper bodies and callers with socket adapters.
+
+    Domain payload parsing stays in its existing service suites. These fixtures
+    do not substitute implementations of preflight or the project WebServer.
+    """
+    manager = (root / "src/wifi_manager.h").read_text(encoding="utf-8")
+    routes = (root / "src/wifi_routes.cpp").read_text(encoding="utf-8")
+    lifecycle = (root / "src/wifi_manager_lifecycle.cpp").read_text(encoding="utf-8")
+    declaration_start = manager.index("    template <MaintenanceWriteRoutes::Id id, typename Handler>")
+    declaration_end = manager.index("    static const char* maintenanceApiWriteHeader();", declaration_start)
+    (out / "registration_declarations.inc").write_text(manager[declaration_start:declaration_end], encoding="utf-8")
+    implementation_start = routes.index("const char* WiFiManager::maintenanceApiWriteHeader()")
+    implementation_end = routes.index("bool WiFiManager::setupWebServer()", implementation_start)
+    rate_start = lifecycle.index("bool WiFiManager::checkRateLimit()")
+    rate_end = lifecycle.index("// Web activity tracking", rate_start)
+    (out / "registration_implementations.inc").write_text(
+        routes[implementation_start:implementation_end] + lifecycle[rate_start:rate_end], encoding="utf-8")
+    setup = routes[implementation_end:]
+    if re.search(r"server_\.on\([^;]*HTTP_POST", setup, re.DOTALL):
+        raise AssertionError("maintenance POST bypasses its typed registration boundary")
+    calls = []
+    for match in re.finditer(
+        r"(registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::\w+>\()\s*\[this\]\s*\(([^)]*)\)", setup
+    ):
+        # Keep each actual registration ID and actual handler kind. The fixture
+        # domain callback observes the wrapper boundary instead of mutating NVS.
+        arguments = match.group(2)
+        if "const uint8_t*" in arguments:
+            handler = "[this](const uint8_t* body, size_t size, const char* boundary, size_t boundarySize) { service(body, size, boundary, boundarySize); }"
+        elif not arguments.strip():
+            handler = "[this]() { service(); }"
+        else:
+            raise AssertionError(f"unexpected maintenance handler signature: {arguments}")
+        calls.append(match.group(1) + handler + ");")
+    if not calls:
+        raise AssertionError("no production maintenance registrations found")
+    (out / "registration_calls.inc").write_text("\n".join(calls) + "\n", encoding="utf-8")
+
+
 class MaintenanceIngressContractTest(unittest.TestCase):
-    def test_all_post_routes_use_the_guarded_registration_seam(self) -> None:
-        routes = ROUTES.read_text(encoding="utf-8")
-        direct_post_registrations = re.findall(r"server_\.on\([^;]*HTTP_POST", routes, re.DOTALL)
-        # One registration lives in the ordinary guarded wrapper and one in
-        # the exact-body guarded wrapper. Product routes call those wrappers.
-        self.assertEqual(len(direct_post_registrations), 2)
-        registrations = routes.count("registerMaintenanceWriteRoute(") - 1  # exclude method definition
-        exact_registrations = routes.count("registerMaintenanceExactBodyWriteRoute(") - 1
-        handler_checks = routes.count("requireMaintenanceWriteRequestShape()") - 1  # exclude method definition
-        self.assertGreater(registrations, 0)
-        self.assertEqual(registrations + exact_registrations, handler_checks)
-        wrapper_start = routes.index("void WiFiManager::registerMaintenanceWriteRoute")
-        wrapper_end = routes.index("bool WiFiManager::setupWebServer", wrapper_start)
-        wrapper = routes[wrapper_start:wrapper_end]
-        self.assertIn("WifiMaintenanceWritePolicy::dispatchStorageResolved", wrapper)
-        self.assertIn("settings_.resolveStorageTransactionsForMutation()", wrapper)
-
-        policy = (ROOT / "src" / "modules" / "wifi" / "wifi_maintenance_write_policy.h").read_text(
-            encoding="utf-8"
-        )
-        dispatch = policy[policy.index("dispatchStorageResolved") :]
-        self.assertLess(dispatch.index("handler();"), dispatch.index("preAdmitted = false"))
-        self.assertIn("server.send(503", dispatch)
-        self.assertIn("storage_transaction_recovery_pending", dispatch)
-        self.assertNotIn("WifiMaintenanceBodyIngress", routes)
-
-        wifi_dir = ROOT / "src" / "modules" / "wifi"
-        self.assertFalse((wifi_dir / "wifi_maintenance_body_ingress.h").exists())
-        self.assertFalse((wifi_dir / "wifi_maintenance_body_policy.h").exists())
+    def test_actual_registration_and_socket_boundary(self) -> None:
+        compiler = shlex.split(os.environ.get("CXX", shutil.which("clang++") or "c++"))
+        fixture = ROOT / "test" / "fixtures" / "maintenance_ingress"
+        with tempfile.TemporaryDirectory(prefix="maintenance-ingress-") as temporary:
+            out = Path(temporary)
+            write_boundary_sources(ROOT, out)
+            flags = ["-std=c++17", "-Wall", "-Wextra", "-Werror", "-DUNIT_TEST",
+                     "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-g",
+                     "-I" + str(out), "-I" + str(fixture), "-I" + str(ROOT / "test/mocks"),
+                     "-I" + str(ROOT / "include"), "-I" + str(ROOT / "src")]
+            subprocess.run(compiler + flags + [str(fixture / "ingress.cpp"), "-o", str(out / "ingress")], check=True)
+            subprocess.run([str(out / "ingress")], check=True)
+            for route_id, handler, diagnostic in (
+                ("V1Profile", "[this]() {}", "Exact maintenance route requires"),
+                ("GpsConfig", "[this](const uint8_t*, size_t, const char*, size_t) {}", "Framework maintenance route requires"),
+            ):
+                (out / "registration_calls.inc").write_text(
+                    f"registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::{route_id}>({handler});\n",
+                    encoding="utf-8",
+                )
+                result = subprocess.run(compiler + flags + ["-fsyntax-only", str(fixture / "ingress.cpp")],
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(diagnostic, result.stderr)
 
     def test_manager_uses_preflight_server_at_the_actual_socket_ingress(self) -> None:
         manager = MANAGER.read_text(encoding="utf-8")
@@ -89,8 +129,6 @@ class MaintenanceIngressContractTest(unittest.TestCase):
         self.assertGreaterEqual(exact_route.count("server_.releaseExactBody();"), 2)
         self.assertLess(exact_route.index("handler(body, bodySize, multipartBoundary, multipartBoundarySize)"),
                         exact_route.rindex("server_.releaseExactBody();"))
-        for path in ('"/api/v1/profile"', '"/api/v1/profile/delete"', '"/api/settings/restore"'):
-            self.assertIn(f"registerMaintenanceExactBodyWriteRoute({path}", routes)
 
         patch = (ROOT / "scripts" / "patch_arduino_webserver_body.py").read_text(encoding="utf-8")
         self.assertIn("RAW_PATCHED", patch)

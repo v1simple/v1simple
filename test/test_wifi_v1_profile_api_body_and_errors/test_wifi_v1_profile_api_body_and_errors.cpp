@@ -803,7 +803,7 @@ void test_body_caps_are_backstopped_by_socket_preflight_before_framework_parser(
     TEST_ASSERT_NOT_EQUAL(std::string::npos, frameworkParse);
     TEST_ASSERT_TRUE(inspectCall < frameworkParse);
     TEST_ASSERT_NOT_EQUAL(std::string::npos, policySource.find("RejectMultipart"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, policySource.find("kMaxBodyBytes"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, policySource.find("MaintenanceWriteRoutes::find"));
 }
 
 void test_in_the_box_http_save_forwards_policy_and_preserves_omitted_legacy_metadata() {

@@ -588,12 +588,12 @@ void test_http_preflight_caps_every_framework_form_body_independent_of_content_t
             const std::string atLimit =
                 std::string("POST ") + path + " HTTP/1.1\r\nX-V1Simple-Request: maintenance-ui\r\n" +
                 "Content-Type: " + contentType + "\r\nContent-Length: " +
-                std::to_string(WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes) + "\r\n\r\n";
+                std::to_string(MaintenanceWriteRoutes::kOrdinaryBodyBytes) + "\r\n\r\n";
             assertPreflightDecision(atLimit, true, Decision::AllowBodyParsing);
             const std::string overLimit =
                 std::string("POST ") + path + " HTTP/1.1\r\nX-V1Simple-Request: maintenance-ui\r\n" +
                 "Content-Type: " + contentType + "\r\nContent-Length: " +
-                std::to_string(WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes + 1u) + "\r\n\r\n";
+                std::to_string(MaintenanceWriteRoutes::kOrdinaryBodyBytes + 1u) + "\r\n\r\n";
             assertPreflightDecision(overLimit, true, Decision::RejectTooLarge);
         }
     }

@@ -63,10 +63,11 @@ bool WiFiManager::requireMaintenanceWriteRequestShape() {
     return false;
 }
 
-void WiFiManager::registerMaintenanceWriteRoute(const char* uri, WebServer::THandlerFunction handler) {
+void WiFiManager::registerMaintenanceFrameworkWriteRoute(const MaintenanceWriteRoutes::Route& route,
+                                                         WebServer::THandlerFunction handler) {
     // WifiMaintenanceWebServer admits bounded writes before _parseRequest;
     // accepted requests then use the framework's normal POST parsing path.
-    server_.on(uri, HTTP_POST, [this, handler = std::move(handler)]() mutable {
+    server_.on(route.path, HTTP_POST, [this, handler = std::move(handler)]() mutable {
         WifiMaintenanceWritePolicy::dispatchStorageResolved(
             server_, maintenanceWritePreAdmitted_,
             [this]() { return settings_.resolveStorageTransactionsForMutation(); }, handler);
@@ -74,14 +75,14 @@ void WiFiManager::registerMaintenanceWriteRoute(const char* uri, WebServer::THan
 }
 
 void WiFiManager::registerMaintenanceExactBodyWriteRoute(
-    const char* uri, const size_t maxBytes,
+    const MaintenanceWriteRoutes::Route& route,
     std::function<void(const uint8_t*, size_t, const char*, size_t)> handler) {
     // The fourth WebServer callback selects its fixed-size raw reader instead
     // of the ordinary body-sized malloc + String("plain") path.  The body is
     // accumulated once, explicitly in PSRAM, and exposed with its exact byte
     // length to the service parser.
     server_.on(
-        uri, HTTP_POST,
+        route.path, HTTP_POST,
         [this, handler = std::move(handler)]() mutable {
             const WifiMaintenanceWebServer::ExactBodyStatus status = server_.exactBodyStatus();
             if (status != WifiMaintenanceWebServer::ExactBodyStatus::Ready) {
@@ -113,7 +114,7 @@ void WiFiManager::registerMaintenanceExactBodyWriteRoute(
             // returning to WebServer, including service and storage errors.
             server_.releaseExactBody();
         },
-        [this, maxBytes]() { server_.captureExactBody(server_.raw(), maxBytes); });
+        [this, maxBytes = route.maxBytes]() { server_.captureExactBody(server_.raw(), maxBytes); });
 }
 
 bool WiFiManager::setupWebServer() {
@@ -207,9 +208,7 @@ bool WiFiManager::setupWebServer() {
 
     server_.on("/api/device/settings", HTTP_GET,
                [this]() { WifiSettingsApiService::handleApiDeviceSettingsGet(server_, makeSettingsRuntime()); });
-    registerMaintenanceExactBodyWriteRoute("/api/device/settings",
-                                           WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes,
-                                           [this](const uint8_t* body, size_t bodySize,
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::DeviceSettings>([this](const uint8_t* body, size_t bodySize,
                                                   const char* boundary, size_t boundarySize) {
         if (!requireMaintenanceWriteRequestShape()) return;
         WifiSettingsApiService::handleApiDeviceSettingsSaveBody(
@@ -248,8 +247,7 @@ bool WiFiManager::setupWebServer() {
         WifiV1ProfileApiService::handleApiProfileGetQuery(
             server_, makeV1ProfileRuntime(), server_.exactQueryData(), server_.exactQuerySize());
     });
-    registerMaintenanceExactBodyWriteRoute("/api/v1/profile", V1_PROFILE_HTTP_SAVE_MAX_BYTES,
-                                           [this](const uint8_t* body, size_t bodySize,
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::V1Profile>([this](const uint8_t* body, size_t bodySize,
                                                   const char*, size_t) {
         if (!requireMaintenanceWriteRequestShape())
             return;
@@ -257,8 +255,7 @@ bool WiFiManager::setupWebServer() {
             server_, makeV1ProfileRuntime(), body, bodySize,
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this);
     });
-    registerMaintenanceExactBodyWriteRoute("/api/v1/profile/delete", V1_PROFILE_HTTP_DELETE_MAX_BYTES,
-                                           [this](const uint8_t* body, size_t bodySize,
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::V1ProfileDelete>([this](const uint8_t* body, size_t bodySize,
                                                   const char*, size_t) {
         if (!requireMaintenanceWriteRequestShape())
             return;
@@ -266,32 +263,28 @@ bool WiFiManager::setupWebServer() {
             server_, makeV1ProfileRuntime(), body, bodySize,
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this);
     });
-    registerMaintenanceWriteRoute("/api/v1/pull", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::V1Pull>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         if (!checkRateLimit())
             return;
         WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::V1_PUSH_PULL);
     });
-    registerMaintenanceWriteRoute("/api/v1/push", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::V1Push>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         if (!checkRateLimit())
             return;
         WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::V1_PUSH_PULL);
     });
-    registerMaintenanceExactBodyWriteRoute("/api/v1/apply",
-                                           WifiMaintenanceHttpPreflight::kMaxDetectorOperationBodyBytes,
-                                           [this](const uint8_t* body, size_t bodySize,
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::V1Apply>([this](const uint8_t* body, size_t bodySize,
                                                   const char*, size_t) {
         if (!requireMaintenanceWriteRequestShape()) return;
         if (!checkRateLimit()) return;
         WifiAutoPushApiService::handleApiApplyProfileBody(
             server_, makeAutoPushRuntime(), body, bodySize);
     });
-    registerMaintenanceExactBodyWriteRoute("/api/v1/factory-reset",
-                                           WifiMaintenanceHttpPreflight::kMaxDetectorOperationBodyBytes,
-                                           [this](const uint8_t* body, size_t bodySize,
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::V1FactoryReset>([this](const uint8_t* body, size_t bodySize,
                                                   const char*, size_t) {
         if (!requireMaintenanceWriteRequestShape()) return;
         if (!checkRateLimit()) return;
@@ -304,9 +297,7 @@ bool WiFiManager::setupWebServer() {
                [this]() { WifiV1ProfileApiService::handleApiCurrentSettings(server_, makeV1ProfileRuntime()); });
     server_.on("/api/v1/devices", HTTP_GET,
                [this]() { WifiV1DevicesApiService::handleApiDevicesList(server_, makeV1DevicesRuntime()); });
-    registerMaintenanceExactBodyWriteRoute("/api/v1/devices/name",
-                                           WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes,
-                                           [this](const uint8_t* body, size_t bodySize,
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::V1DevicesName>([this](const uint8_t* body, size_t bodySize,
                                                   const char* boundary, size_t boundarySize) {
         if (!requireMaintenanceWriteRequestShape()) return;
         WifiV1DevicesApiService::handleApiDeviceNameSaveBody(
@@ -314,9 +305,7 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
             boundary, boundarySize);
     });
-    registerMaintenanceExactBodyWriteRoute("/api/v1/devices/profile",
-                                           WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes,
-                                           [this](const uint8_t* body, size_t bodySize,
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::V1DevicesProfile>([this](const uint8_t* body, size_t bodySize,
                                                   const char* boundary, size_t boundarySize) {
         if (!requireMaintenanceWriteRequestShape()) return;
         WifiV1DevicesApiService::handleApiDeviceProfileSaveBody(
@@ -324,9 +313,7 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
             boundary, boundarySize);
     });
-    registerMaintenanceExactBodyWriteRoute("/api/v1/devices/delete",
-                                           WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes,
-                                           [this](const uint8_t* body, size_t bodySize,
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::V1DevicesDelete>([this](const uint8_t* body, size_t bodySize,
                                                   const char* boundary, size_t boundarySize) {
         if (!requireMaintenanceWriteRequestShape()) return;
         WifiV1DevicesApiService::handleApiDeviceDeleteBody(
@@ -338,9 +325,7 @@ bool WiFiManager::setupWebServer() {
     // Auto-Push routes
     server_.on("/api/autopush/slots", HTTP_GET,
                [this]() { WifiAutoPushApiService::handleApiSlots(server_, makeAutoPushRuntime()); });
-    registerMaintenanceExactBodyWriteRoute("/api/autopush/slot",
-                                           WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes,
-                                           [this](const uint8_t* body, size_t bodySize,
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::AutopushSlot>([this](const uint8_t* body, size_t bodySize,
                                                   const char* boundary, size_t boundarySize) {
         if (!requireMaintenanceWriteRequestShape()) return;
         WifiAutoPushApiService::handleApiSlotSaveBody(
@@ -348,9 +333,7 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
             boundary, boundarySize);
     });
-    registerMaintenanceExactBodyWriteRoute("/api/autopush/activate",
-                                           WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes,
-                                           [this](const uint8_t* body, size_t bodySize,
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::AutopushActivate>([this](const uint8_t* body, size_t bodySize,
                                                   const char* boundary, size_t boundarySize) {
         if (!requireMaintenanceWriteRequestShape()) return;
         WifiAutoPushApiService::handleApiActivateBody(
@@ -358,9 +341,7 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
             boundary, boundarySize);
     });
-    registerMaintenanceExactBodyWriteRoute("/api/autopush/push",
-                                           WifiMaintenanceHttpPreflight::kMaxDetectorOperationBodyBytes,
-                                           [this](const uint8_t* body, size_t bodySize,
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::AutopushPush>([this](const uint8_t* body, size_t bodySize,
                                                   const char*, size_t) {
         if (!requireMaintenanceWriteRequestShape()) return;
         if (!checkRateLimit()) return;
@@ -374,28 +355,28 @@ bool WiFiManager::setupWebServer() {
     // Display settings routes
     server_.on("/api/display/settings", HTTP_GET,
                [this]() { WifiDisplayColorsApiService::handleApiGet(server_, makeDisplayColorsRuntime()); });
-    registerMaintenanceWriteRoute("/api/display/settings", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::DisplaySettings>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiDisplayColorsApiService::handleApiSave(
             server_, makeDisplayColorsRuntime(),
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this);
     });
-    registerMaintenanceWriteRoute("/api/display/settings/reset", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::DisplaySettingsReset>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiDisplayColorsApiService::handleApiReset(
             server_, makeDisplayColorsRuntime(),
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this);
     });
-    registerMaintenanceWriteRoute("/api/display/preview", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::DisplayPreview>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiDisplayColorsApiService::handleApiPreview(
             server_, makeDisplayColorsRuntime(),
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this);
     });
-    registerMaintenanceWriteRoute("/api/display/preview/clear", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::DisplayPreviewClear>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiDisplayColorsApiService::handleApiClear(
@@ -406,7 +387,7 @@ bool WiFiManager::setupWebServer() {
     // Audio settings routes
     server_.on("/api/audio/settings", HTTP_GET,
                [this]() { WifiAudioApiService::handleApiGet(server_, makeAudioRuntime()); });
-    registerMaintenanceWriteRoute("/api/audio/settings", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::AudioSettings>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiAudioApiService::handleApiSave(server_, makeAudioRuntime());
@@ -415,7 +396,7 @@ bool WiFiManager::setupWebServer() {
     // Quiet-driving settings routes
     server_.on("/api/quiet/settings", HTTP_GET,
                [this]() { WifiQuietApiService::handleApiGet(server_, makeAudioRuntime()); });
-    registerMaintenanceWriteRoute("/api/quiet/settings", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::QuietSettings>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiQuietApiService::handleApiSave(server_, makeAudioRuntime());
@@ -432,15 +413,14 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this,
             [](void* /*ctx*/) { return static_cast<uint32_t>(millis()); }, nullptr);
     });
-    registerMaintenanceWriteRoute("/api/settings/backup-now", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::SettingsBackupNow>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         BackupApiService::handleApiBackupNow(
             server_, makeBackupRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
             this, [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
-    registerMaintenanceExactBodyWriteRoute("/api/settings/restore", BackupApiService::kHttpBackupDocumentMaxBytes,
-                                           [this](const uint8_t* body, size_t bodySize,
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::SettingsRestore>([this](const uint8_t* body, size_t bodySize,
                                                   const char*, size_t) {
         if (!requireMaintenanceWriteRequestShape())
             return;
@@ -450,7 +430,7 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
 
-    registerMaintenanceWriteRoute("/api/system/reboot-normal", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::SystemRebootNormal>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         if (!acknowledgeDeliveredSettingsOperationReturn()) {
@@ -490,7 +470,7 @@ bool WiFiManager::setupWebServer() {
             server_, makeWifiClientRuntime(), [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); },
             this);
     });
-    registerMaintenanceWriteRoute("/api/wifi/scan", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::WifiScan>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiClientApiService::handleApiScan(
@@ -498,7 +478,7 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
             [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
-    registerMaintenanceWriteRoute("/api/wifi/disconnect", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::WifiDisconnect>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiClientApiService::handleApiDisconnect(
@@ -506,7 +486,7 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
             [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
-    registerMaintenanceWriteRoute("/api/wifi/forget", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::WifiForget>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiClientApiService::handleApiForget(
@@ -514,7 +494,7 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
             [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
-    registerMaintenanceWriteRoute("/api/wifi/enable", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::WifiEnable>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiClientApiService::handleApiEnable(
@@ -527,7 +507,7 @@ bool WiFiManager::setupWebServer() {
             server_, makeWifiClientRuntime(), [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); },
             this);
     });
-    registerMaintenanceWriteRoute("/api/wifi/networks", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::WifiNetworks>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiClientApiService::handleApiNetworksSave(
@@ -535,7 +515,7 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
             [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
-    registerMaintenanceWriteRoute("/api/wifi/networks/priorities", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::WifiNetworksPriorities>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiClientApiService::handleApiNetworksPriorities(
@@ -543,7 +523,7 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
             [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
-    registerMaintenanceWriteRoute("/api/wifi/networks/delete", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::WifiNetworksDelete>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiClientApiService::handleApiNetworksDelete(
@@ -551,7 +531,7 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
             [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
-    registerMaintenanceWriteRoute("/api/wifi/networks/test", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::WifiNetworksTest>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         WifiClientApiService::handleApiNetworksTest(
@@ -569,12 +549,12 @@ bool WiFiManager::setupWebServer() {
     });
     server_.on("/api/obd/config", HTTP_GET,
                [this]() { ObdApiService::handleApiConfigGet(server_, settings_, makeObdRuntime()); });
-    registerMaintenanceWriteRoute("/api/obd/devices/name", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::ObdDevicesName>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         ObdApiService::handleApiDeviceNameSave(server_, settings_, makeObdRuntime());
     });
-    registerMaintenanceWriteRoute("/api/obd/scan", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::ObdScan>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         markUiActivity();
@@ -582,12 +562,12 @@ bool WiFiManager::setupWebServer() {
             return;
         WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::OBD_RUNTIME);
     });
-    registerMaintenanceWriteRoute("/api/obd/forget", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::ObdForget>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         ObdApiService::handleApiForget(server_, obdRuntime_, settings_, makeObdRuntime());
     });
-    registerMaintenanceWriteRoute("/api/obd/config", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::ObdConfig>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         ObdApiService::handleApiConfig(server_, obdRuntime_, settings_, makeObdRuntime());
@@ -606,7 +586,7 @@ bool WiFiManager::setupWebServer() {
         r.markUiActivity = [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); };
         GpsApiService::handleApiConfigGet(server_, settings_, r);
     });
-    registerMaintenanceWriteRoute("/api/gps/config", [this]() {
+    registerMaintenanceWriteRoute<MaintenanceWriteRoutes::Id::GpsConfig>([this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
         GpsApiService::Runtime r;

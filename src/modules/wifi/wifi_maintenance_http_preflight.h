@@ -4,14 +4,11 @@
 #include <stdint.h>
 
 #include "wifi_maintenance_write_policy.h"
-#include "v1_profile_limits.h"
+#include "maintenance_write_routes.h"
 
 namespace WifiMaintenanceHttpPreflight {
 
 constexpr size_t kMaxHeaderBytes = 2048;
-constexpr size_t kMaxBodyBytes = 128u * 1024u;
-constexpr size_t kMaxLegacyMultipartBodyBytes = 4u * 1024u;
-constexpr size_t kMaxDetectorOperationBodyBytes = 256u;
 constexpr size_t kMaxMultipartBoundaryBytes = 70u;
 
 enum class BodyEncoding : uint8_t {
@@ -53,18 +50,6 @@ inline bool equalsIgnoreCase(const char* begin, const char* end, const char* exp
     }
     while (begin < end && *expected != '\0') {
         if (asciiLower(*begin++) != asciiLower(*expected++)) {
-            return false;
-        }
-    }
-    return begin == end && *expected == '\0';
-}
-
-inline bool equalsExact(const char* begin, const char* end, const char* expected) {
-    if (!begin || !end || !expected) {
-        return false;
-    }
-    while (begin < end && *expected != '\0') {
-        if (*begin++ != *expected++) {
             return false;
         }
     }
@@ -159,50 +144,6 @@ inline bool isBodyMethod(const char* begin, const char* end) {
            equalsIgnoreCase(begin, end, "PATCH") || equalsIgnoreCase(begin, end, "DELETE");
 }
 
-inline bool isLegacyMultipartPath(const char* begin, const char* end) {
-    return equalsExact(begin, end, "/api/device/settings") ||
-           equalsExact(begin, end, "/api/obd/devices/name") ||
-           equalsExact(begin, end, "/api/autopush/activate") ||
-           equalsExact(begin, end, "/api/autopush/slot") ||
-           equalsExact(begin, end, "/api/v1/devices/name") ||
-           equalsExact(begin, end, "/api/v1/devices/profile") ||
-           equalsExact(begin, end, "/api/v1/devices/delete");
-}
-
-inline bool isExactFormPath(const char* begin, const char* end) {
-    return equalsExact(begin, end, "/api/device/settings") ||
-           equalsExact(begin, end, "/api/autopush/activate") ||
-           equalsExact(begin, end, "/api/autopush/slot") ||
-           equalsExact(begin, end, "/api/autopush/push") ||
-           equalsExact(begin, end, "/api/v1/apply") ||
-           equalsExact(begin, end, "/api/v1/factory-reset") ||
-           equalsExact(begin, end, "/api/v1/devices/name") ||
-           equalsExact(begin, end, "/api/v1/devices/profile") ||
-           equalsExact(begin, end, "/api/v1/devices/delete");
-}
-
-inline size_t bodyLimitForPath(const char* begin, const char* end) {
-    const char* pathEnd = end;
-    for (const char* cursor = begin; cursor < end; ++cursor) {
-        if (*cursor == '?') {
-            pathEnd = cursor;
-            break;
-        }
-    }
-    if (equalsExact(begin, pathEnd, "/api/v1/profile")) return V1_PROFILE_HTTP_SAVE_MAX_BYTES;
-    if (equalsExact(begin, pathEnd, "/api/v1/profile/delete")) return V1_PROFILE_HTTP_DELETE_MAX_BYTES;
-    if (equalsExact(begin, pathEnd, "/api/autopush/push") ||
-        equalsExact(begin, pathEnd, "/api/v1/apply") ||
-        equalsExact(begin, pathEnd, "/api/v1/factory-reset")) {
-        return kMaxDetectorOperationBodyBytes;
-    }
-    if (equalsExact(begin, pathEnd, "/api/settings/restore")) return kMaxBodyBytes;
-    // Every other write route uses WebServer's form parser.  Bound that path
-    // independently of Content-Type: urlencoded and plain bodies allocate the
-    // same framework Strings as the legacy multipart compatibility path.
-    return kMaxLegacyMultipartBodyBytes;
-}
-
 inline Decision applyWriteAdmission(const Decision decision, const bool admitted) {
     return decision == Decision::AllowBodyParsing && !admitted ? Decision::RejectRateLimited : decision;
 }
@@ -239,10 +180,13 @@ inline Decision evaluate(const char* data, const size_t length, const bool maint
             break;
         }
     }
+    const MaintenanceWriteRoutes::Route* route = MaintenanceWriteRoutes::find(targetBegin, targetPathEnd);
+    const bool exactFormPath = route && route->bodyOnlyForm;
+    const size_t bodyLimit = route ? route->maxBytes : MaintenanceWriteRoutes::kOrdinaryBodyBytes;
     // Exact form routes take all mutation parameters from the byte-preserved
     // body. Reject a query component so framework argument allocation cannot
     // silently drop a query-only optional field while the body still commits.
-    if (targetPathEnd != targetEnd && isExactFormPath(targetBegin, targetPathEnd)) {
+    if (targetPathEnd != targetEnd && exactFormPath) {
         return Decision::RejectBadRequest;
     }
     if (!maintenanceBootMode) {
@@ -285,7 +229,7 @@ inline Decision evaluate(const char* data, const size_t length, const bool maint
                     return Decision::RejectBadRequest;
                 }
                 const size_t next = contentLength * 10u + static_cast<size_t>(*digit - '0');
-                if (next < contentLength || next > bodyLimitForPath(targetBegin, targetEnd)) {
+                if (next < contentLength || next > bodyLimit) {
                     return Decision::RejectTooLarge;
                 }
                 contentLength = next;
@@ -315,18 +259,17 @@ inline Decision evaluate(const char* data, const size_t length, const bool maint
     if (!foundContentLength) {
         return Decision::RejectLengthRequired;
     }
-    const bool exactFormPath = isExactFormPath(targetBegin, targetPathEnd);
     if (foundContentType && startsWithIgnoreCase(contentTypeBegin, contentTypeEnd, "multipart/")) {
         // Older installed or cached UIs use multipart for string-only forms.
         // Bound that compatibility path tightly because
         // pinned WebServer grows String form fields while parsing multipart.
         const char* boundaryBegin = nullptr;
         const char* boundaryEnd = nullptr;
-        if (!equalsIgnoreCase(data, methodEnd, "POST") || !isLegacyMultipartPath(targetBegin, targetEnd) ||
+        if (!equalsIgnoreCase(data, methodEnd, "POST") || (targetPathEnd != targetEnd || !route || !route->legacyMultipart) ||
             !parseMultipartFormDataBoundary(contentTypeBegin, contentTypeEnd, boundaryBegin, boundaryEnd)) {
             return Decision::RejectMultipart;
         }
-        if (contentLength > kMaxLegacyMultipartBodyBytes) {
+        if (contentLength > MaintenanceWriteRoutes::kOrdinaryBodyBytes) {
             return Decision::RejectTooLarge;
         }
         if (bodyInfo && exactFormPath) {

@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import hashlib
 import json
-from dataclasses import dataclass
 from pathlib import Path
+
+from build_context import Partition, read_partitions
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,37 +21,6 @@ APP_IMAGE = "firmware.bin"
 BOOTLOADER_IMAGE = "bootloader.bin"
 PARTITION_TABLE_IMAGE = "partitions.bin"
 PARTITION_TABLE_OFFSET = 0x8000
-
-
-@dataclass(frozen=True)
-class Partition:
-    name: str
-    offset: int
-    size: int
-
-    @property
-    def end(self) -> int:
-        return self.offset + self.size
-
-
-def read_partitions(path: Path) -> dict[str, Partition]:
-    partitions: dict[str, Partition] = {}
-    with path.open(newline="", encoding="utf-8") as handle:
-        for row in csv.reader(handle):
-            if not row or row[0].strip().startswith("#"):
-                continue
-            if len(row) < 5:
-                raise ValueError(f"malformed partition row in {path}: {row!r}")
-            name = row[0].strip()
-            partitions[name] = Partition(
-                name=name,
-                offset=int(row[3].strip(), 0),
-                size=int(row[4].strip(), 0),
-            )
-    for required in ("nvs", "app", "storage"):
-        if required not in partitions:
-            raise ValueError(f"partition table missing {required} partition")
-    return partitions
 
 
 def overlaps(start: int, end: int, partition: Partition) -> bool:

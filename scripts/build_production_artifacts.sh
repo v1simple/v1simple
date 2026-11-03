@@ -19,7 +19,8 @@ NC='\033[0m'
 START_TIME="$(date +%s)"
 PIO_CMD="${PIO_CMD:-pio}"
 PIO_JOBS="${PLATFORMIO_RUN_JOBS:-}"
-PIO_BUILD_ARGS=(-e waveshare-349)
+PIO_ENV="${PIO_ENV:-waveshare-349}"
+PIO_BUILD_ARGS=(-e "$PIO_ENV")
 
 if [[ -n "$PIO_JOBS" && ! "$PIO_JOBS" =~ ^[1-9][0-9]*$ ]]; then
   echo -e "${RED}Invalid PLATFORMIO_RUN_JOBS: $PIO_JOBS${NC}" >&2
@@ -45,7 +46,7 @@ if [[ ! -d "$ROOT_DIR/interface/node_modules" ]]; then
 fi
 
 source "$ROOT_DIR/scripts/platformio_ca_bundle.sh"
-export PIO_CMD SSL_CERT_FILE REQUESTS_CA_BUNDLE
+export PIO_CMD PIO_ENV SSL_CERT_FILE REQUESTS_CA_BUNDLE
 
 section() {
   echo ""
@@ -64,7 +65,7 @@ run_firmware_build_with_memory_log() {
   local memory_dir="$ROOT_DIR/.artifacts/test_reports/memory-headroom"
   mkdir -p "$memory_dir"
   "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" 2>&1 \
-    | tee "$memory_dir/waveshare-349-build.log"
+    | tee "$memory_dir/$PIO_ENV-build.log"
 }
 
 echo "============================================"
@@ -75,7 +76,10 @@ section "Toolchain"
 run_step "PlatformIO Core version" \
   python3 scripts/check_platformio_core_version.py --pio "$PIO_CMD"
 run_step "PlatformIO project dependencies" \
-  "$PIO_CMD" pkg install -e waveshare-349
+  "$PIO_CMD" pkg install -e "$PIO_ENV"
+
+BUILD_DIR="$(python3 scripts/build_context.py --pio "$PIO_CMD" --env "$PIO_ENV" --get build_dir)"
+PARTITION_TABLE="$(python3 scripts/build_context.py --pio "$PIO_CMD" --env "$PIO_ENV" --get partitions)"
 
 section "Frontend"
 (
@@ -92,19 +96,21 @@ section "Firmware and Filesystem"
 run_step "Firmware clean" "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" -t clean
 run_step "Firmware build" run_firmware_build_with_memory_log
 run_step "Firmware contains the current web interface" \
-  python3 scripts/generate_web_bundle.py verify-firmware .pio/build/waveshare-349/firmware.bin
+  python3 scripts/generate_web_bundle.py verify-firmware "$BUILD_DIR/firmware.bin"
 run_step "Firmware memory headroom" python3 scripts/check_memory_headroom.py \
-  --env waveshare-349 \
+  --pio "$PIO_CMD" --env "$PIO_ENV" \
   --no-build \
-  --build-log .artifacts/test_reports/memory-headroom/waveshare-349-build.log \
+  --build-log ".artifacts/test_reports/memory-headroom/$PIO_ENV-build.log" \
   --warn-diram-zero
 run_step "LittleFS image build" "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" -t buildfs
 run_step "Flash package truth report" python3 scripts/report_flash_package_size.py \
+  --build-dir "$BUILD_DIR" --partition-table "$PARTITION_TABLE" \
   --max-firmware-bytes 5570560 \
   --expect-littlefs-bytes 2424832
 run_step "LittleFS image/runtime compatibility" \
   python3 scripts/check_littlefs_image_compatibility.py \
-  --candidate .pio/build/waveshare-349/littlefs.bin
+  --pio "$PIO_CMD" --env "$PIO_ENV" --partition-table "$PARTITION_TABLE" \
+  --candidate "$BUILD_DIR/littlefs.bin"
 END_TIME="$(date +%s)"
 ELAPSED="$((END_TIME - START_TIME))"
 

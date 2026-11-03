@@ -23,7 +23,7 @@ class FreshBuildTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         for name in (
-            "build.sh", "scripts/prepare_web_build.py", "scripts/host_tools.py",
+            "build.sh", "scripts/prepare_web_build.py", "scripts/host_tools.py", "scripts/build_context.py",
             "config/host_tools.json", "interface/package.json",
             "interface/scripts/deploy.js", "interface/scripts/audio-manifest.js",
             "interface/scripts/littlefs-capacity.py", "platformio.ini", "partitions_v1.csv",
@@ -31,6 +31,8 @@ class FreshBuildTests(unittest.TestCase):
             destination = self.root / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, destination)
+        (self.root / "geometry").mkdir()
+        shutil.copyfile(self.root / "partitions_v1.csv", self.root / "geometry/selected.csv")
         (self.root / "scripts/platformio_ca_bundle.sh").write_text(":\n")
         (self.root / "scripts/check_platformio_core_version.py").write_text("raise SystemExit(0)\n")
         for name in ("interface/build", "interface/node_modules", "config", "bin", "core"):
@@ -66,6 +68,7 @@ elif sys.argv[1:3] == ['pkg', 'install']:
     builder = core / 'platforms/espressif32/builder/main.py'
     builder.parent.mkdir(parents=True, exist_ok=True)
     builder.write_text('env["FS_BLOCK"] = int("0x1000", 16)')
+    (core / 'platforms/espressif32/platform.json').write_text('{{}}')
     sdk = core / 'packages/framework-arduinoespressif32-libs/esp32s3/qio_opi/include/sdkconfig.h'
     sdk.parent.mkdir(parents=True, exist_ok=True)
     sdk.write_text('#define CONFIG_LITTLEFS_OBJ_NAME_LEN 64')
@@ -96,6 +99,43 @@ class LittleFS:
     def open(self, *args): return BytesIO()
 ''')
         (package / "errors.py").write_text("class LittleFSError(Exception): pass\n")
+        platformio = self.root / "fake-python/platformio"
+        for relative in ("", "project", "platform", "package", "package/manager"):
+            directory = platformio / relative
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "__init__.py").write_text("")
+        (platformio / "project/config.py").write_text(f'''
+from pathlib import Path
+class ProjectConfig:
+    @classmethod
+    def get_instance(cls, path=None): return cls()
+    def get(self, section, key, default=None):
+        if section == 'platformio': return {str(self.root / '.pio/build')!r}
+        assert section in ('env:waveshare-349', 'env:esp32-s3-car-install')
+        return {{'platform': 'fixture/espressif32', 'board': 'fixture-board', 'board_build.partitions': 'geometry/selected.csv',
+                 'board_build.arduino.memory_type': 'qio_opi', 'board_build.flash_mode': 'qio',
+                 'board_build.f_flash': '80000000L', 'board_upload.flash_size': '16MB',
+                 'board_upload.maximum_size': '14155776'}}.get(key, default)
+''')
+        (platformio / "platform/base.py").write_text(f'''
+from pathlib import Path
+class Board:
+    def get(self, key, default=None): return default
+class PlatformBase:
+    def __init__(self, manifest): assert Path(manifest).is_file()
+    def configure_project_packages(self, environment): pass
+    def get_dir(self): return {str(self.root / 'core/platforms/espressif32')!r}
+    def get_package_dir(self, name): return str(Path({str(self.root / 'core/packages')!r}) / name)
+    def board_config(self, board): return Board()
+''')
+        (platformio / "package/meta.py").write_text("class PackageSpec: pass\n")
+        (platformio / "package/manager/platform.py").write_text(f'''
+from types import SimpleNamespace
+class PlatformPackageManager:
+    def get_package(self, spec):
+        assert spec == 'fixture/espressif32'
+        return SimpleNamespace(path={str(self.root / 'core/platforms/espressif32')!r})
+''')
         self.environment = os.environ.copy()
         self.environment.pop("PYTHONPATH", None)
         self.environment.pop("PYTHONHOME", None)
@@ -142,8 +182,14 @@ class LittleFS:
         self.assertEqual(calls[2], ["pio", "pkg", "install", "-e", "esp32-s3-car-install"])
         self.assertEqual(calls[3:5], [["npm", "run", "build"], ["npm", "run", "deploy:built"]])
         self.assertEqual(calls[5], ["pio", "system", "info", "--json-output"])
-        self.assertTrue(calls[6][1].endswith("littlefs-capacity.py"), calls)
-        self.assertEqual(calls[7], ["pio", "run", "-e", "esp32-s3-car-install"])
+        self.assertTrue(calls[6][1].endswith("build_context.py"), calls)
+        self.assertIn("esp32-s3-car-install", calls[6])
+        self.assertTrue(calls[7][1].endswith("littlefs-capacity.py"), calls)
+        actual_context = json.loads(calls[7][calls[7].index("--context-json") + 1])
+        self.assertEqual(actual_context["environment"], "esp32-s3-car-install")
+        self.assertTrue(actual_context["partitions"].endswith("/geometry/selected.csv"))
+        self.assertEqual(actual_context["tools"]["python"], str(self.python))
+        self.assertEqual(calls[8], ["pio", "run", "-e", "esp32-s3-car-install"])
         self.assertEqual(calls[-1], ["pio", "run", "-e", "esp32-s3-car-install", "-t", "uploadfs"])
         self.assertFalse((self.root / "data/index.html").exists())
         self.assertEqual((self.root / "interface/build/index.html").read_text(), "fixture")

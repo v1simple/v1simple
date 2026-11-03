@@ -4,18 +4,18 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 
-import check_release_image_info as image_info
+from build_context import FlashPolicy, resolve
 import stage_release_licenses as licenses
 import write_release_manifests as manifests
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_BUILD_DIR = ROOT / ".pio" / "build" / "waveshare-349"
 DEFAULT_RELEASE_DIR = ROOT / "release"
 RELEASE_IMAGES = (
     manifests.BOOTLOADER_IMAGE,
@@ -54,7 +54,7 @@ def copy_build_outputs(build_dir: Path, release_dir: Path) -> None:
 def merge_fresh_image(
     release_dir: Path,
     *,
-    environment: str,
+    flash: FlashPolicy,
     partitions_path: Path,
 ) -> None:
     partitions = manifests.read_partitions(partitions_path)
@@ -69,11 +69,11 @@ def merge_fresh_image(
         "-o",
         str(release_dir / manifests.FRESH_IMAGE),
         "--flash-mode",
-        image_info.expected_flash_mode(environment),
+        flash.mode,
         "--flash-freq",
-        image_info.expected_flash_freq(environment),
+        flash.frequency,
         "--flash-size",
-        image_info.expected_flash_size(environment),
+        flash.size,
         "0x0",
         str(release_dir / manifests.BOOTLOADER_IMAGE),
         hex(manifests.PARTITION_TABLE_OFFSET),
@@ -128,6 +128,7 @@ def package_release(
     version: str,
     environment: str,
     partitions_path: Path,
+    flash: FlashPolicy,
 ) -> None:
     require_empty_directory(release_dir)
     copy_build_outputs(build_dir, release_dir)
@@ -141,7 +142,7 @@ def package_release(
     )
     merge_fresh_image(
         release_dir,
-        environment=environment,
+        flash=flash,
         partitions_path=partitions_path,
     )
     run_checked(
@@ -152,6 +153,9 @@ def package_release(
             str(release_dir / manifests.FRESH_IMAGE),
             "--env",
             environment,
+            "--flash-mode", flash.mode,
+            "--flash-freq", flash.frequency,
+            "--flash-size", flash.size,
         ]
     )
     manifests.write_manifests(release_dir, version, partitions_path)
@@ -171,19 +175,29 @@ def package_release(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
-    parser.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD_DIR)
+    parser.add_argument("--build-dir", type=Path)
     parser.add_argument("--release-dir", type=Path, default=DEFAULT_RELEASE_DIR)
-    parser.add_argument("--env", default="waveshare-349")
-    parser.add_argument("--partitions", type=Path, default=manifests.DEFAULT_PARTITIONS)
+    parser.add_argument("--env", default=os.environ.get("PIO_ENV", "waveshare-349"))
+    parser.add_argument("--partitions", type=Path)
+    parser.add_argument("--pio", default=os.environ.get("PIO_CMD", "pio"))
+    parser.add_argument("--flash-mode")
+    parser.add_argument("--flash-freq")
+    parser.add_argument("--flash-size")
     args = parser.parse_args()
 
     try:
+        explicit = (args.flash_mode, args.flash_freq, args.flash_size)
+        if any(explicit) and not all(explicit):
+            raise ValueError("standalone packaging needs all three explicit flash policy fields")
+        context = None if all(explicit) and args.build_dir and args.partitions else resolve(ROOT, args.env, args.pio)
+        flash = FlashPolicy(*explicit) if all(explicit) else context.flash
         package_release(
-            build_dir=args.build_dir.resolve(),
+            build_dir=(args.build_dir or Path(context.build_dir)).resolve(),
             release_dir=args.release_dir.resolve(),
             version=args.version,
             environment=args.env,
-            partitions_path=args.partitions.resolve(),
+            partitions_path=(args.partitions or Path(context.partitions)).resolve(),
+            flash=flash,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"[release-package] {exc}", file=sys.stderr)

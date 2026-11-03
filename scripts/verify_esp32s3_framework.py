@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -372,12 +373,15 @@ def cli() -> int:
 def configure_scons() -> None:
     Import("env")  # noqa: F821  pylint: disable=undefined-variable
 
-    platform = env.PioPlatform()  # noqa: F821  pylint: disable=undefined-variable
-    platform_dir = Path(platform.get_dir())
-    arduino_dir = Path(platform.get_package_dir("framework-arduinoespressif32") or "")
-    libs_dir = Path(platform.get_package_dir("framework-arduinoespressif32-libs") or "")
-    toolchain_dir = Path(platform.get_package_dir("toolchain-xtensa-esp-elf") or "")
-    memory_type = str(env.BoardConfig().get("build.arduino.memory_type", "qio_qspi"))  # noqa: F821
+    # Import here so standalone artifact verification remains package-only.
+    sys.path.insert(0, str(Path(env.subst("$PROJECT_DIR")) / "scripts"))  # noqa: F821
+    from build_context import from_scons
+    context = from_scons(env)  # noqa: F821
+    platform_dir = Path(context.platform_dir)
+    arduino_dir = Path(context.arduino_dir)
+    libs_dir = Path(context.libs_dir)
+    toolchain_dir = Path(context.toolchain_dir)
+    memory_type = context.memory_type
     evidence_path = Path(env.subst("$BUILD_DIR")) / "framework_contract.json"  # noqa: F821
     try:
         require_webserver_marker = require_webserver_link_marker(env["PIOENV"])  # noqa: F821

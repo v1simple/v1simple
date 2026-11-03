@@ -4,15 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from build_context import FlashPolicy, resolve_flash_policy
+
 
 ROOT = Path(__file__).resolve().parents[1]
-PLATFORMIO_INI = ROOT / "platformio.ini"
 IMAGE_HEADER_OFFSETS = {
     "bootloader": 0x0000,
     "app": 0x20000,
@@ -39,60 +41,6 @@ FLASH_FREQ_CODES = {
     "20M": 0x02,
     "80M": 0x0F,
 }
-
-
-def read_env_block(env: str) -> str:
-    text = PLATFORMIO_INI.read_text(encoding="utf-8")
-    match = re.search(
-        rf"^\[env:{re.escape(env)}\]\s*$([\s\S]*?)(?=^\[|\Z)",
-        text,
-        re.MULTILINE,
-    )
-    if not match:
-        raise ValueError(f"platformio.ini missing [env:{env}]")
-    return match.group(1)
-
-
-def read_env_value(env: str, key: str) -> str:
-    block = read_env_block(env)
-    match = re.search(rf"^\s*{re.escape(key)}\s*=\s*(.+?)\s*$", block, re.MULTILINE)
-    if not match:
-        raise ValueError(f"[env:{env}] missing {key}")
-    return match.group(1).strip()
-
-
-def read_env_value_optional(env: str, key: str) -> str | None:
-    block = read_env_block(env)
-    match = re.search(rf"^\s*{re.escape(key)}\s*=\s*(.+?)\s*$", block, re.MULTILINE)
-    if not match:
-        return None
-    return match.group(1).strip()
-
-
-def expected_flash_freq(env: str) -> str:
-    raw = read_env_value(env, "board_build.f_flash").rstrip("Ll")
-    hz = int(raw)
-    if hz % 1_000_000 != 0:
-        raise ValueError(f"unsupported board_build.f_flash value: {raw}")
-    return f"{hz // 1_000_000}m"
-
-
-def expected_flash_mode(env: str) -> str:
-    memory_type = (read_env_value_optional(env, "board_build.arduino.memory_type") or "").lower()
-    if memory_type in ("opi_opi", "opi_qspi"):
-        return "dout"
-
-    mode = read_env_value(env, "board_build.flash_mode").lower()
-    if mode in ("qio", "qout"):
-        return "dio"
-    return mode
-
-
-def expected_flash_size(env: str) -> str:
-    return (
-        read_env_value_optional(env, "board_upload.flash_size")
-        or read_env_value(env, "board_build.flash_size")
-    )
 
 
 def run_image_info(image: Path) -> str:
@@ -134,12 +82,8 @@ def display_path(path: Path) -> str:
         return str(path)
 
 
-def expected_flash_policy(env: str) -> dict[str, str]:
-    return {
-        "Flash mode": expected_flash_mode(env).upper(),
-        "Flash freq": expected_flash_freq(env),
-        "Flash size": expected_flash_size(env).upper(),
-    }
+def expected_flash_policy(env: str, pio: str | None = None) -> dict[str, str]:
+    return resolve_flash_policy(ROOT, env, pio or os.environ.get("PIO_CMD", "pio")).image_fields()
 
 
 def expected_header_bytes(expected: dict[str, str]) -> tuple[int, int]:
@@ -186,10 +130,11 @@ def check_embedded_image_headers(image: Path, expected: dict[str, str]) -> list[
     return errors
 
 
-def self_check(env: str = "waveshare-349") -> int:
+def self_check(env: str | None = None) -> int:
+    env = env or os.environ.get("PIO_ENV", "waveshare-349")
     try:
         expected = expected_flash_policy(env)
-    except (OSError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         print(f"[release-image] self-check failed: {exc}", file=sys.stderr)
         return 2
 
@@ -207,7 +152,11 @@ def main() -> int:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True, type=Path)
-    parser.add_argument("--env", default="waveshare-349")
+    parser.add_argument("--env", default=os.environ.get("PIO_ENV", "waveshare-349"))
+    parser.add_argument("--pio", default=os.environ.get("PIO_CMD", "pio"))
+    parser.add_argument("--flash-mode")
+    parser.add_argument("--flash-freq")
+    parser.add_argument("--flash-size")
     args = parser.parse_args()
 
     image = args.image
@@ -217,7 +166,11 @@ def main() -> int:
         print(f"[release-image] missing image: {image}", file=sys.stderr)
         return 1
 
-    expected = expected_flash_policy(args.env)
+    explicit = (args.flash_mode, args.flash_freq, args.flash_size)
+    if any(explicit) and not all(explicit):
+        parser.error("standalone image checking needs all three explicit flash policy fields")
+    expected = (FlashPolicy(*explicit).image_fields() if all(explicit)
+                else expected_flash_policy(args.env, args.pio))
 
     try:
         output = run_image_info(image)

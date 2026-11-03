@@ -55,8 +55,11 @@ console.log('\n📄 Deployed files:');
 const totalSize = listFiles(dataDir);
 console.log(`\n✅ Total size: ${(totalSize / 1024).toFixed(1)} KB`);
 
-function platformioInfo() {
-    const result = spawnSync(process.env.PIO_CMD ?? 'pio', ['system', 'info', '--json-output'], {
+function selectedBuildContext() {
+    const result = spawnSync(process.env.PYTHON_CMD ?? 'python3', [
+        join(__dirname, '..', '..', 'scripts', 'build_context.py'),
+        '--pio', process.env.PIO_CMD ?? 'pio', '--env', process.env.PIO_ENV ?? 'waveshare-349'
+    ], {
         cwd: join(__dirname, '..', '..'),
         encoding: 'utf8'
     });
@@ -78,15 +81,14 @@ function runLittleFsCapacityGate(rawBytes) {
 
     let info;
     try {
-        info = platformioInfo();
+        info = selectedBuildContext();
     } catch (error) {
         console.error(`❌ LittleFS capacity gate: FAIL — ${error.message}`);
         process.exit(1);
     }
 
-    const python = info.python_exe?.value;
-    const coreDir = info.core_dir?.value;
-    if (!python || !coreDir) {
+    const python = info.tools?.python;
+    if (!python) {
         console.error('❌ LittleFS capacity gate: FAIL — PlatformIO did not report its Python executable and core directory');
         process.exit(1);
     }
@@ -97,10 +99,8 @@ function runLittleFsCapacityGate(rawBytes) {
             join(__dirname, 'littlefs-capacity.py'),
             '--data-dir',
             dataDir,
-            '--partition-table',
-            join(__dirname, '..', '..', 'partitions_v1.csv'),
-            '--platformio-core-dir',
-            coreDir,
+            '--context-json',
+            JSON.stringify(info),
             '--expected-raw-bytes',
             String(rawBytes)
         ],

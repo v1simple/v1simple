@@ -28,6 +28,7 @@ def test_car_build_is_clean_and_uses_one_argument_contract() -> None:
         'run_step "Car install firmware build" "$PIO_CMD" run '
         '"${CAR_BUILD_ARGS[@]}"'
     )
+    header = 'run_step "Car install image header" python3 scripts/check_release_image_info.py'
 
     require(source.count(declaration) == 1, "car environment arguments are not singular")
     require(source.count(jobs_extension) == 1, "car build no longer shares the CI job limit")
@@ -37,6 +38,10 @@ def test_car_build_is_clean_and_uses_one_argument_contract() -> None:
     require(source.index(install) < source.index(clean),
             "car dependencies must be present before fail-closed patch hooks run during clean")
     require(source.index(clean) < source.index(build), "car clean must precede car build")
+    require(source.count(header) == 1 and source.index(build) < source.index(header),
+            "CI must validate the actual car image header after building")
+    require('--env esp32-s3-car-install --image "$CAR_BUILD_DIR/firmware.bin"' in source,
+            "car image validation must use the selected car artifact and policy")
 
 
 def test_current_frontend_bundle_precedes_firmware_metadata_and_car_build() -> None:

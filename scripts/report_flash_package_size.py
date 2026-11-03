@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import csv
 from pathlib import Path
 import sys
+
+from build_context import read_storage_partition_size
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,16 +23,6 @@ def parse_args() -> argparse.Namespace:
 def human(n: int) -> str:
     mib = n / (1024 * 1024)
     return f"{n} bytes ({mib:.2f} MiB)"
-
-
-def read_storage_partition_size(path: Path) -> int:
-    with path.open(newline="", encoding="utf-8") as fh:
-        for row in csv.reader(fh):
-            if not row or row[0].strip().startswith("#"):
-                continue
-            if row[0].strip() == "storage":
-                return int(row[4].strip(), 0)
-    raise RuntimeError("storage partition not found in partition table")
 
 
 def stat_size(path: Path) -> int:

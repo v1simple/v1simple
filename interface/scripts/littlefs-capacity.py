@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import csv
 from pathlib import Path
-import re
 import sys
 from typing import Sequence
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from build_context import BuildContext, read_storage_partition_size  # noqa: E402
 
 try:
     from littlefs import LittleFS
@@ -19,72 +20,14 @@ except ImportError as exc:
 
 
 RESERVE_BYTES = 64 * 1024
-ENVIRONMENT = "env:waveshare-349"
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", required=True, type=Path)
-    parser.add_argument("--partition-table", required=True, type=Path)
-    parser.add_argument("--platformio-core-dir", required=True, type=Path)
+    parser.add_argument("--context-json", required=True)
     parser.add_argument("--expected-raw-bytes", required=True, type=int)
     return parser.parse_args(argv)
-
-
-def read_storage_partition_size(path: Path) -> int:
-    with path.open(newline="", encoding="utf-8") as handle:
-        for row in csv.reader(handle):
-            if not row or row[0].strip().startswith("#"):
-                continue
-            if row[0].strip() == "storage":
-                return int(row[4].strip(), 0)
-    raise RuntimeError(f"storage partition not found in {path}")
-
-
-def read_environment_setting(path: Path, setting: str) -> str | None:
-    section: str | None = None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            section = stripped[1:-1]
-            continue
-        if section == ENVIRONMENT and stripped.startswith(f"{setting} ="):
-            return stripped.split("=", 1)[1].strip()
-    return None
-
-
-def read_packer_block_size(core_dir: Path) -> int:
-    builder = core_dir / "platforms" / "espressif32" / "builder" / "main.py"
-    source = builder.read_text(encoding="utf-8")
-    match = re.search(r'env\["FS_BLOCK"\]\s*=\s*int\("([^"]+)",\s*16\)', source)
-    if not match:
-        raise RuntimeError(f"could not determine PlatformIO LittleFS block size from {builder}")
-    return int(match.group(1), 16)
-
-
-def read_runtime_name_max(project_root: Path, core_dir: Path) -> int:
-    memory_type = read_environment_setting(
-        project_root / "platformio.ini", "board_build.arduino.memory_type"
-    )
-    if not memory_type:
-        raise RuntimeError("could not determine waveshare-349 Arduino memory type")
-
-    sdkconfig = (
-        core_dir
-        / "packages"
-        / "framework-arduinoespressif32-libs"
-        / "esp32s3"
-        / memory_type
-        / "include"
-        / "sdkconfig.h"
-    )
-    match = re.search(
-        r"#define\s+CONFIG_LITTLEFS_OBJ_NAME_LEN\s+(\d+)",
-        sdkconfig.read_text(encoding="utf-8"),
-    )
-    if not match:
-        raise RuntimeError(f"could not determine runtime LittleFS name limit from {sdkconfig}")
-    return int(match.group(1))
 
 
 def collect_tree(root: Path) -> tuple[list[Path], list[Path], int]:
@@ -188,10 +131,10 @@ def minimum_packed_blocks(
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        project_root = args.partition_table.resolve().parent
-        partition_bytes = read_storage_partition_size(args.partition_table)
-        block_size = read_packer_block_size(args.platformio_core_dir)
-        name_max = read_runtime_name_max(project_root, args.platformio_core_dir)
+        context = BuildContext.from_json(args.context_json)
+        partition_bytes = read_storage_partition_size(Path(context.partitions))
+        block_size = context.filesystem_block_size()
+        name_max = context.filesystem_name_max()
         directories, files, raw_bytes = collect_tree(args.data_dir)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"  packed result:     FAIL ({exc})", file=sys.stderr)

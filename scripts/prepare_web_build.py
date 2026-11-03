@@ -4,25 +4,21 @@
 from __future__ import annotations
 
 import argparse
-import json
+from pathlib import Path
 import shlex
 import subprocess
 import sys
 
 
 import host_tools
+from build_context import selected_tools
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def prepare(pio: str, environment: str) -> None:
     littlefs_version = host_tools.load().get("littlefs-python")
-    result = subprocess.run(
-        [pio, "system", "info", "--json-output"],
-        check=True, text=True, capture_output=True,
-    )
-    info = json.loads(result.stdout)
-    python = info.get("python_exe", {}).get("value")
-    if not isinstance(python, str) or not python:
-        raise ValueError("PlatformIO did not report its Python executable")
+    python = selected_tools(ROOT, pio).python
     probe = subprocess.run(
         [python, "-c", "from importlib.metadata import version; "
          "from littlefs import LittleFS; from littlefs.errors import LittleFSError; "
@@ -48,7 +44,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         prepare(args.pio, args.env)
-    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"[web-build] preparation failed: {exc}", file=sys.stderr)
         return 1
     print("[web-build] LittleFS Python support and PlatformIO project packages are ready")

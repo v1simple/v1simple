@@ -215,7 +215,7 @@ fi
 # Give PlatformIO/requests an explicit CA bundle before package downloads.
 # This avoids macOS Python installs that fail TLS verification without certifi.
 source "$SCRIPT_DIR/scripts/platformio_ca_bundle.sh"
-export PIO_CMD SSL_CERT_FILE REQUESTS_CA_BUNDLE
+export PIO_CMD PIO_ENV SSL_CERT_FILE REQUESTS_CA_BUNDLE
 
 if [ "$FACTORY_RESET" = true ]; then
     echo -e "${RED}Factory reset erases all onboard settings, BLE bonds, LittleFS data, and firmware.${NC}"

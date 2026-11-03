@@ -9,13 +9,14 @@ that the image can be listed using the firmware runtime's LittleFS name limit.
 from __future__ import annotations
 
 import argparse
-import csv
+import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
 from typing import Iterable, Sequence
+
+from build_context import read_storage_partition_size, resolve
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,9 +27,11 @@ DEFAULT_PAGE_SIZE = 256
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data-dir", default=str(ROOT / "data"))
-    p.add_argument("--partition-table", default=str(ROOT / "partitions_v1.csv"))
+    p.add_argument("--partition-table")
+    p.add_argument("--pio", help="Selected PlatformIO executable; never fall back after failure")
+    p.add_argument("--env", default=os.environ.get("PIO_ENV", "waveshare-349"))
     p.add_argument("--candidate", help="Existing LittleFS image to verify")
-    p.add_argument("--block-size", type=int, default=DEFAULT_BLOCK_SIZE)
+    p.add_argument("--block-size", type=int)
     p.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE)
     p.add_argument(
         "--storage-bytes",
@@ -42,25 +45,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--littlefs-python",
-        help="littlefs-python CLI path; defaults to PATH or ~/.platformio/penv/bin/littlefs-python",
+        help="Explicit littlefs-python CLI; otherwise use the selected interpreter or PATH in standalone mode",
     )
     return p.parse_args(argv)
 
 
 def run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-
-def read_storage_partition_size(path: Path) -> int:
-    if not path.exists():
-        raise FileNotFoundError(f"partition table not found: {path}")
-    with path.open(newline="", encoding="utf-8") as fh:
-        for row in csv.reader(fh):
-            if not row or row[0].strip().startswith("#"):
-                continue
-            if row[0].strip() == "storage":
-                return int(row[4].strip(), 0)
-    raise RuntimeError(f"storage partition not found in {path}")
 
 
 def all_files(root: Path) -> list[Path]:
@@ -83,62 +74,11 @@ def data_name_stats(root: Path) -> tuple[int, int, Path | None, Path | None]:
     )
 
 
-def configured_memory_type() -> str | None:
-    ini = ROOT / "platformio.ini"
-    if not ini.exists():
-        return None
-    env = None
-    for line in ini.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            env = stripped[1:-1]
-            continue
-        if env == "env:waveshare-349" and stripped.startswith("board_build.arduino.memory_type"):
-            _, value = stripped.split("=", 1)
-            return value.strip()
-    return None
-
-
-def framework_runtime_name_max() -> int | None:
-    memory_type = configured_memory_type()
-    candidates: list[Path] = []
-    home = Path.home()
-    if memory_type:
-        candidates.append(
-            home
-            / ".platformio/packages/framework-arduinoespressif32-libs/esp32s3"
-            / memory_type
-            / "include/sdkconfig.h"
-        )
-    candidates.append(home / ".platformio/packages/framework-arduinoespressif32-libs/esp32s3/sdkconfig")
-
-    patterns = [
-        re.compile(r"#define\s+CONFIG_LITTLEFS_OBJ_NAME_LEN\s+(\d+)"),
-        re.compile(r"CONFIG_LITTLEFS_OBJ_NAME_LEN=(\d+)"),
-    ]
-    for path in candidates:
-        if not path.exists():
-            continue
-        text = path.read_text(errors="ignore")
-        for pattern in patterns:
-            m = pattern.search(text)
-            if m:
-                return int(m.group(1))
-    return None
-
-
 def find_littlefs_python(explicit: str | None) -> str:
-    candidates: list[str] = []
-    if explicit:
-        candidates.append(explicit)
-    found = shutil.which("littlefs-python")
-    if found:
-        candidates.append(found)
-    candidates.append(str(Path.home() / ".platformio" / "penv" / "bin" / "littlefs-python"))
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return candidate
-    raise FileNotFoundError("littlefs-python CLI not found")
+    candidate = shutil.which(explicit or "littlefs-python")
+    if not candidate:
+        raise FileNotFoundError(f"littlefs-python CLI not found: {explicit or 'PATH'}")
+    return candidate
 
 
 def list_with_littlefs_python(
@@ -174,17 +114,17 @@ def print_command_output(prefix: str, lines: Iterable[str], limit: int = 12) -> 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     data_dir = Path(args.data_dir)
-    partition_table = Path(args.partition_table)
     try:
+        context = None
+        if args.pio or not args.runtime_name_max:
+            context = resolve(ROOT, args.env, args.pio or os.environ.get("PIO_CMD", "pio"))
+        partition_table = Path(args.partition_table or (context.partitions if context else ROOT / "partitions_v1.csv"))
         storage_bytes = args.storage_bytes or read_storage_partition_size(partition_table)
+        runtime_name_max = args.runtime_name_max or context.filesystem_name_max()
+        block_size = args.block_size or (context.filesystem_block_size() if context else DEFAULT_BLOCK_SIZE)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    runtime_name_max = args.runtime_name_max or framework_runtime_name_max()
-    if runtime_name_max is None:
-        print("ERROR: could not determine firmware CONFIG_LITTLEFS_OBJ_NAME_LEN", file=sys.stderr)
-        return 1
-
     try:
         max_name, max_path, max_name_path, max_path_path = data_name_stats(data_dir)
     except FileNotFoundError as exc:
@@ -193,7 +133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("LittleFS compatibility check")
     print(f"  data dir:          {data_dir}")
     print(f"  storage bytes:     {storage_bytes}")
-    print(f"  block/page size:   {args.block_size}/{args.page_size}")
+    print(f"  block/page size:   {block_size}/{args.page_size}")
     print(f"  runtime name max:  {runtime_name_max}")
     print(f"  max data basename: {max_name} ({max_name_path})")
     print(f"  max data path:     {max_path} ({max_path_path})")
@@ -215,11 +155,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"ERROR: candidate size {size} != storage partition size {storage_bytes}")
             failed = True
         try:
-            littlefs_python = find_littlefs_python(args.littlefs_python)
+            selected_cli = args.littlefs_python or (str(Path(context.tools.python).parent / "littlefs-python") if context else None)
+            littlefs_python = find_littlefs_python(selected_cli)
         except FileNotFoundError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
-        result = list_with_littlefs_python(littlefs_python, candidate, args.block_size, runtime_name_max)
+        result = list_with_littlefs_python(littlefs_python, candidate, block_size, runtime_name_max)
         if result.returncode == 0:
             print("  runtime-style mount/list: PASS")
             print_command_output("    ", result.stdout.splitlines())

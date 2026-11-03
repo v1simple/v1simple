@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Any, Iterator
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -129,6 +130,27 @@ def test_missing_littlefs_python_fails(tmpdir: Path) -> None:
     assert_equal(rc, 1, "missing littlefs-python should fail closed")
 
 
+def test_explicit_missing_cli_does_not_try_path_fallback() -> None:
+    calls = []
+    def which(name):
+        calls.append(name)
+        return "/available/fallback" if name == "littlefs-python" else None
+    with patch.object(checker.shutil, "which", which):
+        try:
+            checker.find_littlefs_python("/missing/selected-cli")
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("missing explicit CLI was replaced by PATH fallback")
+    assert_equal(calls, ["/missing/selected-cli"], "selected CLI must be the only lookup")
+
+
+def test_explicit_failed_pio_is_not_bypassed_by_standalone_overrides(tmpdir: Path) -> None:
+    with patched_checker(resolve=lambda *args: (_ for _ in ()).throw(RuntimeError("selected PIO failed"))):
+        assert_equal(run_checker(tmpdir, ["--pio", "/missing/pio", "--storage-bytes", "16"]), 1,
+                     "explicit selected context failure must fail closed")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="littlefs_image_check_") as tmp:
         tmpdir = Path(tmp)
@@ -137,6 +159,8 @@ def main() -> int:
         test_candidate_size_mismatch_fails(tmpdir / "size_mismatch")
         test_missing_partition_table_fails_without_explicit_size(tmpdir / "missing_partition")
         test_missing_littlefs_python_fails(tmpdir / "missing_cli")
+        test_explicit_missing_cli_does_not_try_path_fallback()
+        test_explicit_failed_pio_is_not_bypassed_by_standalone_overrides(tmpdir / "bad_pio")
 
     print("[littlefs-image-compatibility] regression tests passed")
     return 0

@@ -22,7 +22,7 @@ NODE_INPUT = "node-version: ${{ steps.host_tools.outputs.node }}"
 PIO_CACHE_HASH = (
     "hashFiles('platformio.ini', 'scripts/patch_*.py', "
     "'scripts/verify_esp32s3_framework.py', "
-    "'scripts/check_platformio_core_version.py', 'config/host_tools.json', 'scripts/host_tools.py')"
+    "'scripts/check_platformio_core_version.py', 'config/host_tools.json', 'scripts/host_tools.py', 'scripts/build_context.py')"
 )
 CPP_CHECK_RUNTIME = "libpcre3"
 BOOTSTRAP = ROOT / "scripts" / "bootstrap_linux_validation.sh"

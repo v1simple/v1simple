@@ -137,6 +137,7 @@ run_step "Workflow action pin contract" python3 scripts/check_workflow_action_pi
 run_step "Workflow runner/cache regression suite" python3 scripts/test_check_workflow_action_pins.py
 
 section "Build Contracts"
+run_step "Selected build context regression suite" python3 scripts/test_build_context.py
 run_step "Memory headroom regression suite" python3 scripts/test_check_memory_headroom.py
 run_step "Build reset regression suite" python3 scripts/test_build_reset.py
 run_step "Fresh web build preparation regression suite" python3 scripts/test_prepare_web_build.py
@@ -229,6 +230,9 @@ section "Hardware Variant Builds"
 run_step "Car install dependencies" "$PIO_CMD" pkg install -e esp32-s3-car-install
 run_step "Car install firmware clean" "$PIO_CMD" run "${CAR_BUILD_ARGS[@]}" -t clean
 run_step "Car install firmware build" "$PIO_CMD" run "${CAR_BUILD_ARGS[@]}"
+CAR_BUILD_DIR="$(python3 scripts/build_context.py --pio "$PIO_CMD" --env esp32-s3-car-install --get build_dir)"
+run_step "Car install image header" python3 scripts/check_release_image_info.py \
+  --pio "$PIO_CMD" --env esp32-s3-car-install --image "$CAR_BUILD_DIR/firmware.bin"
 
 section "Production Build"
 run_step "Production artifact build" ./scripts/build_production_artifacts.sh

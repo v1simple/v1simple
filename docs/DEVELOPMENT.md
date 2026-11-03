@@ -25,7 +25,15 @@ without changing `data/` or running the separate audio staging and capacity
 checks. PlatformIO manages its normal toolchain dependencies, including its
 internal LittleFS support. The first build needs network access for project and
 npm dependencies. If using an existing PlatformIO installation, set `PIO_CMD` to
-its executable.
+its executable. The selected `--env` also reaches filesystem staging and
+capacity checks. `scripts/build_production_artifacts.sh` uses `PIO_CMD` and
+`PIO_ENV` for its firmware, filesystem and verification steps.
+
+Read-only release packaging can run without PlatformIO when supplied
+`--build-dir`, `--partitions`, `--flash-mode`, `--flash-freq` and `--flash-size`.
+Without those explicit inputs, `scripts/package_release_artifacts.py` resolves
+the selected environment through its PlatformIO interpreter. Missing selected
+tools fail the check; another home installation is not substituted.
 
 Without `--skip-web`, filesystem operations (`--upload-fs`, `--all`, and `--reset`) also require
 the `littlefs-python` version from `python3 scripts/host_tools.py get littlefs-python`

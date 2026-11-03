@@ -7,13 +7,12 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 
-import host_tools
+from build_context import BuildContext, resolve
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT_DIR = ROOT / ".artifacts" / "test_reports" / "memory-headroom"
@@ -42,19 +41,6 @@ def run(cmd: list[str]) -> str:
             f"{' '.join(cmd)} failed with exit code {result.returncode}\n{result.stdout}"
         )
     return result.stdout
-
-
-def read_platformio_value(env: str, key: str) -> str | None:
-    text = (ROOT / "platformio.ini").read_text(encoding="utf-8")
-    match = re.search(
-        rf"^\[env:{re.escape(env)}\]\s*$([\s\S]*?)(?=^\[|\Z)",
-        text,
-        re.MULTILINE,
-    )
-    if not match:
-        return None
-    key_match = re.search(rf"^\s*{re.escape(key)}\s*=\s*(.+?)\s*$", match.group(1), re.MULTILINE)
-    return key_match.group(1).strip() if key_match else None
 
 
 def parse_pio_memory(output: str) -> dict[str, dict[str, int]]:
@@ -116,88 +102,18 @@ def parse_esp_idf_size_memory(output: str) -> dict[str, dict[str, int]]:
     return rows
 
 
-def platformio_python_candidates(pio_cmd: str) -> list[Path]:
-    """Return likely interpreters for the PlatformIO-installed esp-idf-size."""
-
-    candidates: list[Path] = []
-    pio_path = Path(pio_cmd) if "/" in pio_cmd else None
-    if pio_path is None:
-        resolved = shutil.which(pio_cmd)
-        pio_path = Path(resolved) if resolved else None
-    if pio_path is not None:
-        candidates.append(pio_path.resolve().parent / "python")
-
-    configured = os.environ.get("PLATFORMIO_PYTHON")
-    if configured:
-        candidates.append(Path(configured))
-    candidates.extend(
-        [
-            ROOT / ".artifacts" / host_tools.load().get("pio_venv_name") / "bin" / "python",
-            Path.home() / ".platformio" / "penv" / "bin" / "python",
-            Path(sys.executable),
-        ]
-    )
-
-    unique: list[Path] = []
-    for candidate in candidates:
-        if candidate not in unique and candidate.is_file() and os.access(candidate, os.X_OK):
-            unique.append(candidate)
-    return unique
+def load_esp_idf_size_memory(map_path: Path, context: BuildContext) -> dict[str, dict[str, int]]:
+    output = run([context.tools.python, "-m", "esp_idf_size", "--format", "json2", "--no-color", str(map_path)])
+    return parse_esp_idf_size_memory(output)
 
 
-def load_esp_idf_size_memory(map_path: Path, pio_cmd: str) -> dict[str, dict[str, int]]:
-    """Run esp-idf-size from PlatformIO's environment and parse its JSON."""
-
-    failures: list[str] = []
-    for python in platformio_python_candidates(pio_cmd):
-        result = subprocess.run(
-            [
-                str(python),
-                "-m",
-                "esp_idf_size",
-                "--format",
-                "json2",
-                "--no-color",
-                str(map_path),
-            ],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if result.returncode != 0:
-            detail = result.stderr.strip().splitlines()
-            failures.append(detail[-1] if detail else f"exit {result.returncode}")
-            continue
-        try:
-            return parse_esp_idf_size_memory(result.stdout)
-        except ValueError as exc:
-            failures.append(str(exc))
-
-    detail = f" ({'; '.join(failures)})" if failures else ""
-    raise RuntimeError(
-        "unable to run esp-idf-size from the PlatformIO Python environment" + detail
-    )
-
-
-def find_xtensa_size() -> str:
-    exe = "xtensa-esp32s3-elf-size"
-    found = shutil.which(exe)
-    if found:
-        return found
-
-    candidates = [
-        ROOT / ".pio" / "packages" / "toolchain-xtensa-esp-elf" / "bin" / exe,
-        Path.home() / ".platformio" / "packages" / "toolchain-xtensa-esp-elf" / "bin" / exe,
-    ]
-    candidates.extend(
-        sorted((Path.home() / ".platformio" / "packages").glob(f"toolchain-xtensa-esp32s3*/bin/{exe}"))
-    )
-    for candidate in candidates:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    raise FileNotFoundError(f"{exe} not found")
+def find_xtensa_size(context: BuildContext) -> str:
+    executable = Path(context.toolchain_dir) / "bin/xtensa-esp32s3-elf-size"
+    if os.name == "nt":
+        executable = executable.with_suffix(".exe")
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise FileNotFoundError(f"selected Xtensa size executable not found: {executable}")
+    return str(executable)
 
 
 def parse_memory_configuration(map_path: Path) -> dict[str, int]:
@@ -216,8 +132,8 @@ def parse_memory_configuration(map_path: Path) -> dict[str, int]:
     return lengths
 
 
-def parse_size_sections(elf_path: Path) -> dict[str, int]:
-    output = run([find_xtensa_size(), "-A", str(elf_path)])
+def parse_size_sections(elf_path: Path, context: BuildContext) -> dict[str, int]:
+    output = run([find_xtensa_size(context), "-A", str(elf_path)])
     sections: dict[str, int] = {}
     for line in output.splitlines():
         match = SIZE_SECTION_RE.match(line.strip())
@@ -261,7 +177,7 @@ def evaluate_headroom(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env", default="waveshare-349")
+    parser.add_argument("--env", default=os.environ.get("PIO_ENV", "waveshare-349"))
     parser.add_argument("--pio", default=os.environ.get("PIO_CMD", "pio"))
     parser.add_argument("--no-build", action="store_true", help="reuse existing build artifacts")
     parser.add_argument("--build-log", type=Path, help="parse memory rows from a captured pio build log")
@@ -269,11 +185,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fail-diram-zero", action="store_true")
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR)
     args = parser.parse_args(argv)
-
-    build_dir = ROOT / ".pio" / "build" / args.env
-    elf_path = build_dir / "firmware.elf"
-    map_path = build_dir / "firmware.map"
-    bin_path = build_dir / "firmware.bin"
 
     pio_memory: dict[str, dict[str, int]] = {}
     if args.build_log:
@@ -284,14 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         build_log_text = build_log.read_text(encoding="utf-8", errors="replace")
         pio_memory.update(parse_pio_memory(build_log_text))
 
-    if args.no_build:
-        if not elf_path.is_file() or not map_path.is_file():
-            print(
-                f"[memory] missing build artifacts for {args.env}; run pio build first",
-                file=sys.stderr,
-            )
-            return 1
-    else:
+    if not args.no_build:
         try:
             build_output = run([args.pio, "run", "-e", args.env])
             pio_memory.update(parse_pio_memory(build_output))
@@ -300,10 +204,28 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     try:
+        context = resolve(ROOT, args.env, args.pio)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"[memory] {exc}", file=sys.stderr)
+        return 1
+    build_dir = Path(context.build_dir)
+    elf_path = build_dir / "firmware.elf"
+    map_path = build_dir / "firmware.map"
+    bin_path = build_dir / "firmware.bin"
+
+    if args.no_build:
+        if not elf_path.is_file() or not map_path.is_file():
+            print(
+                f"[memory] missing build artifacts for {args.env}; run pio build first",
+                file=sys.stderr,
+            )
+            return 1
+
+    try:
         memory_lengths = parse_memory_configuration(map_path)
-        sections = parse_size_sections(elf_path)
+        sections = parse_size_sections(elf_path, context)
         memory = dict(pio_memory)
-        memory.update(load_esp_idf_size_memory(map_path, args.pio))
+        memory.update(load_esp_idf_size_memory(map_path, context))
         if "ram" not in memory:
             ram_used = sections.get(".dram0.data", 0) + sections.get(".dram0.bss", 0) + sections.get(".noinit", 0)
             ram_limit = memory_lengths.get("dram0_0_seg", 0)
@@ -318,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
                 + sections.get(".flash.rodata", 0)
                 + sections.get(".flash.appdesc", 0)
             )
-            max_size = read_platformio_value(args.env, "board_upload.maximum_size")
+            max_size = context.maximum_size
             flash_limit = int(max_size) if max_size and max_size.isdigit() else (
                 memory_lengths.get("iram0_2_seg", 0) + memory_lengths.get("drom0_0_seg", 0)
             )

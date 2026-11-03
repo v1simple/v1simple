@@ -138,7 +138,7 @@ jobs:
             ~/.platformio/packages
             ~/.platformio/platforms
             ~/.platformio/.cache
-          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini', 'scripts/patch_*.py', 'scripts/verify_esp32s3_framework.py', 'scripts/check_platformio_core_version.py', 'config/host_tools.json', 'scripts/host_tools.py') }}
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini', 'scripts/patch_*.py', 'scripts/verify_esp32s3_framework.py', 'scripts/check_platformio_core_version.py', 'config/host_tools.json', 'scripts/host_tools.py', 'scripts/build_context.py') }}
 
       - name: Install release toolchain
         run: ./scripts/bootstrap_linux_validation.sh release

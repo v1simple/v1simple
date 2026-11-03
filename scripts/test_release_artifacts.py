@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 import check_web_installer_page as installer
+from build_context import FlashPolicy
 import package_release_artifacts as package
 import write_release_manifests as manifests
 
@@ -87,6 +88,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     version="v2.0.3",
                     environment="waveshare-349",
                     partitions_path=manifests.DEFAULT_PARTITIONS,
+                    flash=FlashPolicy("dio", "80m", "16MB"),
                 )
 
             manifests.validate_release_images(
@@ -141,6 +143,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                         version="v2.0.3",
                         environment="waveshare-349",
                         partitions_path=manifests.DEFAULT_PARTITIONS,
+                        flash=FlashPolicy("dio", "80m", "16MB"),
                     )
 
             self.assertEqual(len(calls), 1)
@@ -176,6 +179,17 @@ class ReleaseArtifactTests(unittest.TestCase):
             )
             self.assertTrue(any("SHA-256 does not match" in error for error in errors))
 
+    def test_standalone_package_cli_needs_no_platformio(self) -> None:
+        arguments = ["package_release_artifacts.py", "--version", "v2.0.3", "--build-dir", "/fixture/build",
+                     "--partitions", "/fixture/geometry.csv", "--release-dir", "/fixture/release",
+                     "--flash-mode", "dio", "--flash-freq", "80m", "--flash-size", "16MB"]
+        with (mock.patch.object(package.sys, "argv", arguments),
+              mock.patch.object(package, "resolve", side_effect=AssertionError("must remain package-only")),
+              mock.patch.object(package, "package_release") as build):
+            self.assertEqual(package.main(), 0)
+        self.assertEqual(build.call_args.kwargs["flash"], FlashPolicy("dio", "80m", "16MB"))
+        self.assertEqual(build.call_args.kwargs["partitions_path"], Path("/fixture/geometry.csv"))
+
     def test_package_refuses_mixed_or_missing_inputs(self) -> None:
         with tempfile.TemporaryDirectory(prefix="release_refusal_") as temporary:
             root = Path(temporary)
@@ -190,6 +204,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     version="v2.0.3",
                     environment="waveshare-349",
                     partitions_path=manifests.DEFAULT_PARTITIONS,
+                    flash=FlashPolicy("dio", "80m", "16MB"),
                 )
 
             release.joinpath("old.bin").unlink()
@@ -201,6 +216,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     version="v2.0.3",
                     environment="waveshare-349",
                     partitions_path=manifests.DEFAULT_PARTITIONS,
+                    flash=FlashPolicy("dio", "80m", "16MB"),
                 )
 
     def test_manifest_rejects_nonidentical_or_oversized_update(self) -> None:

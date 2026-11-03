@@ -61,7 +61,7 @@ class DriveRuntime {
         return ble.isConnected();
     }
     bool handleSettingsOperationStableConnection();
-    V1DetectorSnapshot captureDetectorSnapshot(uint32_t) { return makeSnapshot(); }
+#include "snapshot_declarations.inc"
     bool settingsSnapshotComplete(const V1DetectorSnapshot &) { return true; }
     bool persistDetectorSnapshot(const String &, const V1DetectorSnapshot &, bool) { return true; }
     void attemptFactoryReset(const V1SettingsOperationStore::Snapshot &);
@@ -72,6 +72,9 @@ class DriveRuntime {
     void processPeriodicMaintenance(uint32_t nowMs, bool, bool, bool, bool);
 };
 DriveRuntime* DriveRuntime::callbackOwner_ = nullptr;
+V1DetectorSnapshot DriveRuntime::captureDetectorSnapshot(SnapshotPurpose, uint32_t) const {
+    return makeSnapshot();
+}
 #include "outer_operation.inc"
 
 // Production coordinator owns whether the two production owners are serviced.

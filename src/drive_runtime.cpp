@@ -743,7 +743,8 @@ void DriveRuntime::finishSettingsRecapture(
     const V1SettingsOperationStore::Snapshot& operation, uint32_t nowMs) {
     String address;
     if (!connectedV1Address(address) || !settingsOperations_.targetMatches(address.c_str())) return;
-    V1DetectorSnapshot snapshot = captureDetectorSnapshot(settingsRecaptureIngressBoundary_);
+    V1DetectorSnapshot snapshot = captureDetectorSnapshot(
+        SnapshotPurpose::SettingsOperation, settingsRecaptureIngressBoundary_);
     const bool complete = settingsSnapshotComplete(snapshot);
     const uint32_t settingsSessionGeneration = ble_.sessionGeneration();
     if (settingsFreshObservationGate_.shouldWait(
@@ -923,7 +924,8 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
         matchingDetector && settingsFreshObservationGate_.completeFor(settingsSessionGeneration)) {
         const uint32_t requiredBoundary = V1SettingsOperationStore::requiredPreApplyIngressBoundary(
             initial.state, settingsRecaptureIngressBoundary_);
-        const V1DetectorSnapshot snapshot = captureDetectorSnapshot(requiredBoundary);
+        const V1DetectorSnapshot snapshot = captureDetectorSnapshot(
+            SnapshotPurpose::SettingsOperation, requiredBoundary);
         const bool complete = settingsSnapshotComplete(snapshot);
         if (settingsFreshObservationGate_.shouldWait(
                 complete, nowMs, kFreshObservationWaitMs, settingsSessionGeneration)) return;
@@ -1242,7 +1244,8 @@ bool DriveRuntime::connectedV1Address(String& address) const {
     return address.length() == 17u && V1SettingsOperationStore::isCanonicalAddress(address.c_str());
 }
 
-V1DetectorSnapshot DriveRuntime::captureDetectorSnapshot(uint32_t ingressBoundary) const {
+V1DetectorSnapshot DriveRuntime::captureDetectorSnapshot(SnapshotPurpose purpose,
+                                                        uint32_t ingressBoundary) const {
     const auto afterBoundary = [ingressBoundary](uint32_t ingress) {
         return ingress != 0 && (ingressBoundary == 0 ||
                static_cast<int32_t>(ingress - ingressBoundary) > 0);
@@ -1299,7 +1302,16 @@ V1DetectorSnapshot DriveRuntime::captureDetectorSnapshot(uint32_t ingressBoundar
                                       : ((uint64_t{1} << (snapshot.maxSweepIndex + 1u)) - 1u);
         snapshot.hasSweepDefinitions = !definitions.poisoned && definitions.presentMask == required;
         for (uint8_t index = 0; snapshot.hasSweepDefinitions && index <= snapshot.maxSweepIndex; ++index) {
-            snapshot.hasSweepDefinitions = afterBoundary(definitions.ingressSequences[index]);
+            const uint32_t ingress = definitions.ingressSequences[index];
+            if (purpose == SnapshotPurpose::StableConnection) {
+                // Follow-up rows must belong to their specific read request.
+                // Resolve its live transport boundary for each admitted row.
+                const uint32_t boundary = ble_.sessionSweepDefinitionsIngressBoundary();
+                snapshot.hasSweepDefinitions = ingress != 0 && boundary != 0 &&
+                                               static_cast<int32_t>(ingress - boundary) > 0;
+            } else {
+                snapshot.hasSweepDefinitions = afterBoundary(ingress);
+            }
         }
         if (snapshot.hasSweepDefinitions) snapshot.sweepDefinitions = definitions.definitions;
     }
@@ -1557,69 +1569,7 @@ void DriveRuntime::onV1Connected() {
     // The stable callback runs only after the bounded connect-followup read.
     // Copy the detector observation into the address-keyed store before
     // Auto-Push can write any desired profile state back to the V1.
-    V1DetectorSnapshot snapshot;
-    snapshot.available = true;
-    snapshot.capturedBootId = self.bootId_;
-    snapshot.capturedUptimeMs = static_cast<uint32_t>(millis());
-    snapshot.sessionGeneration = self.ble_.sessionGeneration();
-    snapshot.captureTimedOut = self.ble_.settingsCaptureTimedOut();
-    snapshot.firmwareVersion = self.ble_.v1FirmwareVersion();
-    snapshot.hasFirmwareVersion = snapshot.firmwareVersion != 0;
-    snapshot.hasUserBytes = self.ble_.sessionUserBytesRevision() > 0 &&
-                            self.ble_.sessionUserBytesIngressSequence() > 0 &&
-                            self.ble_.copySessionUserBytes(snapshot.userBytes.data());
-
-    const V1DisplayOnObservation& displayObservation = self.parser_.displayOnObservation();
-    snapshot.hasDisplayOn = displayObservation.available && displayObservation.revision > 0 &&
-                            displayObservation.ingressSequence > 0;
-    snapshot.displayOn = displayObservation.value;
-    const V1BluetoothIndicatorObservation& bluetoothObservation = self.parser_.bluetoothIndicatorObservation();
-    snapshot.hasBluetoothIndicator = bluetoothObservation.available && bluetoothObservation.revision > 0 &&
-                                     bluetoothObservation.ingressSequence > 0;
-    snapshot.bluetoothIndicator = bluetoothObservation.state;
-
-    const V1ModeObservation& modeObservation = self.parser_.modeObservation();
-    snapshot.hasMode = modeObservation.available && modeObservation.revision > 0 &&
-                       modeObservation.ingressSequence > 0;
-    snapshot.mode = modeObservation.value;
-
-    const V1AllVolumeObservation& allVolumeObservation = self.parser_.allVolumeObservation();
-    const bool capturedAllVolume = self.ble_.hasSessionAllVolume() && allVolumeObservation.available &&
-                                   allVolumeObservation.revision > 0 && allVolumeObservation.ingressSequence > 0;
-    snapshot.hasCurrentVolume = capturedAllVolume;
-    snapshot.currentMainVolume = allVolumeObservation.currentMain;
-    snapshot.currentMutedVolume = allVolumeObservation.currentMuted;
-    snapshot.hasSavedVolume = capturedAllVolume;
-    snapshot.savedMainVolume = allVolumeObservation.savedMain;
-    snapshot.savedMutedVolume = allVolumeObservation.savedMuted;
-    const V1SweepSectionsObservation& sweepSections = self.parser_.sweepSectionsObservation();
-    snapshot.hasSweepSections = self.ble_.hasSessionSweepSectionsCapture() &&
-                                sweepSections.available && sweepSections.complete &&
-                                sweepSections.ingressSequence > 0;
-    if (snapshot.hasSweepSections) {
-        snapshot.sweepSectionCount = sweepSections.count;
-        snapshot.sweepSections = sweepSections.sections;
-    }
-    const V1SweepMaxObservation& sweepMax = self.parser_.sweepMaxObservation();
-    snapshot.hasMaxSweepIndex = self.ble_.hasSessionSweepMaxCapture() &&
-                                sweepMax.available && !sweepMax.poisoned &&
-                                sweepMax.ingressSequence > 0;
-    snapshot.maxSweepIndex = sweepMax.maxIndex;
-    const V1SweepDefinitionsObservation& sweepDefinitions = self.parser_.sweepDefinitionsObservation();
-    if (snapshot.hasMaxSweepIndex && self.ble_.hasSessionSweepDefinitionsCapture() &&
-        sweepDefinitions.ingressSequence > 0) {
-        const uint64_t required = snapshot.maxSweepIndex == 63
-                                      ? UINT64_MAX
-                                      : ((uint64_t{1} << (snapshot.maxSweepIndex + 1u)) - 1u);
-        snapshot.hasSweepDefinitions = !sweepDefinitions.poisoned && sweepDefinitions.presentMask == required;
-        for (uint8_t index = 0; snapshot.hasSweepDefinitions && index <= snapshot.maxSweepIndex; ++index) {
-            const uint32_t ingress = sweepDefinitions.ingressSequences[index];
-            const uint32_t boundary = self.ble_.sessionSweepDefinitionsIngressBoundary();
-            snapshot.hasSweepDefinitions = ingress != 0 && boundary != 0 &&
-                                           static_cast<int32_t>(ingress - boundary) > 0;
-        }
-        if (snapshot.hasSweepDefinitions) snapshot.sweepDefinitions = sweepDefinitions.definitions;
-    }
+    const V1DetectorSnapshot snapshot = self.captureDetectorSnapshot(SnapshotPurpose::StableConnection);
     self.autoPush_.setPreApplySnapshot(snapshot);
 
     if (linkAddress.length() > 0 && self.devices_.isReady()) {

@@ -342,10 +342,15 @@ The transaction owner is
 Its status types, deadlines and wrap-safe comparison are in
 [`auto_push_module.h`](../../src/modules/auto_push/auto_push_module.h).
 
-1. `DriveRuntime::onV1Connected` captures a session-qualified detector snapshot
-   after [`connected follow-up reads`](../../src/ble_connected_followup.cpp),
-   then supplies it to `setPreApplySnapshot` and `queueSlotPush`. Explicit settings
-   operations use `DriveRuntime::queueSettingsApply` after a fresh capture.
+1. `DriveRuntime::captureDetectorSnapshot` owns observation mapping for both
+   explicit settings operations and `onV1Connected`. The stable connection
+   callback runs after [`connected follow-up reads`](../../src/ble_connected_followup.cpp)
+   and requires each sweep definition to follow its definitions-request boundary.
+   Operation captures apply their operation boundary to observations instead.
+   The callback supplies the snapshot to `setPreApplySnapshot`, records it when a
+   live address and ready device store are available, then optionally calls
+   `queueSlotPush`. Failed recording prevents queueing. Explicit
+   settings operations use `DriveRuntime::queueSettingsApply` after a fresh capture.
 2. `queueSlotPush`/`queuePushNow` load the profile; `queuePreparedSlot` stages the
    owned strings and definitions, validates slot modifiers, and persists any
    requested active-slot change before publishing the operation. A direct profile
@@ -479,6 +484,13 @@ ordering. It proves that local settings do not stall an Apply, that the overall
 deadline cancels the executor before another write, and that a failed NVS status
 write cannot leave it running. A command already sent produces a partial result;
 the fixture does not prove physical detector state or the final recapture.
+
+The same runner compiles `captureDetectorSnapshot` and the complete
+`onV1Connected` callback in a second fixture. It checks payloads and defaults,
+operation versus connection freshness, wraparound, incomplete sweep tables,
+and capture/handoff/store/queue ordering. BLE observations and the receiving
+store/AutoPush adapters are modeled; the snapshot types and owning methods are
+production code.
 
 For a small agent task, choose **one** repair and name the expected input and final
 observable above. Read the owning path plus its complete test fixture, preserve

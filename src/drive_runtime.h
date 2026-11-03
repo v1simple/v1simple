@@ -143,7 +143,9 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     void processPeriodicMaintenance(uint32_t nowMs, bool bleConnected, bool bleBackpressure,
                                     bool loopOverloaded, bool forceTailBleDrainPending = false);
     bool connectedV1Address(String& address) const;
-    V1DetectorSnapshot captureDetectorSnapshot(uint32_t ingressBoundary = 0) const;
+    enum class SnapshotPurpose : uint8_t { SettingsOperation, StableConnection };
+    V1DetectorSnapshot captureDetectorSnapshot(SnapshotPurpose purpose,
+                                               uint32_t ingressBoundary = 0) const;
     bool persistDetectorSnapshot(const String& address, const V1DetectorSnapshot& snapshot,
                                  bool flushImmediately);
     bool handleSettingsOperationStableConnection();

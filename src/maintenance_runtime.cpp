@@ -22,6 +22,7 @@
 #include "modules/quiet/quiet_coordinator_module.h"
 #include "modules/speed/speed_source_selector.h"
 #include "packet_parser.h"
+#include "persistent_bootstrap.h"
 #include "settings.h"
 #include "storage_manager.h"
 #include "touch_handler.h"
@@ -133,53 +134,18 @@ bool MaintenanceRuntime::preservedPanicEvidencePresent(esp_reset_reason_t resetR
 }
 
 void MaintenanceRuntime::initializeStorageAndProfiles() {
-    Serial.println("[Setup] Mounting storage...");
-    if (storage_.begin()) {
-        Serial.printf("[Setup] Storage ready: %s\n", storage_.statusText().c_str());
-        profiles_.begin(storage_);
-        devices_.begin(storage_.getFilesystem(), storage_.getLittleFS());
-        Serial.println("[Setup] Maintenance boot: skipping audio buffer/voice init");
-
-        if (settings_.checkAndRestoreFromSD()) {
-            display_.updateColorTheme();
-            display_.setBrightness(settings_.get().brightness);
-        }
-        settings_.migrateAutoPushProfilesToV2();
-
-        const bool deleteResolved = settings_.resolvePendingV1DeviceDelete(devices_);
-        if (!deleteResolved) {
-            Serial.println("[Setup] WARN: pending V1 device deletion blocks fallback bootstrap");
-        }
-        const String storedFallback = deleteResolved ? settings_.loadLastV1AddressFallback() : String();
-        const String degradedFallback = normalizeV1DeviceAddress(storedFallback);
-        if (storedFallback.length() > 0 && degradedFallback.length() == 0) {
-            settings_.clearLastV1AddressFallback();
-        }
-
-        const String settingsFallback = deleteResolved
-                                            ? normalizeV1DeviceAddress(settings_.get().lastV1Address)
-                                            : String();
-        const String restoredLastKnownV1 = degradedFallback.length() > 0 ? degradedFallback : settingsFallback;
-        if (restoredLastKnownV1.length() > 0) {
-            settings_.setLastV1Address(restoredLastKnownV1);
-            if (devices_.isReady() &&
-                devices_.bootstrapDevice(restoredLastKnownV1, degradedFallback.length() > 0) &&
-                degradedFallback.length() > 0) {
-                settings_.clearLastV1AddressFallback();
-            }
-        }
-        settings_.validateProfileReferences(profiles_);
-    } else {
-        Serial.println("[Setup] Storage unavailable - profiles will be disabled");
-        const String storedFallback = settings_.loadLastV1AddressFallback();
-        const String degradedFallback = normalizeV1DeviceAddress(storedFallback);
-        if (degradedFallback.length() > 0) {
-            settings_.setLastV1Address(degradedFallback);
-            Serial.println("[Setup] Restored degraded V1 address fallback from NVS");
-        } else if (storedFallback.length() > 0) {
-            settings_.clearLastV1AddressFallback();
-        }
-    }
+    const PersistentBootstrapEffects effects{
+        this,
+        [](void*) {
+            Serial.println("[Setup] Maintenance boot: skipping audio buffer/voice init");
+        },
+        [](void* context) {
+            auto& self = *static_cast<MaintenanceRuntime*>(context);
+            self.display_.updateColorTheme();
+            self.display_.setBrightness(self.settings_.get().brightness);
+        },
+    };
+    PersistentBootstrap::run(storage_, settings_, profiles_, devices_, effects);
 
     // GPS settings remain editable and durable in maintenance, but the live
     // UART/parser belongs exclusively to the normal-drive runtime.

@@ -1591,7 +1591,7 @@ void test_both_boot_paths_use_catalog_bootstrap_and_connection_still_discovers()
     for (const char* path : {"/src/drive_runtime.cpp", "/src/maintenance_runtime.cpp"}) {
         std::ifstream input(std::string(PROJECT_DIR) + path);
         const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-        TEST_ASSERT_TRUE(source.find("bootstrapDevice(restoredLastKnownV1, degradedFallback.length() > 0)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("PersistentBootstrap::run(storage_, settings_, profiles_, devices_, effects)") != std::string::npos);
         if (std::string(path).find("drive_runtime") != std::string::npos) {
             TEST_ASSERT_TRUE(source.find("self.devices_.touchDeviceInMemory(*profileAddress)",
                                         source.find("void DriveRuntime::onV1Connected()")) != std::string::npos);

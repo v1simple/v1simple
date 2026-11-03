@@ -14,6 +14,7 @@
 #include "modules/event_log/product_event_log.h"
 #include "modules/health/health_journal.h"
 #include "modules/quiet/quiet_coordinator_templates.h"
+#include "persistent_bootstrap.h"
 #include "settings.h"
 #include "storage_manager.h"
 #include "v1_devices.h"
@@ -74,53 +75,20 @@ bool DriveRuntime::preservedPanicEvidencePresent(esp_reset_reason_t resetReason)
 }
 
 void DriveRuntime::initializeStorageAndProfiles() {
-    Serial.println("[Setup] Mounting storage...");
-    if (storage_.begin()) {
-        Serial.printf("[Setup] Storage ready: %s\n", storage_.statusText().c_str());
-        profiles_.begin(storage_);
-        devices_.begin(storage_.getFilesystem(), storage_.getLittleFS());
-        audio_init_buffers();
-        audio_init_sd(storage_);
-
-        if (settings_.checkAndRestoreFromSD()) {
-            display_.updateColorTheme();
-            display_.setBrightness(settings_.get().brightness);
-        }
-        settings_.migrateAutoPushProfilesToV2();
-
-        const bool deleteResolved = settings_.resolvePendingV1DeviceDelete(devices_);
-        if (!deleteResolved) {
-            Serial.println("[Setup] WARN: pending V1 device deletion blocks fallback bootstrap");
-        }
-        const String storedFallback = deleteResolved ? settings_.loadLastV1AddressFallback() : String();
-        const String degradedFallback = normalizeV1DeviceAddress(storedFallback);
-        if (storedFallback.length() > 0 && degradedFallback.length() == 0) {
-            settings_.clearLastV1AddressFallback();
-        }
-        const String settingsFallback = deleteResolved
-                                            ? normalizeV1DeviceAddress(settings_.get().lastV1Address)
-                                            : String();
-        const String restoredLastKnownV1 = degradedFallback.length() > 0 ? degradedFallback : settingsFallback;
-        if (restoredLastKnownV1.length() > 0) {
-            settings_.setLastV1Address(restoredLastKnownV1);
-            if (devices_.isReady() &&
-                devices_.bootstrapDevice(restoredLastKnownV1, degradedFallback.length() > 0) &&
-                degradedFallback.length() > 0) {
-                settings_.clearLastV1AddressFallback();
-            }
-        }
-        settings_.validateProfileReferences(profiles_);
-    } else {
-        Serial.println("[Setup] Storage unavailable - profiles will be disabled");
-        const String storedFallback = settings_.loadLastV1AddressFallback();
-        const String degradedFallback = normalizeV1DeviceAddress(storedFallback);
-        if (degradedFallback.length() > 0) {
-            settings_.setLastV1Address(degradedFallback);
-            Serial.println("[Setup] Restored degraded V1 address fallback from NVS");
-        } else if (storedFallback.length() > 0) {
-            settings_.clearLastV1AddressFallback();
-        }
-    }
+    const PersistentBootstrapEffects effects{
+        this,
+        [](void* context) {
+            auto& self = *static_cast<DriveRuntime*>(context);
+            audio_init_buffers();
+            audio_init_sd(self.storage_);
+        },
+        [](void* context) {
+            auto& self = *static_cast<DriveRuntime*>(context);
+            self.display_.updateColorTheme();
+            self.display_.setBrightness(self.settings_.get().brightness);
+        },
+    };
+    PersistentBootstrap::run(storage_, settings_, profiles_, devices_, effects);
 
     const V1Settings& gpsSettings = settings_.get();
     gps_.begin(gpsSettings.gpsEnabled, gpsSettings.gpsBaud);

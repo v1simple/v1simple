@@ -238,22 +238,8 @@ void test_shared_boot_refreshes_saved_palette_before_boot_presentation() {
     TEST_ASSERT_TRUE(paletteAt < presentationAt);
 }
 
-void test_drive_boot_refreshes_palette_after_successful_sd_restore() {
-    const std::string body = extractFunctionBody(readFile(projectRoot() + "/src/drive_runtime.cpp"),
-                                                  "void DriveRuntime::initializeStorageAndProfiles()");
-    const std::string restored = extractFunctionBody(body, "if (settings_.checkAndRestoreFromSD())");
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, restored.find("display_.updateColorTheme();"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, restored.find("display_.setBrightness(settings_.get().brightness)"));
-}
-
-void test_maintenance_boot_refreshes_palette_after_successful_sd_restore() {
-    const std::string body = extractFunctionBody(readFile(projectRoot() + "/src/maintenance_runtime.cpp"),
-                                                  "void MaintenanceRuntime::initializeStorageAndProfiles()");
-    const std::string restored = extractFunctionBody(body, "if (settings_.checkAndRestoreFromSD())");
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, restored.find("display_.updateColorTheme();"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, restored.find("display_.setBrightness(settings_.get().brightness)"));
-}
-
+// Post-mount palette/brightness effects are executed through both actual boot
+// adapters in test/fixtures/settings_runtime_recovery/bootstrap.cpp.
 void test_gps_runtime_starts_only_in_drive_boot() {
     const std::string drive = extractFunctionBody(readFile(projectRoot() + "/src/drive_runtime.cpp"),
                                                   "void DriveRuntime::initializeStorageAndProfiles()");
@@ -347,8 +333,6 @@ int main() {
     RUN_TEST(test_maintenance_service_wires_routes_settings_and_runtime_status_once);
     RUN_TEST(test_maintenance_runtime_uses_typed_constructor_dependencies_without_provider_table);
     RUN_TEST(test_shared_boot_refreshes_saved_palette_before_boot_presentation);
-    RUN_TEST(test_drive_boot_refreshes_palette_after_successful_sd_restore);
-    RUN_TEST(test_maintenance_boot_refreshes_palette_after_successful_sd_restore);
     RUN_TEST(test_gps_runtime_starts_only_in_drive_boot);
     RUN_TEST(test_maintenance_runtime_start_reaches_saved_network_auto_join);
     RUN_TEST(test_failed_maintenance_return_ack_uses_bounded_retry_cadence);

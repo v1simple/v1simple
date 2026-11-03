@@ -70,6 +70,16 @@ sleep current, wake behavior or a future supply sensor's reliability.
 
 ## Graceful persistence and interrupted recovery
 
+`PersistentBootstrap::run()` owns the shared Drive and Maintenance storage
+startup sequence: mount, open profile/device catalogs, restore settings, migrate
+profiles, resolve pending device deletion, adopt the last-device fallback, then
+validate profile references. Drive initializes audio after the catalogs open;
+both runtimes apply theme and saved brightness only after a successful restore.
+Drive starts GPS after bootstrap returns. `test_settings_runtime_recovery.py`
+executes both actual runtime adapters with the real stores, including unavailable
+storage, fallback/deletion authority, interrupted restore and ordered display,
+audio and GPS effects; hardware effects are host substitutes.
+
 `V1SettingsOperationStore::begin()` reads its durable record with checked NVS
 results. Only `ESP_ERR_NVS_NOT_FOUND` establishes an empty operation store.
 An unavailable read blocks new Apply and factory-reset requests; invalid record

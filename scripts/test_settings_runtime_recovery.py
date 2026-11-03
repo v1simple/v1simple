@@ -56,6 +56,11 @@ def build_and_run(build: Path) -> None:
     (build / "wifi_credentials.inc").write_text(between(
         wifi, "std::vector<WifiClientApiService::SavedNetworkSlotPayload> WiFiManager::getSavedNetworkSlots() const",
         "bool WiFiManager::deleteSavedNetwork("), encoding="utf-8")
+    bootstrap = between(source, "void DriveRuntime::initializeStorageAndProfiles()",
+                        "void DriveRuntime::initializeBle(")
+    bootstrap += between(maintenance, "void MaintenanceRuntime::initializeStorageAndProfiles()",
+                         "void MaintenanceRuntime::start(")
+    (build / "persistent_bootstrap_adapters.inc").write_text(bootstrap, encoding="utf-8")
     compiler = shlex.split(os.environ.get("CXX", "clang++" if shutil.which("clang++") else "c++"))
     deps = ROOT / ".pio/libdeps/native-sanitized"
     includes = [build, ROOT, ROOT / "src", ROOT / "include", ROOT / "test/mocks",
@@ -70,6 +75,7 @@ def build_and_run(build: Path) -> None:
         "connection_admission": [],
         "maintenance": [ROOT / "test/test_settings_persistence/display_nvs_persistence_tests.cpp"],
         "wifi_credentials": [ROOT / "test/test_settings_persistence/display_nvs_persistence_tests.cpp"],
+        "bootstrap": [],
     }
     for name, support in fixtures.items():
         executable = build / name

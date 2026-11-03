@@ -49,6 +49,9 @@ void test_html_allowlist_accepts_every_page_path() {
 }
 
 void test_first_use_page_does_not_open_other_paths() {
+    TEST_ASSERT_FALSE(WifiStaticPathGuard::isAllowedServedPath("/dev"));
+    TEST_ASSERT_FALSE(WifiStaticPathGuard::isAllowedServedPath("/dev.html"));
+    TEST_ASSERT_FALSE(WifiStaticPathGuard::isAllowedServedPath("/undeclared.html"));
     TEST_ASSERT_FALSE(WifiStaticPathGuard::isAllowedServedPath("/first-use/settings.json"));
     TEST_ASSERT_FALSE(WifiStaticPathGuard::isAllowedServedPath("/first-use.json"));
     TEST_ASSERT_FALSE(WifiStaticPathGuard::isAllowedServedPath("/first-use.html.bak"));

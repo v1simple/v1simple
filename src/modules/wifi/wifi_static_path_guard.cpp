@@ -73,15 +73,13 @@ bool isSafe(const char* path) {
 }
 
 bool isHtmlPagePath(const char* path) {
-    static constexpr const char* kPagePaths[] = {
-        "/",         "/index.html",    "/alp",      "/alp.html",      "/audio",   "/audio.html",
-        "/autopush", "/autopush.html", "/colors",   "/colors.html",   "/devices", "/devices.html",
-        "/gps",      "/gps.html",      "/obd",      "/obd.html",
-        "/profiles", "/profiles.html", "/settings", "/settings.html",
-        "/first-use", "/first-use.html",
+    static constexpr const char* pagePaths[] = {
+#define WEB_PRODUCT_PAGE(stem, alias, html) alias, html,
+#include "web_product_pages.def"
+#undef WEB_PRODUCT_PAGE
     };
 
-    return isSafe(path) && equalsAny(path, kPagePaths, sizeof(kPagePaths) / sizeof(kPagePaths[0]));
+    return isSafe(path) && equalsAny(path, pagePaths, sizeof(pagePaths) / sizeof(pagePaths[0]));
 }
 
 bool isAllowedServedPath(const char* path) {

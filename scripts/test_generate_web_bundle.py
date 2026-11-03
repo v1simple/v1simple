@@ -14,6 +14,9 @@ from unittest.mock import Mock, patch
 
 import generate_web_bundle as bundle
 
+EXPECTED_PAGES = frozenset(("index", "alp", "audio", "autopush", "colors", "devices",
+                            "first-use", "gps", "obd", "profiles", "settings"))
+
 
 class WebBundleTests(unittest.TestCase):
     def setUp(self):
@@ -29,12 +32,13 @@ class WebBundleTests(unittest.TestCase):
             'tools/compress_web_assets.sh': b'gzip -n -9 -k -f',
             'scripts/generate_web_bundle.py': b'generator fixture identity',
             'scripts/embed_web_assets.py': b'prehook fixture identity',
+            bundle.PAGE_INVENTORY: (bundle.ROOT / bundle.PAGE_INVENTORY).read_bytes(),
             'config/host_tools.json': (Path(__file__).resolve().parents[1] / 'config/host_tools.json').read_bytes(),
             'scripts/host_tools.py': b'host reader identity',
         }.items():
             self.write(name, data)
         self.assets = {route + '.html': ('<html>' + route + '</html>').encode()
-                       for route in bundle.ROUTES}
+                       for route in EXPECTED_PAGES}
         self.assets.update({
             '_app/version.json': b'{"version":"fixture"}',
             '_app/env.js': b'export const env={};',
@@ -64,6 +68,52 @@ class WebBundleTests(unittest.TestCase):
             record = bundle.build(self.root)
         self.assertEqual(run.call_count, 2)
         return record
+
+    def test_product_inventory_matches_supported_pages(self):
+        self.assertEqual(bundle.product_pages(self.root), EXPECTED_PAGES)
+
+    def test_product_inventory_rejects_unsafe_duplicate_and_unknown_rows(self):
+        path = self.root / bundle.PAGE_INVENTORY
+        original = path.read_text()
+        invalid = (
+            'WEB_PRODUCT_PAGE("profiles", "/profiles", "/profiles.html")',
+            'WEB_PRODUCT_PAGE("dev", "/dev", "/dev.html")',
+            'WEB_PRODUCT_PAGE("extra", "/index", "/extra.html")',
+            'WEB_PRODUCT_PAGE("extra", "/extra", "/other.html")',
+            'WEB_PRODUCT_PAGE("../extra", "/../extra", "/../extra.html")',
+            'WEB_PRODUCT_PAGE("extra", "/extra?x", "/extra.html")',
+            '#include "unexpected.def"',
+            'arbitrary syntax',
+        )
+        for row in invalid:
+            with self.subTest(row=row):
+                path.write_text(original + row + '\n')
+                with self.assertRaisesRegex(ValueError, 'product page'):
+                    self.stamp()
+        for content in ('', 'WEB_PRODUCT_PAGE("extra", "/extra", "/extra.html")\n'):
+            path.write_text(content)
+            with self.assertRaisesRegex(ValueError, 'include index'):
+                bundle.product_pages(self.root)
+        path.unlink()
+        with self.assertRaisesRegex(ValueError, 'missing or unsafe'):
+            bundle.product_pages(self.root)
+        path.symlink_to(bundle.ROOT / bundle.PAGE_INVENTORY)
+        with self.assertRaisesRegex(ValueError, 'missing or unsafe'):
+            bundle.product_pages(self.root)
+
+    def test_declared_page_reaches_bundle_and_inventory_change_invalidates_stamp(self):
+        path = self.root / bundle.PAGE_INVENTORY
+        self.stamp()
+        path.write_text(path.read_text() + '// changed inventory input\n')
+        with self.assertRaisesRegex(ValueError, 'stale or modified'):
+            bundle.validate(self.root)
+        path.write_text(path.read_text() + 'WEB_PRODUCT_PAGE("extra", "/extra", "/extra.html")\n')
+        with self.assertRaisesRegex(ValueError, 'missing generated route: extra'):
+            self.stamp()
+        self.write('interface/build/extra.html', b'<html>declared extra</html>')
+        self.stamp()
+        _, assets = bundle.validate(self.root)
+        self.assertEqual(assets['/extra.html'], b'<html>declared extra</html>')
 
     def test_missing_build_stamp_fails_closed(self):
         with self.assertRaisesRegex(ValueError, 'stamp missing'):
@@ -214,7 +264,7 @@ class WebBundleTests(unittest.TestCase):
                                 for key, data in self.assets.items() if key.endswith(('.js', '.css', '.json'))})
                 outputs[name] = b'private'
                 with self.assertRaises(ValueError):
-                    bundle.select_assets(outputs)
+                    bundle.select_assets(outputs, bundle.product_pages(self.root))
 
     def test_symlink_input_output_and_destination_rejected(self):
         for name in ('interface/src/link', 'interface/build/link'):

@@ -1,0 +1,12 @@
+// Explicit production HTML pages: stem, extensionless alias, HTML alias.
+WEB_PRODUCT_PAGE("index", "/", "/index.html")
+WEB_PRODUCT_PAGE("alp", "/alp", "/alp.html")
+WEB_PRODUCT_PAGE("audio", "/audio", "/audio.html")
+WEB_PRODUCT_PAGE("autopush", "/autopush", "/autopush.html")
+WEB_PRODUCT_PAGE("colors", "/colors", "/colors.html")
+WEB_PRODUCT_PAGE("devices", "/devices", "/devices.html")
+WEB_PRODUCT_PAGE("first-use", "/first-use", "/first-use.html")
+WEB_PRODUCT_PAGE("gps", "/gps", "/gps.html")
+WEB_PRODUCT_PAGE("obd", "/obd", "/obd.html")
+WEB_PRODUCT_PAGE("profiles", "/profiles", "/profiles.html")
+WEB_PRODUCT_PAGE("settings", "/settings", "/settings.html")

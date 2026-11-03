@@ -17,14 +17,40 @@ import host_tools
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ROUTES = frozenset(("alp", "audio", "autopush", "colors", "devices", "first-use", "gps",
-                    "index", "obd", "profiles", "settings"))
+PAGE_INVENTORY = "include/web_product_pages.def"
+PAGE_ROW = re.compile(r'WEB_PRODUCT_PAGE\("([a-z][a-z0-9-]*)",\s*"(/[a-z0-9-]*)",\s*"(/[a-z0-9-]+\.html)"\)\Z')
 STAMP = ".artifacts/web-bundle.json"
 SCHEMA = 1
 EXCLUDED_INPUT_DIRS = frozenset(("node_modules", "build", ".svelte-kit", ".vite"))
 SAFE_PATH = re.compile(r"(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\Z")
 APP_ASSET = re.compile(r"_app/(?:env\.js|version\.json|immutable/(?:assets|chunks|entry|nodes)/"
                        r"[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:js|css|json|woff2?|ttf|png|svg|ico))(?:\.gz)?\Z")
+
+
+def product_pages(root: Path) -> frozenset[str]:
+    """Read the same explicit HTML inventory compiled by the path guard."""
+    path = root / PAGE_INVENTORY
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("missing or unsafe product page inventory")
+    pages: set[str] = set()
+    aliases: set[str] = set()
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("//"):
+            continue
+        row = PAGE_ROW.fullmatch(line)
+        if not row:
+            raise ValueError(f"invalid product page row {number}")
+        stem, alias, html = row.groups()
+        if stem == "dev" or alias != ("/" if stem == "index" else "/" + stem) or html != f"/{stem}.html":
+            raise ValueError(f"invalid product page aliases at row {number}")
+        if stem in pages or alias in aliases or html in aliases:
+            raise ValueError(f"duplicate product page at row {number}")
+        pages.add(stem)
+        aliases.update((alias, html))
+    if "index" not in pages:
+        raise ValueError("product page inventory must include index")
+    return frozenset(pages)
 
 
 def digest(files: dict[str, bytes]) -> str:
@@ -65,7 +91,7 @@ def inputs(root: Path) -> dict[str, bytes]:
     files = {"interface/" + name: data
              for name, data in tree(root / "interface", EXCLUDED_INPUT_DIRS).items()}
     for name in ("tools/compress_web_assets.sh", "scripts/generate_web_bundle.py",
-                 "scripts/embed_web_assets.py", "scripts/host_tools.py"):
+                 "scripts/embed_web_assets.py", "scripts/host_tools.py", PAGE_INVENTORY):
         path = root / name
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"missing or unsafe build input: {name}")
@@ -86,11 +112,12 @@ def inputs(root: Path) -> dict[str, bytes]:
     return files
 
 
-def select_assets(outputs: dict[str, bytes]) -> dict[str, bytes]:
+def select_assets(outputs: dict[str, bytes], pages: frozenset[str]) -> dict[str, bytes]:
     """Match deployment pruning; never select audio, settings or user files."""
     selected: dict[str, bytes] = {}
+    html_files = {page + ".html" for page in pages}
     for name, data in sorted(outputs.items()):
-        managed = (name in {route + ".html" for route in ROUTES} or
+        managed = (name in html_files or
                    name.startswith("_app/") or
                    (name.startswith("branding/") and "/" not in name[len("branding/"):] and
                     name.endswith(".png")))
@@ -118,7 +145,7 @@ def select_assets(outputs: dict[str, bytes]) -> dict[str, bytes]:
             if name not in ("_app/env.js", "_app/version.json"):
                 continue
         selected["/" + name] = data
-    for route in sorted(ROUTES):
+    for route in sorted(pages):
         if "/" + route + ".html" not in selected:
             raise ValueError(f"missing generated route: {route}")
     if "/_app/version.json" not in selected:
@@ -133,7 +160,7 @@ def snapshot(root: Path) -> tuple[dict, dict[str, bytes]]:
     source_files = inputs(root)
     source_digest = digest(source_files)
     outputs = tree(root / "interface/build")
-    assets = select_assets(outputs)
+    assets = select_assets(outputs, product_pages(root))
     for name, data in source_files.items():
         if name.startswith("interface/static/branding/") and name.endswith(".png"):
             deployed_name = "/" + name.removeprefix("interface/static/")

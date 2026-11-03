@@ -10,61 +10,68 @@
     let gpsBaud = $state(9600);
     let message = $state(null);
     let loaded = $state(false);
+    let loading = $state(false);
     let saving = $state(false);
 
-    onMount(() => {
-        void (async () => {
-            await fetchGpsConfig();
-            loaded = true;
-        })();
-    });
+    onMount(() => { void retryLoad(); });
 
     async function fetchGpsConfig() {
         try {
             const res = await fetchJsonWithTimeout('/api/gps/config');
             if (!res.ok) throw new Error(`GPS config request failed with status ${res.status}`);
             const data = res.data;
-            if (typeof data.gpsEnabled === 'boolean') gpsEnabled = data.gpsEnabled;
-            if (typeof data.gpsBaud === 'number') gpsBaud = data.gpsBaud;
+            if (typeof data?.gpsEnabled !== 'boolean' || !BAUD_OPTIONS.includes(data?.gpsBaud)) {
+                throw new Error('Incomplete GPS settings');
+            }
+            gpsEnabled = data.gpsEnabled;
+            gpsBaud = data.gpsBaud;
+            loaded = true;
+            return true;
         } catch (err) {
+            loaded = false;
             console.error('Failed to load GPS config', err);
             message = { type: 'error', text: 'Failed to load GPS settings.' };
+            return false;
         }
     }
 
+    async function retryLoad() {
+        if (loading || saving) return;
+        loading = true;
+        message = null;
+        await fetchGpsConfig();
+        loading = false;
+    }
+
     async function saveField(fields) {
-        if (saving) return false;
+        if (!loaded || loading || saving) return false;
         saving = true;
         message = null;
+        let saved = false;
         try {
             const res = await fetchWithTimeout('/api/gps/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(fields)
             });
-            if (!res.ok) {
-                message = { type: 'error', text: 'Failed to save GPS setting.' };
-                await fetchGpsConfig();
-                return false;
-            }
-            return true;
+            saved = res.ok;
+            if (!saved) message = { type: 'error', text: 'Failed to save GPS setting.' };
         } catch (_) {
             message = { type: 'error', text: 'Connection error.' };
-            await fetchGpsConfig();
-            return false;
-        } finally {
-            saving = false;
         }
+        const refreshed = await fetchGpsConfig();
+        saving = false;
+        return saved && refreshed;
     }
 
     async function handleToggleEnabled(checked) {
-        if (saving) return;
+        if (!loaded || loading || saving) return;
         gpsEnabled = checked;
         await saveField({ gpsEnabled });
     }
 
     async function handleBaudChange(event) {
-        if (saving) return;
+        if (!loaded || loading || saving) return;
         gpsBaud = Number(event.currentTarget.value);
         await saveField({ gpsBaud });
     }
@@ -82,6 +89,14 @@
             <div class="alert alert-{message.type === 'error' ? 'error' : 'success'} text-sm">
                 {message.text}
             </div>
+        {/if}
+
+        {#if !loaded}
+            {#if loading}
+                <p class="copy-caption">Loading GPS settings…</p>
+            {:else}
+                <button class="btn btn-outline btn-sm" onclick={retryLoad}>Retry GPS settings</button>
+            {/if}
         {/if}
 
         {#if loaded}

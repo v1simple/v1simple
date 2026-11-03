@@ -256,7 +256,9 @@ describe('peripheral configuration concurrent readback', () => {
     });
     it('OBD locks RSSI and timing until canonical readback finishes', async () => {
         const stale = deferred();
-        let reads = 0, stored = { enabled: true, minRssi: -80 };
+        let reads = 0, stored = { enabled: true, minRssi: -80,
+            obdScanWindowMs: 15000, obdRetryIntervalMs: 120000, proxyOpenWindowMs: 60000,
+            v1SettleQuietMs: 500, v1SettleFallbackMs: 1500, cycleTeardownAckTimeoutMs: 100 };
         installFetchMock([
             { method: 'GET', match: '/api/obd/config', respond: () => { reads++; return reads === 2 ? stale.promise : jsonResponse(stored); } },
             { method: 'GET', match: '/api/obd/devices', respond: jsonResponse({ devices: [] }) },
@@ -270,7 +272,7 @@ describe('peripheral configuration concurrent readback', () => {
         expect(rssi).toBeDisabled();
         expect(screen.getByLabelText('Enable OBD')).toBeDisabled();
         expect(screen.getByLabelText('OBD Scan Window (ms)')).toBeDisabled();
-        await settle(stale, jsonResponse({ enabled: true, minRssi: -70 }));
+        await settle(stale, jsonResponse(stored));
         await waitFor(() => expect(rssi).toBeEnabled());
         expect(rssi).toHaveValue(-70);
         await fireEvent.input(rssi, { target: { value: '-60' } });

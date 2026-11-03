@@ -18,101 +18,107 @@
     let forgetting = $state(false);
     let renaming = $state(false);
     let loaded = $state(false);
+    let loadingConfig = $state(false);
+    let devicesLoaded = $state(false);
+    let loadingDevices = $state(false);
+    let devicesMessage = $state(null);
     let editingAddress = $state('');
     let editName = $state('');
 
     onMount(() => {
-        void (async () => {
-            await fetchObdConfig({ showLoadError: true }).catch(() => null);
-            await fetchObdDevices({ showLoadError: true }).catch(() => null);
-            loaded = true;
-        })();
+        void retryConfig();
+        void retryDevices();
     });
 
-    async function fetchObdConfig({ showLoadError = false } = {}) {
+    async function fetchObdConfig() {
         try {
             const res = await fetchJsonWithTimeout('/api/obd/config');
-            if (!res.ok) {
-                throw new Error(`OBD config request failed with status ${res.status}`);
-            }
+            if (!res.ok) throw new Error(`OBD config request failed with status ${res.status}`);
             const data = res.data;
-            if (typeof data.minRssi === 'number') minRssi = data.minRssi;
-            if (typeof data.enabled === 'boolean') enabled = data.enabled;
-            if (typeof data.obdScanWindowMs === 'number') obdScanWindowMs = data.obdScanWindowMs;
-            if (typeof data.obdRetryIntervalMs === 'number')
-                obdRetryIntervalMs = data.obdRetryIntervalMs;
-            if (typeof data.proxyOpenWindowMs === 'number')
-                proxyOpenWindowMs = data.proxyOpenWindowMs;
-            if (typeof data.v1SettleQuietMs === 'number') v1SettleQuietMs = data.v1SettleQuietMs;
-            if (typeof data.v1SettleFallbackMs === 'number')
-                v1SettleFallbackMs = data.v1SettleFallbackMs;
-            if (typeof data.cycleTeardownAckTimeoutMs === 'number') {
-                cycleTeardownAckTimeoutMs = data.cycleTeardownAckTimeoutMs;
+            const ranges = [
+                ['minRssi', -100, -40], ['obdScanWindowMs', 1000, 60000],
+                ['obdRetryIntervalMs', 30000, 600000], ['proxyOpenWindowMs', 1000, 300000],
+                ['v1SettleQuietMs', 100, 5000], ['v1SettleFallbackMs', 500, 10000],
+                ['cycleTeardownAckTimeoutMs', 25, 1000]
+            ];
+            if (typeof data?.enabled !== 'boolean' || ranges.some(([key, min, max]) =>
+                !Number.isInteger(data?.[key]) || data[key] < min || data[key] > max)) {
+                throw new Error('Incomplete OBD settings');
             }
-            return data;
+            enabled = data.enabled;
+            minRssi = data.minRssi;
+            obdScanWindowMs = data.obdScanWindowMs;
+            obdRetryIntervalMs = data.obdRetryIntervalMs;
+            proxyOpenWindowMs = data.proxyOpenWindowMs;
+            v1SettleQuietMs = data.v1SettleQuietMs;
+            v1SettleFallbackMs = data.v1SettleFallbackMs;
+            cycleTeardownAckTimeoutMs = data.cycleTeardownAckTimeoutMs;
+            loaded = true;
+            return true;
         } catch (error) {
-            if (showLoadError) {
-                console.error('Failed to load OBD settings', error);
-                obdMessage = { type: 'error', text: 'Failed to load OBD settings.' };
-            }
-            throw error;
+            loaded = false;
+            console.error('Failed to load OBD settings', error);
+            obdMessage = { type: 'error', text: 'Failed to load OBD settings.' };
+            return false;
         }
     }
 
-    async function fetchObdDevices({ showLoadError = false } = {}) {
+    async function fetchObdDevices() {
         try {
             const res = await fetchJsonWithTimeout('/api/obd/devices');
-            if (!res.ok) {
-                throw new Error(`OBD devices request failed with status ${res.status}`);
-            }
+            if (!res.ok) throw new Error(`OBD devices request failed with status ${res.status}`);
             const data = res.data;
-            savedDevices = (data.devices || []).map((device) => ({
-                address: device.address || '',
-                name: device.name || '',
-                active: !!device.active
-            }));
-            return data;
-        } catch (error) {
-            if (showLoadError) {
-                console.error('Failed to load saved OBD devices', error);
-                obdMessage = { type: 'error', text: 'Failed to load saved OBD devices.' };
+            if (!Array.isArray(data?.devices) || data.devices.some((device) =>
+                typeof device?.address !== 'string' || !device.address ||
+                typeof device.name !== 'string' || typeof device.active !== 'boolean')) {
+                throw new Error('Incomplete OBD device list');
             }
-            throw error;
+            savedDevices = data.devices.map(({ address, name, active }) => ({ address, name, active }));
+            devicesLoaded = true;
+            return true;
+        } catch (error) {
+            devicesLoaded = false;
+            console.error('Failed to load saved OBD devices', error);
+            devicesMessage = { type: 'error', text: 'Failed to load saved OBD devices.' };
+            return false;
         }
     }
 
-    async function reconcileObdUiStateAfterSaveFailure() {
-        try {
-            await fetchObdConfig();
-        } catch (error) {
-            console.warn('Failed to reconcile OBD settings after save failure', error);
-        }
+    async function retryConfig() {
+        if (loadingConfig || saving) return;
+        loadingConfig = true;
+        obdMessage = null;
+        await fetchObdConfig();
+        loadingConfig = false;
+    }
+
+    async function retryDevices() {
+        if (loadingDevices || forgetting || renaming) return;
+        loadingDevices = true;
+        devicesMessage = null;
+        await fetchObdDevices();
+        loadingDevices = false;
     }
 
     async function saveConfig(fields) {
-        if (saving) return false;
+        if (!loaded || loadingConfig || saving) return false;
         saving = true;
         obdMessage = null;
+        let saved = false;
         try {
             const res = await fetchWithTimeout('/api/obd/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(fields)
             });
-            if (!res.ok) {
-                obdMessage = { type: 'error', text: 'Failed to save OBD setting.' };
-                await reconcileObdUiStateAfterSaveFailure();
-                return false;
-            }
-            await fetchObdConfig();
-            return true;
+            saved = res.ok;
+            if (!saved) obdMessage = { type: 'error', text: 'Failed to save OBD setting.' };
         } catch (_) {
             obdMessage = { type: 'error', text: 'Connection error.' };
-            await reconcileObdUiStateAfterSaveFailure();
-            return false;
-        } finally {
-            saving = false;
         }
+        const refreshed = await fetchObdConfig();
+        saving = false;
+        return saved && refreshed;
     }
 
     async function handleToggle() {
@@ -132,25 +138,29 @@
     }
 
     async function forgetDevice() {
+        if (!devicesLoaded || loadingDevices || forgetting || renaming) return;
         forgetting = true;
-        obdMessage = null;
+        devicesMessage = null;
+        let saved = false;
         try {
             const res = await fetchWithTimeout('/api/obd/forget', { method: 'POST' });
-            if (res.ok) {
-                obdMessage = { type: 'success', text: 'Device forgotten.' };
-                savedDevices = [];
-                cancelRename();
-            } else {
-                obdMessage = { type: 'error', text: 'Failed to forget device.' };
-            }
+            saved = res.ok;
+            if (!saved) devicesMessage = { type: 'error', text: 'Failed to forget device.' };
         } catch (_) {
-            obdMessage = { type: 'error', text: 'Connection error.' };
-        } finally {
-            forgetting = false;
+            devicesMessage = { type: 'error', text: 'Connection error.' };
         }
+        const refreshed = await fetchObdDevices();
+        if (saved && refreshed) {
+            cancelRename();
+            devicesMessage = savedDevices.length === 0
+                ? { type: 'success', text: 'Device forgotten.' }
+                : { type: 'error', text: 'The saved device could not be cleared.' };
+        }
+        forgetting = false;
     }
 
     function startRename(device) {
+        if (!devicesLoaded || loadingDevices || forgetting || renaming) return;
         editingAddress = device.address;
         editName = device.name || '';
     }
@@ -161,36 +171,32 @@
     }
 
     async function saveDeviceName(address) {
-        if (renaming) return;
+        if (!devicesLoaded || loadingDevices || forgetting || renaming) return;
 
         const submittedDraft = editName;
         const submittedName = submittedDraft.trim();
         renaming = true;
-        obdMessage = null;
+        devicesMessage = null;
+        let saved = false;
         try {
             const formData = new FormData();
             formData.append('address', address);
             formData.append('name', submittedName);
-
             const res = await fetchWithTimeout('/api/obd/devices/name', {
                 method: 'POST',
                 body: formData
             });
-            if (!res.ok) {
-                obdMessage = { type: 'error', text: 'Failed to save OBD device name.' };
-                return;
-            }
-
-            savedDevices = savedDevices.map((device) =>
-                device.address === address ? { ...device, name: submittedName } : device
-            );
-            obdMessage = { type: 'success', text: 'OBD device name saved.' };
-            if (editingAddress === address && editName === submittedDraft) cancelRename();
+            saved = res.ok;
+            if (!saved) devicesMessage = { type: 'error', text: 'Failed to save OBD device name.' };
         } catch (_) {
-            obdMessage = { type: 'error', text: 'Failed to save OBD device name.' };
-        } finally {
-            renaming = false;
+            devicesMessage = { type: 'error', text: 'Failed to save OBD device name.' };
         }
+        const refreshed = await fetchObdDevices();
+        if (saved && refreshed) {
+            devicesMessage = { type: 'success', text: 'OBD device name saved.' };
+            if (editingAddress === address && editName === submittedDraft) cancelRename();
+        }
+        renaming = false;
     }
 </script>
 
@@ -200,6 +206,15 @@
             title="OBD-II Speed Source"
             subtitle="Connect an OBDLink CX for vehicle speed data. Enabling OBD disables proxy mode."
         />
+
+        <StatusAlert message={obdMessage} />
+        {#if !loaded}
+            {#if loadingConfig}
+                <p class="copy-caption">Loading OBD settings…</p>
+            {:else}
+                <button class="btn btn-outline btn-sm" onclick={retryConfig}>Retry OBD settings</button>
+            {/if}
+        {/if}
 
         {#if loaded}
             <label class="label cursor-pointer">
@@ -212,10 +227,6 @@
                     disabled={saving}
                 />
             </label>
-
-            {#if obdMessage}
-                <StatusAlert message={obdMessage} />
-            {/if}
 
             {#if enabled}
                 <div class="field-control">
@@ -359,11 +370,21 @@
                 </p>
             </div>
 
+        {/if}
+
+        <StatusAlert message={devicesMessage} />
+        {#if !devicesLoaded}
+            {#if loadingDevices}
+                <p class="copy-caption">Loading saved OBD devices…</p>
+            {:else}
+                <button class="btn btn-outline btn-sm" onclick={retryDevices}>Retry saved OBD devices</button>
+            {/if}
+        {:else}
             <div class="flex gap-2">
                 <button
                     class="btn btn-outline btn-error btn-sm"
                     onclick={forgetDevice}
-                    disabled={forgetting || savedDevices.length === 0}
+                    disabled={forgetting || renaming || savedDevices.length === 0}
                 >
                     Forget Device
                 </button>
@@ -412,14 +433,14 @@
                                             <button
                                                 class="btn btn-sm btn-success"
                                                 onclick={() => saveDeviceName(device.address)}
-                                                disabled={renaming}
+                                                disabled={renaming || forgetting}
                                             >
                                                 Save
                                             </button>
                                             <button
                                                 class="btn btn-ghost btn-sm"
                                                 onclick={cancelRename}
-                                                disabled={renaming}
+                                                disabled={renaming || forgetting}
                                             >
                                                 Cancel
                                             </button>
@@ -427,7 +448,7 @@
                                             <button
                                                 class="btn btn-ghost btn-sm"
                                                 onclick={() => startRename(device)}
-                                                disabled={renaming}
+                                                disabled={renaming || forgetting}
                                             >
                                                 Rename
                                             </button>

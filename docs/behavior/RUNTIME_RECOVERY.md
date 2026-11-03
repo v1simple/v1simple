@@ -139,6 +139,27 @@ backup replacement and a second empty-NVS boot. Valid empty/live and unavailable
 read controls remain distinct. Same-size content corruption is not detected by
 this format check; physical media and radio behavior are not exercised.
 
+## Unknown maintenance settings
+
+The ALP page, GPS card and OBD card require complete valid configuration before
+enabling edits. A failed initial read or post-save readback withdraws readiness
+and offers Retry. Retry reads current settings; it never repeats a previous
+write. Each explicit save remains locked through its fresh readback, including
+when a response was lost after a possible commit. ALP handles its initial-load
+rejection locally rather than leaving an unhandled asynchronous error.
+
+OBD configuration and the saved-adapter catalog have independent readiness and
+errors. An unknown catalog cannot authorize rename or forget, while a known
+configuration remains usable. Catalog mutations also reread the authoritative
+list before restoring controls. Existing rename drafts survive unrelated
+configuration readback and are cleared only by their own completed operation.
+
+`SettingsReadRecovery.test.js` exercises the real Svelte components with failed,
+incomplete and malformed reads, repeated Retry, successful recovery, uncertain
+writes and readback failure. The OBD page and settings-transition regressions
+cover canonical values, rename drafts and concurrent interaction. HTTP is
+modeled in these component tests; they do not establish device persistence.
+
 ## Long replies and presentation fallbacks
 
 Acknowledged command writes in `ble_commands.cpp` use the same attribute-worker

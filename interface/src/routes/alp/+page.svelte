@@ -17,76 +17,73 @@
         alpDisableV1LaserOnPush: true
     });
     let loading = $state(true);
+    let loaded = $state(false);
     let saving = $state(false);
     let message = $state(null);
 
     onMount(() => {
         const releaseDeviceSettings = retainDeviceSettings();
-        void (async () => {
-            try {
-                await fetchSettings({ showLoadError: true });
-            } finally {
-                loading = false;
-            }
-        })();
+        void fetchSettings().finally(() => { loading = false; });
         return releaseDeviceSettings;
     });
 
-    function applySettings(data) {
-        if (!data) return;
-        if (typeof data.alpEnabled === 'boolean') settings.alpEnabled = data.alpEnabled;
-        if (typeof data.alpAlertPersistSec === 'number') {
-            settings.alpAlertPersistSec = data.alpAlertPersistSec;
-        }
-        if (typeof data.alpDisableV1LaserOnPush === 'boolean') {
-            settings.alpDisableV1LaserOnPush = data.alpDisableV1LaserOnPush;
+    async function fetchSettings({ force = false } = {}) {
+        try {
+            const data = force ? await invalidateDeviceSettings() : await refreshDeviceSettings();
+            if (typeof data?.alpEnabled !== 'boolean' ||
+                typeof data?.alpDisableV1LaserOnPush !== 'boolean' ||
+                !Number.isInteger(data?.alpAlertPersistSec) ||
+                data.alpAlertPersistSec < 0 || data.alpAlertPersistSec > 5) {
+                throw new Error('Incomplete ALP settings');
+            }
+            settings = {
+                alpEnabled: data.alpEnabled,
+                alpAlertPersistSec: data.alpAlertPersistSec,
+                alpDisableV1LaserOnPush: data.alpDisableV1LaserOnPush
+            };
+            loaded = true;
+            return true;
+        } catch (error) {
+            loaded = false;
+            console.error('Failed to load ALP settings', error);
+            message = { type: 'error', text: 'Failed to load ALP settings.' };
+            return false;
         }
     }
 
-    async function fetchSettings({ showLoadError = false, force = false } = {}) {
-        try {
-            const data = force ? await invalidateDeviceSettings() : await refreshDeviceSettings();
-            if (!data) throw new Error('settings request failed');
-            applySettings(data);
-            return data;
-        } catch (error) {
-            if (showLoadError) {
-                console.error('Failed to load ALP settings', error);
-                message = { type: 'error', text: 'Failed to load ALP settings.' };
-            }
-            throw error;
-        }
+    async function retryLoad() {
+        if (loading || saving) return;
+        loading = true;
+        message = null;
+        await fetchSettings({ force: true });
+        loading = false;
     }
 
     async function saveField(fields, successText = 'ALP setting saved.') {
+        if (!loaded || loading || saving) return false;
         saving = true;
         message = null;
+        let saved = false;
         try {
             const formData = new FormData();
             for (const [key, value] of Object.entries(fields)) {
                 formData.append(key, String(value));
             }
-
             const res = await postSettingsForm(formData, '/api/device/settings');
-            if (!res.ok) {
-                message = { type: 'error', text: 'Failed to save ALP setting.' };
-                await fetchSettings().catch(() => null);
-                return false;
-            }
-
-            message = { type: 'success', text: successText };
-            await fetchSettings({ force: true }).catch(() => null);
-            return true;
+            saved = res.ok;
+            if (!saved) message = { type: 'error', text: 'Failed to save ALP setting.' };
         } catch (_) {
             message = { type: 'error', text: 'Connection error.' };
-            await fetchSettings().catch(() => null);
-            return false;
-        } finally {
-            saving = false;
         }
+        // A lost response may follow a committed write. Read once; never repeat it.
+        const refreshed = await fetchSettings({ force: true });
+        if (saved && refreshed) message = { type: 'success', text: successText };
+        saving = false;
+        return saved && refreshed;
     }
 
     async function handleAlpEnabled(checked) {
+        if (!loaded || loading || saving) return;
         settings.alpEnabled = checked;
         const ok = await saveField(
             { alpEnabled: checked },
@@ -98,11 +95,13 @@
     }
 
     async function handleDisableV1Laser(checked) {
+        if (!loaded || loading || saving) return;
         settings.alpDisableV1LaserOnPush = checked;
         await saveField({ alpDisableV1LaserOnPush: checked });
     }
 
     async function handlePersistChange(event) {
+        if (!loaded || loading || saving) return;
         const value = Math.max(0, Math.min(5, Number(event.currentTarget.value) || 0));
         settings.alpAlertPersistSec = value;
         await saveField({ alpAlertPersistSec: value });
@@ -118,6 +117,8 @@
         <div class="state-loading tall">
             <span class="loading loading-lg loading-spinner"></span>
         </div>
+    {:else if !loaded}
+        <button class="btn btn-outline btn-sm" onclick={retryLoad}>Retry ALP settings</button>
     {:else}
         <div class="surface-card">
             <div class="card-body space-y-4">

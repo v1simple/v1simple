@@ -8,36 +8,37 @@ function countCalls(fetchMock, url) {
     return fetchMock.mock.calls.filter(([requestUrl]) => requestUrl === url).length;
 }
 
+function obdConfig(fields = {}) {
+    return { enabled: false, minRssi: -80,
+        obdScanWindowMs: 15000, obdRetryIntervalMs: 120000, proxyOpenWindowMs: 60000,
+        v1SettleQuietMs: 500, v1SettleFallbackMs: 1500, cycleTeardownAckTimeoutMs: 100,
+        ...fields };
+}
+
 function installDefaultFetch(overrides = []) {
+    let devices = [{ address: 'A4:C1:38:00:11:22', name: 'Truck Adapter', connected: false, active: true }];
+    // Model the committed catalog separately from the response, so the page's
+    // post-write GET checks actual state rather than its submitted draft.
+    function catalogWrite(responder) {
+        return async (request) => {
+            const response = typeof responder === 'function' ? await responder(request) : responder;
+            if (response.ok) {
+                if (request.url === '/api/obd/devices/name') devices[0].name = request.init.body.get('name');
+                if (request.url === '/api/obd/forget') devices = [];
+            }
+            return response;
+        };
+    }
     return installFetchMock(
         [
-            ...overrides,
-            {
-                method: 'GET',
-                match: '/api/obd/config',
-                respond: jsonResponse({ enabled: false, minRssi: -80 })
-            },
-            {
-                method: 'GET',
-                match: '/api/obd/devices',
-                respond: jsonResponse({
-                    devices: [
-                        {
-                            address: 'A4:C1:38:00:11:22',
-                            name: 'Truck Adapter',
-                            connected: false,
-                            active: true
-                        }
-                    ]
-                })
-            },
+            ...overrides.map((entry) => entry.method === 'POST' &&
+                ['/api/obd/devices/name', '/api/obd/forget'].includes(entry.match)
+                ? { ...entry, respond: catalogWrite(entry.respond) } : entry),
+            { method: 'GET', match: '/api/obd/config', respond: jsonResponse(obdConfig()) },
+            { method: 'GET', match: '/api/obd/devices', respond: () => jsonResponse({ devices }) },
             { method: 'POST', match: '/api/obd/config', respond: jsonResponse({ success: true }) },
-            {
-                method: 'POST',
-                match: '/api/obd/devices/name',
-                respond: jsonResponse({ success: true })
-            },
-            { method: 'POST', match: '/api/obd/forget', respond: jsonResponse({ success: true }) }
+            { method: 'POST', match: '/api/obd/devices/name', respond: catalogWrite(jsonResponse({ success: true })) },
+            { method: 'POST', match: '/api/obd/forget', respond: catalogWrite(jsonResponse({ success: true })) }
         ],
         jsonResponse({})
     );
@@ -183,6 +184,7 @@ describe('obd route page', () => {
         resolveRename(jsonResponse({ success: false }, 500));
         await screen.findByText('Failed to save OBD device name.');
         expect(screen.queryByText('OBD device name saved.')).not.toBeInTheDocument();
+        await waitFor(() => expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled());
 
         await fireEvent.input(input, { target: { value: 'Retry name' } });
         await fireEvent.keyDown(input, { key: 'Enter' });
@@ -230,7 +232,7 @@ describe('obd route page', () => {
                 {
                     method: 'GET',
                     match: '/api/obd/config',
-                    respond: jsonResponse({ enabled: false, minRssi: -80 })
+                    respond: jsonResponse(obdConfig())
                 },
                 {
                     method: 'POST',
@@ -265,7 +267,7 @@ describe('obd route page', () => {
                 {
                     method: 'GET',
                     match: '/api/obd/config',
-                    respond: jsonResponse({ enabled: true, minRssi: -80 })
+                    respond: jsonResponse(obdConfig({ enabled: true }))
                 },
                 {
                     method: 'POST',
@@ -295,20 +297,20 @@ describe('obd route page', () => {
     });
 
     it('re-fetches OBD config after a save response is lost', async () => {
-        let obdConfig = { enabled: false, minRssi: -80 };
+        let stored = obdConfig();
         const fetchMock = installFetchMock(
             [
                 {
                     method: 'GET',
                     match: '/api/obd/config',
-                    respond: () => jsonResponse(obdConfig)
+                    respond: () => jsonResponse(stored)
                 },
                 {
                     method: 'POST',
                     match: '/api/obd/config',
                     respond: async ({ init }) => {
                         const body = JSON.parse(init.body);
-                        obdConfig = { ...obdConfig, ...body };
+                        stored = { ...stored, ...body };
                         return Promise.reject(new Error('connection lost after write'));
                     }
                 },

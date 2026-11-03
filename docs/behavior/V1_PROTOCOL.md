@@ -337,10 +337,12 @@ commit timeout despite its later successful parse.
 
 ### Apply lifecycle and closure
 
-The transaction owner is
-[`AutoPushModule`](../../src/modules/auto_push/auto_push_module.cpp).
-Its status types, deadlines and wrap-safe comparison are in
-[`auto_push_module.h`](../../src/modules/auto_push/auto_push_module.h).
+[`AutoPushModule`](../../src/modules/auto_push/auto_push_module.cpp) owns detector
+command execution and verification. Its status types, deadlines and wrap-safe
+comparison are in [`auto_push_module.h`](../../src/modules/auto_push/auto_push_module.h).
+[`SettingsOperationCoordinator`](../../src/modules/settings_operation/settings_operation_coordinator.cpp)
+owns the surrounding durable-operation lifecycle and transient capture/retry
+state; `V1SettingsOperationStore` owns durable admission and results.
 
 1. `DriveRuntime::captureDetectorSnapshot` owns observation mapping for both
    explicit settings operations and `onV1Connected`. The stable connection
@@ -350,7 +352,8 @@ Its status types, deadlines and wrap-safe comparison are in
    The callback supplies the snapshot to `setPreApplySnapshot`, records it when a
    live address and ready device store are available, then optionally calls
    `queueSlotPush`. Failed recording prevents queueing. Explicit
-   settings operations use `DriveRuntime::queueSettingsApply` after a fresh capture.
+   settings operations use `SettingsOperationCoordinator::queueSettingsApply` after
+   a fresh capture.
 2. `queueSlotPush`/`queuePushNow` load the profile; `queuePreparedSlot` stages the
    owned strings and definitions, validates slot modifiers, and persists any
    requested active-slot change before publishing the operation. A direct profile
@@ -393,11 +396,25 @@ Its status types, deadlines and wrap-safe comparison are in
    verified and the same still-live session before reporting `succeeded` and
    publishing the generation-qualified apply edge. Failure blocks remaining work;
    it does not imply previous writes were rolled back.
-9. For durable settings operations, `DriveRuntime::processSettingsOperation`
-   persists the executor summary and initiates recapture. `finishSettingsRecapture`
-   stores and flushes the fresh detector snapshot before final status; incomplete
-   recapture can produce `partial` even after executor success. Ordinary connect
-   AutoPush and this durable outer operation are distinct callers.
+9. For durable settings operations, `SettingsOperationCoordinator::process`
+   persists the executor summary and initiates recapture before the next executor
+   tick. Its `finishSettingsRecapture` uses Drive's `captureDetectorSnapshot` and
+   `persistDetectorSnapshot` effects to record and flush the fresh snapshot before
+   final status. Unavailable recording and failed flushing remain distinct results;
+   incomplete recapture can produce `partial` even after executor success.
+   Ordinary connect AutoPush and this durable outer operation are distinct callers.
+
+The executor and durable store share `DetectorComponentOutcome`; its explicit
+values 0–14 retain the installed record encoding and existing outcome names.
+`test_v1_settings_operation` pins all 15 values/names and literal installed record
+bytes/CRCs, then reloads them through the real store.
+
+`DriveRuntime::requestMaintenanceBootRestart` retains the controlled-restart
+boundary: flush a pending detector snapshot, persist the one-shot boot flag, then
+ask the coordinator to acknowledge a terminal maintenance-return intent. A failed
+acknowledgement attempts boot-flag rollback and cancels the restart. An active
+operation's return intent is not consumed. Final logging/settings persistence,
+clean marking and the physical delay/restart remain Drive effects.
 
 The changed order closes the four in-send response losses without admitting
 pre-request packets. Keep the existing post-send observation boundaries for
@@ -479,7 +496,7 @@ Use `test_ble_queue_ingest` when changing notification admission/reassembly;
 its parser double limits its claim. Do not run another PlatformIO job concurrently.
 
 `python3 scripts/test_settings_apply_lifecycle.py` additionally exercises the
-production outer Apply owner, durable operation store, executor and drive-loop
+real SettingsOperationCoordinator, durable operation store, executor and drive-loop
 ordering. It proves that local settings do not stall an Apply, that the overall
 deadline cancels the executor before another write, and that a failed NVS status
 write cannot leave it running. A command already sent produces a partial result;
@@ -490,7 +507,10 @@ The same runner compiles `captureDetectorSnapshot` and the complete
 operation versus connection freshness, wraparound, incomplete sweep tables,
 and capture/handoff/store/queue ordering. BLE observations and the receiving
 store/AutoPush adapters are modeled; the snapshot types and owning methods are
-production code.
+production code. A third fixture executes the complete controlled-restart method
+with the real coordinator and store, covering snapshot/boot-flag/acknowledgement
+failures, rollback and final persistence ordering. Hardware restart and logging
+collaborators are recorded substitutes.
 
 For a small agent task, choose **one** repair and name the expected input and final
 observable above. Read the owning path plus its complete test fixture, preserve

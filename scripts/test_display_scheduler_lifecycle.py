@@ -31,13 +31,13 @@ def build_and_run(build: Path, orchestration_source: str | None = None) -> None:
     owner = between(source, "void DriveRuntime::presentConnectionState(",
                     "void DriveRuntime::processPower(")
     owner += between(source, "DriveRuntime::DisplayEdges DriveRuntime::consumeDisplayEdges()",
-                     "void DriveRuntime::finishSettingsRecapture(")
+                     "void DriveRuntime::processPeriodicMaintenance(")
     # Use the actual dispatch watchdog value, not a fixture's approximation.
     owner = next(line for line in source.splitlines()
                  if line.startswith("constexpr uint32_t kConnectionStateProcessMaxGapMs =")) + "\n" + owner
     (build / "drive_display.inc").write_text(owner, encoding="utf-8")
     selection = between(source, "bool DriveRuntime::beginTripleTapProfileCycle(",
-                        "void DriveRuntime::queueSettingsApply(")
+                        "bool DriveRuntime::persistInTheBoxApply(")
     selection += between(source, "void DriveRuntime::processTapGesture(",
                          "void DriveRuntime::openBootReadyGate(")
     (build / "profile_cycle.inc").write_text(selection, encoding="utf-8")

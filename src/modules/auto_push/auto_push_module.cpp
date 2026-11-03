@@ -118,7 +118,7 @@ void AutoPushModule::setPreApplySnapshot(const V1DetectorSnapshot& snapshot) {
     // capture for the queue call that immediately follows the callback.
     if (isActive() && snapshot.sessionGeneration != 0 &&
         snapshot.sessionGeneration != state_.sessionGeneration) {
-        failWholePlan(nullptr, Outcome::SESSION_CHANGED, FailureReason::SESSION_CHANGED);
+        failWholePlan(nullptr, DetectorComponentOutcome::SessionChanged, FailureReason::SESSION_CHANGED);
     }
     preApplySnapshot_ = snapshot;
 }
@@ -324,15 +324,15 @@ uint8_t AutoPushModule::modeValueFromObservation(char mode) {
 bool AutoPushModule::configurePlan() {
     if (state_.profileOwned) {
         if (!state_.profileLoaded) {
-            failWholePlan(&status_.userSettings, Outcome::LOAD_FAILED, FailureReason::PROFILE_LOAD_FAILED);
+            failWholePlan(&status_.userSettings, DetectorComponentOutcome::LoadFailed, FailureReason::PROFILE_LOAD_FAILED);
             return false;
         }
         if (state_.profile.schemaVersion != V1_PROFILE_SCHEMA_VERSION) {
-            failWholePlan(&status_.userSettings, Outcome::INVALID, FailureReason::INVALID_PROFILE_SCHEMA);
+            failWholePlan(&status_.userSettings, DetectorComponentOutcome::Invalid, FailureReason::INVALID_PROFILE_SCHEMA);
             return false;
         }
         if (!isValidV1InTheBoxSettings(state_.profile.inTheBox)) {
-            failWholePlan(nullptr, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            failWholePlan(nullptr, DetectorComponentOutcome::Invalid, FailureReason::INVALID_POLICY);
             return false;
         }
 
@@ -344,43 +344,43 @@ bool AutoPushModule::configurePlan() {
             settings_->getSlotDarkModeOverride(state_.slotIndex);
         if (detector.userSettingsPolicy != V1UserSettingsPolicy::Unchanged &&
             detector.userSettingsPolicy != V1UserSettingsPolicy::Value) {
-            failWholePlan(&status_.userSettings, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            failWholePlan(&status_.userSettings, DetectorComponentOutcome::Invalid, FailureReason::INVALID_POLICY);
             return false;
         }
         if (detector.modePolicy != V1ModePolicy::Unchanged && detector.modePolicy != V1ModePolicy::Value) {
-            failWholePlan(&status_.mode, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            failWholePlan(&status_.mode, DetectorComponentOutcome::Invalid, FailureReason::INVALID_POLICY);
             return false;
         }
         if (detector.displayPolicy != V1DisplayPolicy::Unchanged && detector.displayPolicy != V1DisplayPolicy::On &&
             detector.displayPolicy != V1DisplayPolicy::Off) {
-            failWholePlan(&status_.display, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            failWholePlan(&status_.display, DetectorComponentOutcome::Invalid, FailureReason::INVALID_POLICY);
             return false;
         }
         if (detector.volumePolicy != V1VolumePolicy::Unchanged &&
             detector.volumePolicy != V1VolumePolicy::Temporary && detector.volumePolicy != V1VolumePolicy::Saved) {
-            failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::Invalid, FailureReason::INVALID_POLICY);
             return false;
         }
         if (detector.volumeFeedback != V1VolumeFeedbackPolicy::None &&
             detector.volumeFeedback != V1VolumeFeedbackPolicy::ChangedOnly &&
             detector.volumeFeedback != V1VolumeFeedbackPolicy::Always) {
-            failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::Invalid, FailureReason::INVALID_POLICY);
             return false;
         }
         if (detector.volumeDisconnect != V1VolumeDisconnectPolicy::RestoreSaved &&
             detector.volumeDisconnect != V1VolumeDisconnectPolicy::KeepCurrent) {
-            failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::Invalid, FailureReason::INVALID_POLICY);
             return false;
         }
         if (detector.bluetoothLedPolicy != V1BluetoothLedPolicy::Unchanged &&
             detector.bluetoothLedPolicy != V1BluetoothLedPolicy::Off &&
             detector.bluetoothLedPolicy != V1BluetoothLedPolicy::On) {
-            failWholePlan(&status_.display, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            failWholePlan(&status_.display, DetectorComponentOutcome::Invalid, FailureReason::INVALID_POLICY);
             return false;
         }
         if (detector.customFrequencyPolicy != V1CustomFrequencyPolicy::Unchanged &&
             detector.customFrequencyPolicy != V1CustomFrequencyPolicy::Value) {
-            failWholePlan(&status_.customFrequencies, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Invalid, FailureReason::INVALID_POLICY);
             return false;
         }
         status_.userSettings.requested = detector.userSettingsPolicy == V1UserSettingsPolicy::Value;
@@ -432,7 +432,7 @@ bool AutoPushModule::configurePlan() {
     ComponentStatus* components[] = {&status_.userSettings, &status_.display, &status_.mode, &status_.volume,
                                      &status_.customFrequencies};
     for (ComponentStatus* component : components) {
-        component->outcome = component->requested ? Outcome::PENDING : Outcome::NOT_REQUESTED;
+        component->outcome = component->requested ? DetectorComponentOutcome::Pending : DetectorComponentOutcome::NotRequested;
     }
     return true;
 }
@@ -443,7 +443,7 @@ AutoPushModule::Step AutoPushModule::customEntryStep() const {
 
 bool AutoPushModule::compileCustomDefinitions(const V1DetectorSnapshot& live) {
     const auto invalid = [this]() {
-        failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+        failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Invalid,
                       FailureReason::CUSTOM_CONFIGURATION_INVALID);
         return false;
     };
@@ -561,10 +561,10 @@ bool AutoPushModule::compileCustomDefinitions(const V1DetectorSnapshot& live) {
     status_.customFrequencies.needed = definitionsDiffer;
     if (!definitionsDiffer) {
         status_.customFrequencies.verified = true;
-        status_.customFrequencies.outcome = Outcome::UNCHANGED;
+        status_.customFrequencies.outcome = DetectorComponentOutcome::Unchanged;
     } else {
         status_.customFrequencies.verified = false;
-        status_.customFrequencies.outcome = Outcome::PENDING;
+        status_.customFrequencies.outcome = DetectorComponentOutcome::Pending;
     }
     return true;
 }
@@ -572,30 +572,30 @@ bool AutoPushModule::compileCustomDefinitions(const V1DetectorSnapshot& live) {
 bool AutoPushModule::preflight() {
     if (!configurePlan()) return false;
     if (!state_.before.available || state_.before.sessionGeneration == 0) {
-        failWholePlan(nullptr, Outcome::INVALID, FailureReason::MISSING_LIVE_SNAPSHOT);
+        failWholePlan(nullptr, DetectorComponentOutcome::Invalid, FailureReason::MISSING_LIVE_SNAPSHOT);
         return false;
     }
     if (static_cast<uint32_t>(millis()) - state_.before.capturedUptimeMs > kPreApplySnapshotMaxAgeMs) {
-        failWholePlan(nullptr, Outcome::INVALID, FailureReason::MISSING_LIVE_SNAPSHOT);
+        failWholePlan(nullptr, DetectorComponentOutcome::Invalid, FailureReason::MISSING_LIVE_SNAPSHOT);
         return false;
     }
     if (state_.before.sessionGeneration != state_.sessionGeneration || !liveSessionMatches()) {
-        failWholePlan(nullptr, Outcome::SESSION_CHANGED, FailureReason::SESSION_CHANGED);
+        failWholePlan(nullptr, DetectorComponentOutcome::SessionChanged, FailureReason::SESSION_CHANGED);
         return false;
     }
     if (!state_.before.hasFirmwareVersion || state_.before.firmwareVersion == 0 ||
         !bleClient_->hasV1FirmwareVersion()) {
-        failWholePlan(nullptr, Outcome::UNSUPPORTED, FailureReason::VERSION_UNKNOWN);
+        failWholePlan(nullptr, DetectorComponentOutcome::Unsupported, FailureReason::VERSION_UNKNOWN);
         return false;
     }
     state_.firmwareVersion = state_.before.firmwareVersion;
     if (bleClient_->v1FirmwareVersion() != state_.firmwareVersion ||
         !V1FirmwareCompat::capabilities(state_.firmwareVersion).gen2) {
-        failWholePlan(nullptr, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_FIRMWARE);
+        failWholePlan(nullptr, DetectorComponentOutcome::Unsupported, FailureReason::UNSUPPORTED_FIRMWARE);
         return false;
     }
     if (bleClient_->isProxyClientConnected()) {
-        failWholePlan(nullptr, Outcome::BLOCKED, FailureReason::PROXY_OWNS_DETECTOR);
+        failWholePlan(nullptr, DetectorComponentOutcome::Blocked, FailureReason::PROXY_OWNS_DETECTOR);
         return false;
     }
 
@@ -612,17 +612,17 @@ bool AutoPushModule::preflight() {
         failWholePlan(status_.userSettings.requested
                           ? &status_.userSettings
                           : (status_.customFrequencies.requested ? &status_.customFrequencies : &status_.mode),
-                      Outcome::INVALID, FailureReason::USER_BYTES_BEFORE_REQUIRED);
+                      DetectorComponentOutcome::Invalid, FailureReason::USER_BYTES_BEFORE_REQUIRED);
         return false;
     }
 
     if (status_.userSettings.requested) {
         if (!state_.profileLoaded) {
-            failWholePlan(&status_.userSettings, Outcome::LOAD_FAILED, FailureReason::PROFILE_LOAD_FAILED);
+            failWholePlan(&status_.userSettings, DetectorComponentOutcome::LoadFailed, FailureReason::PROFILE_LOAD_FAILED);
             return false;
         }
         if (!V1FirmwareCompat::hasWritableUserSettings(state_.firmwareVersion)) {
-            failWholePlan(&status_.userSettings, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_FIRMWARE);
+            failWholePlan(&status_.userSettings, DetectorComponentOutcome::Unsupported, FailureReason::UNSUPPORTED_FIRMWARE);
             return false;
         }
         status_.beforeUserBytes = state_.before.userBytes;
@@ -636,7 +636,7 @@ bool AutoPushModule::preflight() {
 
         if (!V1FirmwareCompat::hasValidModeledUserSettingValues(state_.effectiveUserBytes.data(),
                                                                 state_.firmwareVersion)) {
-            failWholePlan(&status_.userSettings, Outcome::INVALID,
+            failWholePlan(&status_.userSettings, DetectorComponentOutcome::Invalid,
                           FailureReason::INVALID_USER_SETTING_VALUE);
             return false;
         }
@@ -652,7 +652,7 @@ bool AutoPushModule::preflight() {
             ((status_.beforeUserBytes[0] ^ state_.effectiveUserBytes[0]) & 0x06) != 0;
         if (enablesCustomFrequencies && !status_.customFrequencies.requested &&
             (changesCustomEnable || changesCustomBandCoverage || state_.regionChanged)) {
-            failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+            failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Invalid,
                           FailureReason::CUSTOM_CONFIGURATION_INVALID);
             return false;
         }
@@ -667,12 +667,12 @@ bool AutoPushModule::preflight() {
                 const V1ModeObservation& observedMode = parser_->modeObservation();
                 if (!state_.before.hasMode || !observedMode.available || observedMode.revision == 0 ||
                     observedMode.ingressSequence == 0 || observedMode.value != state_.before.mode) {
-                    failWholePlan(&status_.mode, Outcome::INVALID, FailureReason::MISSING_LIVE_SNAPSHOT);
+                    failWholePlan(&status_.mode, DetectorComponentOutcome::Invalid, FailureReason::MISSING_LIVE_SNAPSHOT);
                     return false;
                 }
                 if (state_.before.mode == 'L' &&
                     (!status_.mode.requested || state_.desiredMode < 1 || state_.desiredMode > 2)) {
-                    failWholePlan(&status_.mode, Outcome::INVALID,
+                    failWholePlan(&status_.mode, DetectorComponentOutcome::Invalid,
                                   FailureReason::EURO_ADVANCED_MODE_INVALID);
                     return false;
                 }
@@ -682,7 +682,7 @@ bool AutoPushModule::preflight() {
             status_.beforeUserBytes.data(), state_.effectiveUserBytes.data(), state_.firmwareVersion);
         if (!status_.userSettings.needed) {
             status_.userSettings.verified = true;
-            status_.userSettings.outcome = Outcome::UNCHANGED;
+            status_.userSettings.outcome = DetectorComponentOutcome::Unchanged;
         }
     }
 
@@ -694,11 +694,11 @@ bool AutoPushModule::preflight() {
             observed.value != state_.before.displayOn || !state_.before.hasBluetoothIndicator ||
             !bluetooth.available || bluetooth.revision == 0 || bluetooth.ingressSequence == 0 ||
             bluetooth.state != state_.before.bluetoothIndicator) {
-            failWholePlan(&status_.display, Outcome::INVALID, FailureReason::MISSING_LIVE_SNAPSHOT);
+            failWholePlan(&status_.display, DetectorComponentOutcome::Invalid, FailureReason::MISSING_LIVE_SNAPSHOT);
             return false;
         }
         if (state_.displayOn && state_.bluetoothLedPolicy != V1BluetoothLedPolicy::Unchanged) {
-            failWholePlan(&status_.display, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            failWholePlan(&status_.display, DetectorComponentOutcome::Invalid, FailureReason::INVALID_POLICY);
             return false;
         }
         status_.beforeDisplayOn = state_.before.displayOn;
@@ -711,7 +711,7 @@ bool AutoPushModule::preflight() {
                                                      : status_.beforeBluetoothIndicatorActive);
         if (!state_.displayOn && state_.bluetoothIndicatorActive &&
             !V1FirmwareCompat::capabilities(state_.firmwareVersion).keepBluetoothLedOn) {
-            failWholePlan(&status_.display, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_BLUETOOTH_LED);
+            failWholePlan(&status_.display, DetectorComponentOutcome::Unsupported, FailureReason::UNSUPPORTED_BLUETOOTH_LED);
             return false;
         }
         status_.display.needed = status_.beforeDisplayOn != state_.displayOn ||
@@ -719,29 +719,29 @@ bool AutoPushModule::preflight() {
                                                           state_.bluetoothIndicatorActive);
         if (!status_.display.needed) {
             status_.display.verified = true;
-            status_.display.outcome = Outcome::UNCHANGED;
+            status_.display.outcome = DetectorComponentOutcome::Unchanged;
         }
     }
 
     if (status_.mode.requested) {
         if (state_.desiredMode < 1 || state_.desiredMode > 3) {
-            failWholePlan(&status_.mode, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            failWholePlan(&status_.mode, DetectorComponentOutcome::Invalid, FailureReason::INVALID_POLICY);
             return false;
         }
         if (!V1FirmwareCompat::capabilities(state_.firmwareVersion).modeObservation) {
-            failWholePlan(&status_.mode, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_FIRMWARE);
+            failWholePlan(&status_.mode, DetectorComponentOutcome::Unsupported, FailureReason::UNSUPPORTED_FIRMWARE);
             return false;
         }
         if (state_.desiredMode == 3) {
             if (!state_.before.hasUserBytes) {
-                failWholePlan(&status_.mode, Outcome::INVALID, FailureReason::USER_BYTES_BEFORE_REQUIRED);
+                failWholePlan(&status_.mode, DetectorComponentOutcome::Invalid, FailureReason::USER_BYTES_BEFORE_REQUIRED);
                 return false;
             }
             const uint8_t effectiveRegionByte = status_.userSettings.requested
                                                     ? state_.effectiveUserBytes[1]
                                                     : state_.before.userBytes[1];
             if ((effectiveRegionByte & 0x01) == 0) {
-                failWholePlan(&status_.mode, Outcome::INVALID, FailureReason::EURO_ADVANCED_MODE_INVALID);
+                failWholePlan(&status_.mode, DetectorComponentOutcome::Invalid, FailureReason::EURO_ADVANCED_MODE_INVALID);
                 return false;
             }
         }
@@ -749,40 +749,40 @@ bool AutoPushModule::preflight() {
         if (!state_.before.hasMode || !observed.available || observed.revision == 0 ||
             observed.ingressSequence == 0 ||
             observed.value != state_.before.mode || modeValueFromObservation(state_.before.mode) == 0) {
-            failWholePlan(&status_.mode, Outcome::INVALID, FailureReason::MISSING_LIVE_SNAPSHOT);
+            failWholePlan(&status_.mode, DetectorComponentOutcome::Invalid, FailureReason::MISSING_LIVE_SNAPSHOT);
             return false;
         }
         status_.beforeMode = modeValueFromObservation(state_.before.mode);
         status_.mode.needed = status_.beforeMode != state_.desiredMode;
         if (!status_.mode.needed) {
             status_.mode.verified = true;
-            status_.mode.outcome = Outcome::UNCHANGED;
+            status_.mode.outcome = DetectorComponentOutcome::Unchanged;
         }
     }
 
     if (status_.volume.requested) {
         if (state_.volumePolicy != V1VolumePolicy::Temporary && state_.volumePolicy != V1VolumePolicy::Saved) {
-            failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::Invalid, FailureReason::INVALID_POLICY);
             return false;
         }
         if (state_.volume > 9 || state_.muteVolume > 9) {
-            failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::INVALID_VOLUME_PAIR);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::Invalid, FailureReason::INVALID_VOLUME_PAIR);
             return false;
         }
         // Before 4.1037 aux0=0 retains the older persistent behavior. Phase 3
         // promises temporary volume only, so those versions are unsupported.
         if (state_.firmwareVersion < V1FirmwareCompat::kSavedVolumeVersion) {
-            failWholePlan(&status_.volume, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_FIRMWARE);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::Unsupported, FailureReason::UNSUPPORTED_FIRMWARE);
             return false;
         }
         if ((state_.volumeAux & 0x08) != 0 &&
             (state_.volumePolicy != V1VolumePolicy::Temporary ||
              state_.firmwareVersion < V1FirmwareCompat::kKeepCurrentVolumeOnDisconnectVersion)) {
-            failWholePlan(&status_.volume, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_FIRMWARE);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::Unsupported, FailureReason::UNSUPPORTED_FIRMWARE);
             return false;
         }
         if (!quiet_->canApplyAutoPushVolumeExactly()) {
-            failWholePlan(&status_.volume, Outcome::BLOCKED, FailureReason::VOLUME_OWNER_BUSY);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::Blocked, FailureReason::VOLUME_OWNER_BUSY);
             return false;
         }
         const V1AllVolumeObservation& allVolume = parser_->allVolumeObservation();
@@ -792,7 +792,7 @@ bool AutoPushModule::preflight() {
             allVolume.currentMuted != state_.before.currentMutedVolume ||
             allVolume.savedMain != state_.before.savedMainVolume ||
             allVolume.savedMuted != state_.before.savedMutedVolume) {
-            failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::MISSING_LIVE_SNAPSHOT);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::Invalid, FailureReason::MISSING_LIVE_SNAPSHOT);
             return false;
         }
         status_.beforeMainVolume = state_.before.currentMainVolume;
@@ -812,7 +812,7 @@ bool AutoPushModule::preflight() {
                                 (state_.volumeAux & 0x03) == 0x01;
         if (!status_.volume.needed) {
             status_.volume.verified = true;
-            status_.volume.outcome = Outcome::UNCHANGED;
+            status_.volume.outcome = DetectorComponentOutcome::Unchanged;
         }
     }
 
@@ -831,7 +831,7 @@ bool AutoPushModule::preflight() {
             !liveMax.available || liveMax.poisoned || liveMax.ingressSequence == 0 ||
             liveMax.maxIndex != state_.before.maxSweepIndex || liveDefinitions.poisoned ||
             liveDefinitions.ingressSequence == 0 || liveDefinitions.presentMask != liveRequiredMask) {
-            failWholePlan(&status_.customFrequencies, Outcome::UNSUPPORTED,
+            failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Unsupported,
                           FailureReason::MISSING_LIVE_SNAPSHOT);
             return false;
         }
@@ -840,7 +840,7 @@ bool AutoPushModule::preflight() {
                 liveSections.sections[index].count != state_.before.sweepSections[index].count ||
                 liveSections.sections[index].lowerMHz != state_.before.sweepSections[index].lowerMHz ||
                 liveSections.sections[index].upperMHz != state_.before.sweepSections[index].upperMHz) {
-                failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+                failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Invalid,
                               FailureReason::MISSING_LIVE_SNAPSHOT);
                 return false;
             }
@@ -849,7 +849,7 @@ bool AutoPushModule::preflight() {
             if (liveDefinitions.definitions[index].index != state_.before.sweepDefinitions[index].index ||
                 liveDefinitions.definitions[index].lowerMHz != state_.before.sweepDefinitions[index].lowerMHz ||
                 liveDefinitions.definitions[index].upperMHz != state_.before.sweepDefinitions[index].upperMHz) {
-                failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+                failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Invalid,
                               FailureReason::MISSING_LIVE_SNAPSHOT);
                 return false;
             }
@@ -877,7 +877,7 @@ bool AutoPushModule::preflight() {
             // disabled and apply the final enabled bytes only after readback.
             status_.customFrequencies.needed = true;
             status_.customFrequencies.verified = false;
-            status_.customFrequencies.outcome = Outcome::PENDING;
+            status_.customFrequencies.outcome = DetectorComponentOutcome::Pending;
             state_.finalUserWriteAfterCustom = true;
             if (state_.regionChanged) {
                 state_.intermediateCustomDisabledWrite = true;
@@ -903,7 +903,7 @@ bool AutoPushModule::liveSessionMatches() const {
     return bleClient_ && bleClient_->isConnected() && bleClient_->sessionGeneration() == state_.sessionGeneration;
 }
 
-bool AutoPushModule::acceptSendResult(SendResult result, ComponentStatus& component, Outcome failureOutcome,
+bool AutoPushModule::acceptSendResult(SendResult result, ComponentStatus& component, DetectorComponentOutcome failureOutcome,
                                       FailureReason failureReason, FailureReason timeoutReason, uint32_t nowMs) {
     if (result == SendResult::SENT) {
         state_.sendDeadlineMs = 0;
@@ -916,7 +916,7 @@ bool AutoPushModule::acceptSendResult(SendResult result, ComponentStatus& compon
         state_.sendInFlight = result == SendResult::IN_FLIGHT;
         if (state_.sendDeadlineMs == 0) state_.sendDeadlineMs = nowMs + kVerificationTimeoutMs;
         if (deadlineReached(nowMs, state_.sendDeadlineMs)) {
-            failWholePlan(&component, Outcome::TIMEOUT, timeoutReason);
+            failWholePlan(&component, DetectorComponentOutcome::Timeout, timeoutReason);
         } else {
             state_.nextStepAtMs = nowMs + 5;
         }
@@ -926,22 +926,22 @@ bool AutoPushModule::acceptSendResult(SendResult result, ComponentStatus& compon
     return false;
 }
 
-void AutoPushModule::failComponent(ComponentStatus& component, Outcome outcome, FailureReason reason) {
+void AutoPushModule::failComponent(ComponentStatus& component, DetectorComponentOutcome outcome, FailureReason reason) {
     component.outcome = outcome;
     component.reason = reason;
     component.verified = false;
     if (status_.reason == FailureReason::NONE) status_.reason = reason;
 }
 
-void AutoPushModule::failWholePlan(ComponentStatus* failed, Outcome outcome, FailureReason reason) {
+void AutoPushModule::failWholePlan(ComponentStatus* failed, DetectorComponentOutcome outcome, FailureReason reason) {
     if (failed) failComponent(*failed, outcome, reason);
     else if (status_.reason == FailureReason::NONE) status_.reason = reason;
     ComponentStatus* components[] = {&status_.userSettings, &status_.display, &status_.mode, &status_.volume,
                                      &status_.customFrequencies};
     for (ComponentStatus* component : components) {
         if (component != failed && component->requested && !component->verified &&
-            (component->outcome == Outcome::PENDING || component->outcome == Outcome::SENT)) {
-            component->outcome = Outcome::BLOCKED;
+            (component->outcome == DetectorComponentOutcome::Pending || component->outcome == DetectorComponentOutcome::Sent)) {
+            component->outcome = DetectorComponentOutcome::Blocked;
             component->reason = reason;
         }
     }
@@ -950,7 +950,7 @@ void AutoPushModule::failWholePlan(ComponentStatus* failed, Outcome outcome, Fai
 
 void AutoPushModule::cancelForTimeout() {
     if (isActive()) {
-        failWholePlan(nullptr, Outcome::TIMEOUT, FailureReason::OPERATION_TIMEOUT);
+        failWholePlan(nullptr, DetectorComponentOutcome::Timeout, FailureReason::OPERATION_TIMEOUT);
     }
 }
 
@@ -1046,11 +1046,11 @@ void AutoPushModule::process() {
     if (state_.step == Step::Idle) return;
 
     if (!bleClient_ || !bleClient_->isConnected()) {
-        failWholePlan(nullptr, Outcome::DISCONNECTED, FailureReason::DISCONNECTED);
+        failWholePlan(nullptr, DetectorComponentOutcome::Disconnected, FailureReason::DISCONNECTED);
         return;
     }
     if (bleClient_->sessionGeneration() != state_.sessionGeneration) {
-        failWholePlan(nullptr, Outcome::SESSION_CHANGED, FailureReason::SESSION_CHANGED);
+        failWholePlan(nullptr, DetectorComponentOutcome::SessionChanged, FailureReason::SESSION_CHANGED);
         return;
     }
     V1BLEClient::CommandScope commandScope(*bleClient_, V1CommandOwner::AutoPush);
@@ -1060,11 +1060,11 @@ void AutoPushModule::process() {
         // policy. Contrary evidence from this write wins even when the pair
         // already matched, or later components are still being applied.
         if (bleClient_->volumeWriteRevision() != state_.volumeWriteRevision) {
-            failWholePlan(&status_.volume, Outcome::BLOCKED, FailureReason::VOLUME_OWNER_BUSY);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::Blocked, FailureReason::VOLUME_OWNER_BUSY);
             return;
         }
         if (bleClient_->volumeWriteRejected(state_.volumeWriteRevision)) {
-            failWholePlan(&status_.volume, Outcome::WRITE_FAILED, FailureReason::VOLUME_WRITE_FAILED);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::WriteFailed, FailureReason::VOLUME_WRITE_FAILED);
             return;
         }
     }
@@ -1094,12 +1094,12 @@ void AutoPushModule::process() {
 
     case Step::UserWrite:
         if (!acceptSendResult(bleClient_->writeUserBytesExactResult(state_.userWriteBytes.data()),
-                              status_.userSettings, Outcome::WRITE_FAILED, FailureReason::USER_BYTES_WRITE_FAILED,
+                              status_.userSettings, DetectorComponentOutcome::WriteFailed, FailureReason::USER_BYTES_WRITE_FAILED,
                               FailureReason::USER_BYTES_TIMEOUT, now)) {
             return;
         }
         status_.userSettings.sent = true;
-        status_.userSettings.outcome = Outcome::SENT;
+        status_.userSettings.outcome = DetectorComponentOutcome::Sent;
         state_.step = Step::UserRead;
         state_.nextStepAtMs = now + 30;
         return;
@@ -1113,7 +1113,7 @@ void AutoPushModule::process() {
         const SendResult sent = bleClient_->requestUserBytesResult();
         if (sent == SendResult::SENT && wasInFlight)
             state_.observationIngressBoundary = bleClient_->commandIngressBoundary(V1CommandOwner::AutoPush);
-        if (!acceptSendResult(sent, status_.userSettings, Outcome::READ_FAILED,
+        if (!acceptSendResult(sent, status_.userSettings, DetectorComponentOutcome::ReadFailed,
                               FailureReason::USER_BYTES_READ_FAILED, FailureReason::USER_BYTES_TIMEOUT, now)) {
             return;
         }
@@ -1136,15 +1136,15 @@ void AutoPushModule::process() {
                     return;
                 }
                 status_.userSettings.verified = true;
-                status_.userSettings.outcome = Outcome::VERIFIED;
+                status_.userSettings.outcome = DetectorComponentOutcome::Verified;
                 advanceAfterUser(now);
             } else {
-                failWholePlan(&status_.userSettings, Outcome::MISMATCH, FailureReason::USER_BYTES_MISMATCH);
+                failWholePlan(&status_.userSettings, DetectorComponentOutcome::Mismatch, FailureReason::USER_BYTES_MISMATCH);
             }
             return;
         }
         if (deadlineReached(now, state_.verifyDeadlineMs)) {
-            failWholePlan(&status_.userSettings, Outcome::TIMEOUT, FailureReason::USER_BYTES_TIMEOUT);
+            failWholePlan(&status_.userSettings, DetectorComponentOutcome::Timeout, FailureReason::USER_BYTES_TIMEOUT);
             return;
         }
         state_.nextStepAtMs = now + 10;
@@ -1157,13 +1157,13 @@ void AutoPushModule::process() {
             state_.sawFreshMismatch = false;
         }
         if (!acceptSendResult(bleClient_->setDisplayOnResult(state_.displayOn, state_.bluetoothIndicatorActive),
-                              status_.display, Outcome::WRITE_FAILED, FailureReason::DISPLAY_WRITE_FAILED,
+                              status_.display, DetectorComponentOutcome::WriteFailed, FailureReason::DISPLAY_WRITE_FAILED,
                               FailureReason::DISPLAY_TIMEOUT, now)) {
             return;
         }
         state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
         status_.display.sent = true;
-        status_.display.outcome = Outcome::SENT;
+        status_.display.outcome = DetectorComponentOutcome::Sent;
         state_.step = Step::DisplayVerify;
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;
@@ -1181,7 +1181,7 @@ void AutoPushModule::process() {
                 observed.value == state_.displayOn &&
                 (state_.displayOn || bluetoothActive == state_.bluetoothIndicatorActive)) {
                 status_.display.verified = true;
-                status_.display.outcome = Outcome::VERIFIED;
+                status_.display.outcome = DetectorComponentOutcome::Verified;
                 advanceAfterDisplay(now);
                 return;
             }
@@ -1189,7 +1189,7 @@ void AutoPushModule::process() {
             state_.observationRevision = observed.revision;
         }
         if (deadlineReached(now, state_.verifyDeadlineMs)) {
-            failWholePlan(&status_.display, state_.sawFreshMismatch ? Outcome::MISMATCH : Outcome::TIMEOUT,
+            failWholePlan(&status_.display, state_.sawFreshMismatch ? DetectorComponentOutcome::Mismatch : DetectorComponentOutcome::Timeout,
                           state_.sawFreshMismatch ? FailureReason::DISPLAY_MISMATCH : FailureReason::DISPLAY_TIMEOUT);
             return;
         }
@@ -1202,13 +1202,13 @@ void AutoPushModule::process() {
             state_.observationRevision = parser_->modeObservationRevision();
             state_.sawFreshMismatch = false;
         }
-        if (!acceptSendResult(bleClient_->setModeResult(state_.desiredMode), status_.mode, Outcome::WRITE_FAILED,
+        if (!acceptSendResult(bleClient_->setModeResult(state_.desiredMode), status_.mode, DetectorComponentOutcome::WriteFailed,
                               FailureReason::MODE_WRITE_FAILED, FailureReason::MODE_TIMEOUT, now)) {
             return;
         }
         state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
         status_.mode.sent = true;
-        status_.mode.outcome = Outcome::SENT;
+        status_.mode.outcome = DetectorComponentOutcome::Sent;
         state_.step = Step::ModeVerify;
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;
@@ -1221,7 +1221,7 @@ void AutoPushModule::process() {
             const uint8_t observedMode = observed.available ? modeValueFromObservation(observed.value) : 0;
             if (observedMode == state_.desiredMode) {
                 status_.mode.verified = true;
-                status_.mode.outcome = Outcome::VERIFIED;
+                status_.mode.outcome = DetectorComponentOutcome::Verified;
                 advanceAfterMode(now);
                 return;
             }
@@ -1229,7 +1229,7 @@ void AutoPushModule::process() {
             state_.observationRevision = observed.revision;
         }
         if (deadlineReached(now, state_.verifyDeadlineMs)) {
-            failWholePlan(&status_.mode, state_.sawFreshMismatch ? Outcome::MISMATCH : Outcome::TIMEOUT,
+            failWholePlan(&status_.mode, state_.sawFreshMismatch ? DetectorComponentOutcome::Mismatch : DetectorComponentOutcome::Timeout,
                           state_.sawFreshMismatch ? FailureReason::MODE_MISMATCH : FailureReason::MODE_TIMEOUT);
             return;
         }
@@ -1239,18 +1239,18 @@ void AutoPushModule::process() {
 
     case Step::VolumeWrite:
         if (!state_.volumeTransactionActive && !quiet_->beginAutoPushVolumeTransaction()) {
-            failWholePlan(&status_.volume, Outcome::BLOCKED, FailureReason::VOLUME_OWNER_BUSY);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::Blocked, FailureReason::VOLUME_OWNER_BUSY);
             return;
         }
         state_.volumeTransactionActive = true;
         if (!acceptSendResult(quiet_->sendAutoPushVolumeResult(state_.volume, state_.muteVolume, state_.volumeAux),
-                              status_.volume, Outcome::WRITE_FAILED, FailureReason::VOLUME_WRITE_FAILED,
+                              status_.volume, DetectorComponentOutcome::WriteFailed, FailureReason::VOLUME_WRITE_FAILED,
                               FailureReason::VOLUME_TIMEOUT, now)) {
             return;
         }
         status_.volume.sent = true;
         state_.volumeWriteRevision = bleClient_->volumeWriteRevision();
-        status_.volume.outcome = Outcome::SENT;
+        status_.volume.outcome = DetectorComponentOutcome::Sent;
         state_.step = Step::VolumeRead;
         state_.nextStepAtMs = now + 30;
         return;
@@ -1264,7 +1264,7 @@ void AutoPushModule::process() {
         const SendResult sent = bleClient_->requestAllVolumeResult();
         if (sent == SendResult::SENT && wasInFlight)
             state_.observationIngressBoundary = bleClient_->commandIngressBoundary(V1CommandOwner::AutoPush);
-        if (!acceptSendResult(sent, status_.volume, Outcome::READ_FAILED,
+        if (!acceptSendResult(sent, status_.volume, DetectorComponentOutcome::ReadFailed,
                               FailureReason::VOLUME_READ_FAILED, FailureReason::VOLUME_TIMEOUT, now)) {
             return;
         }
@@ -1288,15 +1288,15 @@ void AutoPushModule::process() {
                                                 observed.savedMuted == status_.beforeSavedMutedVolume;
             if (currentMatches && savedMatches) {
                 status_.volume.verified = true;
-                status_.volume.outcome = Outcome::VERIFIED;
+                status_.volume.outcome = DetectorComponentOutcome::Verified;
                 advanceAfterVolume(now);
             } else {
-                failWholePlan(&status_.volume, Outcome::MISMATCH, FailureReason::VOLUME_MISMATCH);
+                failWholePlan(&status_.volume, DetectorComponentOutcome::Mismatch, FailureReason::VOLUME_MISMATCH);
             }
             return;
         }
         if (deadlineReached(now, state_.verifyDeadlineMs)) {
-            failWholePlan(&status_.volume, Outcome::TIMEOUT, FailureReason::VOLUME_TIMEOUT);
+            failWholePlan(&status_.volume, DetectorComponentOutcome::Timeout, FailureReason::VOLUME_TIMEOUT);
             return;
         }
         state_.nextStepAtMs = now + 10;
@@ -1310,7 +1310,7 @@ void AutoPushModule::process() {
             bleClient_->beginSessionSweepSectionsCapture(ingressBoundary);
         // An early response may already be parsed while waiting for the ACK.
         // Keep that capture intact when this same command completes.
-        if (!acceptSendResult(sent, status_.customFrequencies, Outcome::READ_FAILED,
+        if (!acceptSendResult(sent, status_.customFrequencies, DetectorComponentOutcome::ReadFailed,
                               FailureReason::CUSTOM_READ_FAILED, FailureReason::CUSTOM_READBACK_TIMEOUT, now)) {
             return;
         }
@@ -1327,7 +1327,7 @@ void AutoPushModule::process() {
             bleClient_->beginSessionSweepMaxCapture(ingressBoundary);
         // An early response may already be parsed while waiting for the ACK.
         // Keep that capture intact when this same command completes.
-        if (!acceptSendResult(sent, status_.customFrequencies, Outcome::READ_FAILED,
+        if (!acceptSendResult(sent, status_.customFrequencies, DetectorComponentOutcome::ReadFailed,
                               FailureReason::CUSTOM_READ_FAILED, FailureReason::CUSTOM_READBACK_TIMEOUT, now)) {
             return;
         }
@@ -1344,7 +1344,7 @@ void AutoPushModule::process() {
             bleClient_->beginSessionSweepDefinitionsCapture(ingressBoundary);
         // An early response may already be parsed while waiting for the ACK.
         // Keep that capture intact when this same command completes.
-        if (!acceptSendResult(sent, status_.customFrequencies, Outcome::READ_FAILED,
+        if (!acceptSendResult(sent, status_.customFrequencies, DetectorComponentOutcome::ReadFailed,
                               FailureReason::CUSTOM_READ_FAILED, FailureReason::CUSTOM_READBACK_TIMEOUT, now)) {
             return;
         }
@@ -1390,7 +1390,7 @@ void AutoPushModule::process() {
             if (state_.finalUserWriteAfterCustom) {
                 status_.customFrequencies.needed = true;
                 status_.customFrequencies.verified = false;
-                status_.customFrequencies.outcome = Outcome::PENDING;
+                status_.customFrequencies.outcome = DetectorComponentOutcome::Pending;
             }
             if (status_.customFrequencies.needed &&
                 !status_.customFrequencies.verified) {
@@ -1402,12 +1402,12 @@ void AutoPushModule::process() {
             return;
         }
         if (sections.poisoned || maximum.poisoned || definitions.poisoned) {
-            failWholePlan(&status_.customFrequencies, Outcome::MISMATCH,
+            failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Mismatch,
                           FailureReason::CUSTOM_READBACK_INVALID);
             return;
         }
         if (deadlineReached(now, state_.verifyDeadlineMs)) {
-            failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
+            failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Timeout,
                           FailureReason::CUSTOM_READBACK_TIMEOUT);
             return;
         }
@@ -1424,7 +1424,7 @@ void AutoPushModule::process() {
             ++state_.customWriteIndex;
         }
         if (state_.customWriteIndex >= state_.customDefinitions.size()) {
-            failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+            failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Invalid,
                           FailureReason::CUSTOM_CONFIGURATION_INVALID);
             return;
         }
@@ -1443,7 +1443,7 @@ void AutoPushModule::process() {
             definition.index, definition.lowerMHz, definition.upperMHz, commit);
         if (sent == SendResult::SENT && wasInFlight && commit)
             state_.observationIngressBoundary = bleClient_->commandIngressBoundary(V1CommandOwner::AutoPush);
-        if (!acceptSendResult(sent, status_.customFrequencies, Outcome::WRITE_FAILED,
+        if (!acceptSendResult(sent, status_.customFrequencies, DetectorComponentOutcome::WriteFailed,
                               FailureReason::CUSTOM_WRITE_FAILED, FailureReason::CUSTOM_WRITE_FAILED, now)) {
             return;
         }
@@ -1453,7 +1453,7 @@ void AutoPushModule::process() {
             return;
         }
         status_.customFrequencies.sent = true;
-        status_.customFrequencies.outcome = Outcome::SENT;
+        status_.customFrequencies.outcome = DetectorComponentOutcome::Sent;
         state_.step = Step::CustomCommitVerify;
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;
@@ -1465,7 +1465,7 @@ void AutoPushModule::process() {
         if (result.revision != state_.observationRevision &&
             ingressAfter(result.ingressSequence, state_.observationIngressBoundary)) {
             if (!result.available || result.result != 0) {
-                failWholePlan(&status_.customFrequencies, Outcome::MISMATCH,
+                failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Mismatch,
                               FailureReason::CUSTOM_COMMIT_REJECTED);
                 return;
             }
@@ -1474,7 +1474,7 @@ void AutoPushModule::process() {
             return;
         }
         if (deadlineReached(now, state_.verifyDeadlineMs)) {
-            failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
+            failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Timeout,
                           FailureReason::CUSTOM_COMMIT_TIMEOUT);
             return;
         }
@@ -1493,7 +1493,7 @@ void AutoPushModule::process() {
             bleClient_->beginSessionSweepDefinitionsCapture(state_.observationIngressBoundary);
         if (sent == SendResult::SENT && wasInFlight)
             state_.observationIngressBoundary = bleClient_->commandIngressBoundary(V1CommandOwner::AutoPush);
-        if (!acceptSendResult(sent, status_.customFrequencies, Outcome::READ_FAILED,
+        if (!acceptSendResult(sent, status_.customFrequencies, DetectorComponentOutcome::ReadFailed,
                               FailureReason::CUSTOM_READ_FAILED, FailureReason::CUSTOM_READBACK_TIMEOUT, now)) {
             return;
         }
@@ -1538,12 +1538,12 @@ void AutoPushModule::process() {
                 }
             }
             if (!valid) {
-                failWholePlan(&status_.customFrequencies, Outcome::MISMATCH,
+                failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Mismatch,
                               FailureReason::CUSTOM_READBACK_INVALID);
                 return;
             }
             status_.customFrequencies.verified = true;
-            status_.customFrequencies.outcome = Outcome::VERIFIED;
+            status_.customFrequencies.outcome = DetectorComponentOutcome::Verified;
             if (state_.finalUserWriteAfterCustom) {
                 state_.finalUserWriteAfterCustom = false;
                 state_.userWriteBytes = state_.effectiveUserBytes;
@@ -1555,7 +1555,7 @@ void AutoPushModule::process() {
             return;
         }
         if (deadlineReached(now, state_.verifyDeadlineMs)) {
-            failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
+            failWholePlan(&status_.customFrequencies, DetectorComponentOutcome::Timeout,
                           FailureReason::CUSTOM_READBACK_TIMEOUT);
             return;
         }
@@ -1589,27 +1589,6 @@ AutoPushModule::ExecutionSummary AutoPushModule::executionSummary() const {
         &status_.mode,
         &status_.volume,
         &status_.customFrequencies,
-    };
-    const auto mapOutcome = [](Outcome outcome) {
-        using Durable = V1SettingsOperationStore::ComponentOutcome;
-        switch (outcome) {
-        case Outcome::NOT_REQUESTED: return Durable::NotRequested;
-        case Outcome::PENDING: return Durable::Pending;
-        case Outcome::UNCHANGED: return Durable::Unchanged;
-        case Outcome::SENT: return Durable::Sent;
-        case Outcome::VERIFIED: return Durable::Verified;
-        case Outcome::UNSUPPORTED: return Durable::Unsupported;
-        case Outcome::INVALID: return Durable::Invalid;
-        case Outcome::BLOCKED: return Durable::Blocked;
-        case Outcome::WRITE_FAILED: return Durable::WriteFailed;
-        case Outcome::READ_FAILED: return Durable::ReadFailed;
-        case Outcome::MISMATCH: return Durable::Mismatch;
-        case Outcome::TIMEOUT: return Durable::Timeout;
-        case Outcome::DISCONNECTED: return Durable::Disconnected;
-        case Outcome::SESSION_CHANGED: return Durable::SessionChanged;
-        case Outcome::LOAD_FAILED: return Durable::LoadFailed;
-        }
-        return Durable::Invalid;
     };
     const auto mapReason = [](FailureReason reason) {
         using Durable = V1SettingsOperationStore::ComponentReason;
@@ -1665,7 +1644,7 @@ AutoPushModule::ExecutionSummary AutoPushModule::executionSummary() const {
         summary.components[index].requested = source[index]->requested;
         summary.components[index].sent = source[index]->sent;
         summary.components[index].verified = source[index]->verified;
-        summary.components[index].outcome = mapOutcome(source[index]->outcome);
+        summary.components[index].outcome = source[index]->outcome;
         summary.components[index].reason = mapReason(source[index]->reason);
     }
     return summary;

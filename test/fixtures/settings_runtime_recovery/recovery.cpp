@@ -93,8 +93,8 @@ public:
   BatteryManager battery_;
   V1Display powerDisplay_;
   struct {
-    void process() {}
-  } autoPush_;
+    void process(uint32_t) {}
+  } settingsOperationCoordinator_;
   StorageManager &storage_ = storage;
   V1ProfileManager &profiles_ = profiles;
   RecoveryDevices devices_;
@@ -112,7 +112,6 @@ public:
   void syncRecoveredSettings();
   void processPeriodicMaintenance(uint32_t nowMs, bool connected, bool pressure,
                                   bool overloaded, bool drain);
-  void processSettingsOperation(uint32_t) {}
   void logDisplayConfiguration(uint32_t) {}
 };
 

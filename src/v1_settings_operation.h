@@ -1,5 +1,7 @@
 #pragma once
 
+#include "detector_operation_contract.h"
+
 #include <Arduino.h>
 
 #include <array>
@@ -153,23 +155,7 @@ class V1SettingsOperationStore {
         FactoryReset,
         Count,
     };
-    enum class ComponentOutcome : uint8_t {
-        NotRequested = 0,
-        Pending,
-        Unchanged,
-        Sent,
-        Verified,
-        Unsupported,
-        Invalid,
-        Blocked,
-        WriteFailed,
-        ReadFailed,
-        Mismatch,
-        Timeout,
-        Disconnected,
-        SessionChanged,
-        LoadFailed,
-    };
+    using ComponentOutcome = DetectorComponentOutcome;
     enum class ComponentReason : uint8_t {
         None = 0,
         Disconnected,

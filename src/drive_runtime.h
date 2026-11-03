@@ -26,6 +26,7 @@
 #include "modules/power/power_module.h"
 #include "modules/quiet/quiet_coordinator_module.h"
 #include "modules/speed/speed_source_selector.h"
+#include "modules/settings_operation/settings_operation_coordinator.h"
 #include "modules/speed_mute/speed_mute_module.h"
 #include "modules/system/connection_cycle_coordinator_module.h"
 #include "modules/system/system_event_bus.h"
@@ -146,16 +147,10 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     enum class SnapshotPurpose : uint8_t { SettingsOperation, StableConnection };
     V1DetectorSnapshot captureDetectorSnapshot(SnapshotPurpose purpose,
                                                uint32_t ingressBoundary = 0) const;
-    bool persistDetectorSnapshot(const String& address, const V1DetectorSnapshot& snapshot,
-                                 bool flushImmediately);
-    bool handleSettingsOperationStableConnection();
-    void processSettingsOperation(uint32_t nowMs);
+    SettingsOperationCoordinator::Effects makeSettingsOperationEffects();
+    SettingsOperationCoordinator::SnapshotPersistResult persistDetectorSnapshot(
+        const String& address, const V1DetectorSnapshot& snapshot, bool flushImmediately);
     bool beginTripleTapProfileCycle(int newSlot);
-    void queueSettingsApply(const V1SettingsOperationStore::Snapshot& operation,
-                            const V1DetectorSnapshot& preApply);
-    void attemptFactoryReset(const V1SettingsOperationStore::Snapshot& operation);
-    void finishSettingsRecapture(const V1SettingsOperationStore::Snapshot& operation,
-                                 uint32_t nowMs);
     uint32_t finishLoop(bool bleBackpressure, uint32_t loopStartUs, bool forceBleDrain = false);
     void finishDriveLoop(bool bleBackpressure, uint32_t loopStartUs, bool forceBleDrain);
     bool preparePersistenceForShutdownPhase();
@@ -222,22 +217,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     MainRuntimeState state_;
     V1SettingsOperationStore settingsOperations_;
 
-    bool settingsOperationBootRecoveryPending_ = false;
-    uint32_t settingsOperationBootRecoveryAttemptMs_ = 0;
-    uint32_t observedSettingsOperationId_ = 0;
-    uint32_t settingsOperationStartedMs_ = 0;
-    uint32_t settingsRecaptureIngressBoundary_ = 0;
-    V1SettingsOperationPolicy::ReturnToMaintenanceRetry settingsReturnRetry_;
-    uint32_t settingsOperationNextActionMs_ = 0;
-    V1SettingsOperationStore::State observedSettingsOperationState_ =
-        V1SettingsOperationStore::State::None;
-    bool settingsRecaptureStarted_ = false;
-    V1FreshObservationGate settingsFreshObservationGate_;
-    V1DestructiveSendLatch factoryResetSendLatch_;
-    bool factoryResetSummaryPersistedThisBoot_ = false;
-    bool settingsWrongDetectorDisconnectPending_ = false;
-    std::array<V1SettingsOperationStore::ComponentSummary,
-               V1SettingsOperationStore::kComponentCount> factoryResetSentComponents_{};
+    SettingsOperationCoordinator settingsOperationCoordinator_;
 
     bool connectedPersistenceWindowAnchored_ = false;
     uint32_t connectedPersistenceWindowStartedMs_ = 0;

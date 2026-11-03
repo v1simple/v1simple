@@ -88,14 +88,23 @@ retained bytes. The operation API reports unavailable storage rather than no
 operation. A later successful initialization recovers the original operation ID
 and target; this owner does not poll or automatically repeat detector writes.
 
-`DriveRuntime::handleSettingsOperationStableConnection()` also blocks ordinary
-connection Auto-Push while the operation snapshot is invalid. It leaves the
-detector connected and alert input available. A valid empty store retains normal
-Auto-Push behavior; a known pending job retains its existing target admission.
+`SettingsOperationCoordinator::onStableConnection()` blocks ordinary connection
+Auto-Push while the operation snapshot is invalid. Drive applies the detector's
+In-the-Box policy before requesting that admission decision. An invalid record
+leaves the detector connected and alert input available; a valid empty store
+retains normal Auto-Push, and a known pending job retains its target admission.
+The coordinator owns transient operation deadlines, capture/session boundaries,
+factory-send latches and maintenance-return retries. Its `process()` services
+those decisions before each AutoPush executor tick; the durable store and wire
+executor retain their separate responsibilities. Drive supplies snapshot and
+controlled-restart effects.
+
 `test_v1_settings_operation`, `test_wifi_autopush_api`, and
 `test_settings_apply_lifecycle.py` cover retained bytes, rejected starts, API
 status, connection admission, parsed alerts and recovery through fresh owners.
-NVS faults and BLE transport are host substitutes, not physical fault injection.
+The lifecycle runner executes the real coordinator and the actual Drive snapshot,
+connection and restart methods. NVS, BLE transport and physical restart effects
+are host substitutes, not physical fault injection.
 
 The maintenance Backup & Restore card reads `/api/settings/recovery`, a pure
 in-memory `SettingsManager::recoveryStatus()` snapshot. It separates the last

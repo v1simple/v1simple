@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Test detector Apply deadlines, capture and connection admission owners.
 
-Compile AutoPush, its protocol parser, the durable operation store and the loop
-coordinator directly. Extract the outer operation method and periodic owner
-ordering verbatim; only unrelated hardware/recapture collaborators are modeled.
+Compile the actual settings-operation coordinator, AutoPush, protocol parser,
+durable operation store and loop coordinator directly. Hardware effects remain
+recording adapters; no operation state machine or freshness timeout is copied.
 A second executable compiles the actual snapshot capture and full connection
 callback with recording adapters for their hardware and persistence consumers.
 """
@@ -29,36 +29,23 @@ def between(source: str, start: str, end: str) -> str:
 
 def build_and_run(build: Path) -> None:
     source = (ROOT / "src/drive_runtime.cpp").read_text(encoding="utf-8")
-    periodic = "void DriveRuntime::processPeriodicMaintenance("
-    owner = between(source, "void DriveRuntime::processSettingsOperation(uint32_t nowMs)", periodic)
-    owner += between(source, periodic, "    const bool hardPressure = bleBackpressure") + "}\n"
-    owner += between(source, "void DriveRuntime::start(", "    initializeStorageAndProfiles();").replace(
-        "esp_reset_reason_t", "int") + "}\n"
-    owner += between(source, "void DriveRuntime::attemptFactoryReset(",
-                     "bool DriveRuntime::handleSettingsOperationStableConnection()")
-    owner += between(source, "bool DriveRuntime::handleSettingsOperationStableConnection()",
-                     "bool DriveRuntime::persistInTheBoxApply(")
-    # Preserve the real connection admission ordering. The healthy continuation
-    # supplies a known profile to the real AutoPush owner instead of performing
-    # unrelated device-catalog/default-profile selection.
-    owner += between(source, "void DriveRuntime::onV1Connected()",
-                     "    const V1Settings& settings = self.settings_.get();")
-    owner += "    queueAndPreflight();\n    at(1000);\n}\n"
-    (build / "outer_operation.inc").write_text(owner, encoding="utf-8")
     snapshot_owner = between(source, "V1DetectorSnapshot DriveRuntime::captureDetectorSnapshot(",
-                             "bool DriveRuntime::persistDetectorSnapshot(")
+                             "SettingsOperationCoordinator::SnapshotPersistResult DriveRuntime::persistDetectorSnapshot(")
     snapshot_owner += between(source, "void DriveRuntime::onV1Connected()",
                               "void DriveRuntime::observeAlertTable(")
     (build / "detector_snapshot.inc").write_text(snapshot_owner, encoding="utf-8")
+    restart_owner = between(source, "bool DriveRuntime::requestMaintenanceBootRestart()",
+                             "bool DriveRuntime::usbMaintenanceAllowed()")
+    (build / "maintenance_restart.inc").write_text(restart_owner, encoding="utf-8")
     header = (ROOT / "src/drive_runtime.h").read_text(encoding="utf-8")
     declarations = between(header, "    enum class SnapshotPurpose",
-                           "    bool persistDetectorSnapshot(")
+                           "    SettingsOperationCoordinator::Effects makeSettingsOperationEffects();")
     (build / "snapshot_declarations.inc").write_text(declarations, encoding="utf-8")
     compiler = shlex.split(os.environ.get("CXX", "clang++" if shutil.which("clang++") else "c++"))
     deps = ROOT / ".pio/libdeps/native-sanitized"
     includes = [build, ROOT, ROOT / "test/mocks", ROOT / "include", ROOT / "src",
                 deps / "Unity/src", deps / "ArduinoJson/src"]
-    for fixture in ("recovery", "detector_snapshot"):
+    for fixture in ("recovery", "detector_snapshot", "restart"):
         executable = build / fixture
         subprocess.run(compiler + [
             "-std=c++17", "-DUNIT_TEST", "-fsanitize=address,undefined",

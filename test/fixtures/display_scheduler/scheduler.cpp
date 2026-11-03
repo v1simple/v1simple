@@ -40,19 +40,13 @@ SendResult QuietCoordinatorModule::sendMuteResult(QuietOwner, bool) {
 }
 struct SettingsOperationAdapter {
     bool busy = false;
-    bool prepareOk = true;
-    unsigned starts = 0;
-    unsigned finishes = 0;
     bool requiresExclusiveDetectorAdmission() const { return busy; }
-    V1SettingsOperationStore::StartResult startApply(int, const char*,
-        V1SettingsOperationStore::Source, bool, bool) {
-        ++starts;
-        return {V1SettingsOperationStore::StartStatus::Started, 1};
-    }
-    bool markPreparing() { return prepareOk; }
-    bool finish(V1SettingsOperationStore::State, V1SettingsOperationStore::Reason) {
-        ++finishes; return true;
-    }
+};
+// This boundary observes delivery from actual touch/runtime code. Admission
+// policy executes in the real coordinator's separate lifecycle fixture.
+struct SettingsOperationAdmission {
+    unsigned starts = 0;
+    bool beginSlotApply(int) { ++starts; return true; }
 };
 
 class DriveRuntime : public Runtime {
@@ -75,6 +69,7 @@ class DriveRuntime : public Runtime {
     struct { void setInTheBoxSuspended(bool) {} } quiet_;
     AutoPushModule autoPush_;
     SettingsOperationAdapter settingsOperations_;
+    SettingsOperationAdmission settingsOperationCoordinator_;
     SettingsManager& settings_ = settings;
     V1Display& display_ = display;
     AlertPersistenceModule& alertPersistence_ = persistence;
@@ -82,7 +77,6 @@ class DriveRuntime : public Runtime {
     AlpRuntimeModule& alp_ = alp;
     TouchHandler touch_;
     TapGestureModule tapGesture_;
-    uint32_t observedSettingsOperationId_ = 0;
     bool beginTripleTapProfileCycle(int newSlot);
     bool connectedV1Address(String& address) {
         address = "AA:BB:CC:DD:EE:FF";
@@ -445,7 +439,7 @@ void test_raw_idle_reports_allow_three_taps_to_update_disconnected_scan() {
         cycleProfileWithRawReleases(r, 1000, idleFill);
         assertSelectedProfileReachesPanel(r);
         TEST_ASSERT_FALSE(r.ble.isConnected());
-        TEST_ASSERT_EQUAL_INT(0, r.settingsOperations_.starts);
+        TEST_ASSERT_EQUAL_INT(0, r.settingsOperationCoordinator_.starts);
         TEST_ASSERT_EQUAL(DisplayMode::IDLE, r.mode);
         // The SCAN canvas is retained; changed status must use the panel's
         // reliable full-frame transfer, not redraw or partially blit SCAN.
@@ -485,7 +479,7 @@ void test_raw_idle_reports_reach_connected_profile_admission_without_early_feedb
     r.loop(250);
     r.settings.mutableSettings().autoPushEnabled = true;
     cycleProfileWithRawReleases(r, 1000, 0x38);
-    TEST_ASSERT_EQUAL_INT(1, r.settingsOperations_.starts);
+    TEST_ASSERT_EQUAL_INT(1, r.settingsOperationCoordinator_.starts);
     TEST_ASSERT_EQUAL_INT(0, r.settings.setActiveSlotCalls);
     TEST_ASSERT_EQUAL_INT(0, r.settings.get().activeSlot);
     TEST_ASSERT_EQUAL_INT(0, r.display.ut_elementCaches().profile.lastSlot);

@@ -128,6 +128,11 @@ public:
     SendResult nextDisplaySendResult = SendResult::SENT;
     SendResult nextModeSendResult = SendResult::SENT;
     SendResult nextAllVolumeReadSendResult = SendResult::SENT;
+    unsigned resetCalls = 0;
+    SendResult nextResetResult = SendResult::SENT;
+    unsigned settingsRecaptureCalls = 0;
+    bool settingsRecaptureResult = true;
+    unsigned disconnectCalls = 0;
     bool requestUserBytesSuccess = true;
     bool requestCurrentVolumeResult = true;
     bool requestAllVolumeSuccess = true;
@@ -242,6 +247,11 @@ public:
         nextDisplaySendResult = SendResult::SENT;
         nextModeSendResult = SendResult::SENT;
         nextAllVolumeReadSendResult = SendResult::SENT;
+        resetCalls = 0;
+        nextResetResult = SendResult::SENT;
+        settingsRecaptureCalls = 0;
+        settingsRecaptureResult = true;
+        disconnectCalls = 0;
         requestUserBytesSuccess = true;
         requestCurrentVolumeResult = true;
         requestAllVolumeSuccess = true;
@@ -312,6 +322,15 @@ public:
         volumeWriteReceipt_.reject(packetId, sessionGeneration(), ingress);
     }
     void setConnected(bool v) { connected = v; }
+    void disconnect() { ++disconnectCalls; connected = false; }
+    bool beginSettingsRecapture() { ++settingsRecaptureCalls; return settingsRecaptureResult; }
+    SendResult factoryResetDetector() {
+        ++resetCalls;
+        beginMockCommand();
+        const SendResult result = nextResetResult;
+        nextResetResult = SendResult::SENT;
+        return recordCommandResult(result);
+    }
     uint32_t sessionGeneration() const { return sessionGenerationValue; }
     void setSessionGeneration(uint32_t generation) { sessionGenerationValue = generation; }
     bool isConnectBurstSettling() const { return connectBurstSettling; }

@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <algorithm>
 #include <vector>
 
 #include <Preferences.h>
@@ -20,6 +21,63 @@ void setUp() {
 }
 
 void tearDown() {}
+
+void test_component_outcomes_preserve_numeric_names_and_installed_record_bytes() {
+    using Store = V1SettingsOperationStore;
+    struct Expected { Store::ComponentOutcome outcome; uint8_t number; const char* name; uint32_t crc; };
+    const Expected cases[] = {
+        {Store::ComponentOutcome::NotRequested, 0, "not_requested", 0xDD686FDEu},
+        {Store::ComponentOutcome::Pending, 1, "pending", 0xC7C145EBu},
+        {Store::ComponentOutcome::Unchanged, 2, "unchanged", 0x025BBBD8u},
+        {Store::ComponentOutcome::Sent, 3, "sent", 0x88C710D7u},
+        {Store::ComponentOutcome::Verified, 4, "verified", 0x54F161FFu},
+        {Store::ComponentOutcome::Unsupported, 5, "unsupported", 0xDE6DCAF0u},
+        {Store::ComponentOutcome::Invalid, 6, "invalid", 0xA20CEF2Bu},
+        {Store::ComponentOutcome::Blocked, 7, "blocked", 0x3F030E5Du},
+        {Store::ComponentOutcome::WriteFailed, 8, "write_failed", 0x6997BAABu},
+        {Store::ComponentOutcome::ReadFailed, 9, "read_failed", 0xF4985BDDu},
+        {Store::ComponentOutcome::Mismatch, 10, "mismatch", 0x88F97E06u},
+        {Store::ComponentOutcome::Timeout, 11, "timeout", 0x15F69F70u},
+        {Store::ComponentOutcome::Disconnected, 12, "disconnected", 0x703B35B0u},
+        {Store::ComponentOutcome::SessionChanged, 13, "session_changed", 0xED34D4C6u},
+        {Store::ComponentOutcome::LoadFailed, 14, "load_failed", 0x9155F11Du},
+    };
+    for (const auto& expected : cases) {
+        setUp();
+        TEST_ASSERT_EQUAL_UINT8(expected.number, static_cast<uint8_t>(expected.outcome));
+        TEST_ASSERT_EQUAL_STRING(expected.name, Store::componentOutcomeName(expected.outcome));
+        Store store;
+        TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, store.begin());
+        TEST_ASSERT_EQUAL_INT(Store::StartStatus::Started,
+            store.startApply(0, "AA:BB:CC:DD:EE:FF", Store::Source::TripleTap, false, false).status);
+        TEST_ASSERT_TRUE(store.markRunning(17));
+        auto components = store.snapshot().components;
+        auto& first = components[0];
+        first.requested = expected.number != 0;
+        first.sent = expected.number == 3 || expected.number == 4;
+        first.verified = expected.number == 2 || expected.number == 4;
+        first.outcome = expected.outcome;
+        TEST_ASSERT_TRUE(store.updateComponents(components, 17));
+        const auto actual = mock_preferences::getBlob(Store::namespaceForTest(), Store::recordKeyForTest());
+        // Independently pinned installed v1 record layout and CRCs. No production
+        // encoder, Record type or enum ordinal generates these expectations.
+        std::vector<uint8_t> record(124, 0);
+        const uint8_t prefix[] = {0x42,0x4A,0x31,0x56,1,0,1,2,4,0,0,0,1,0,0,0,17,0,0,0};
+        std::copy(std::begin(prefix), std::end(prefix), record.begin());
+        const char address[] = "AA:BB:CC:DD:EE:FF";
+        std::copy(std::begin(address), std::end(address), record.begin() + 20);
+        record[103] = expected.number != 0;
+        record[104] = expected.number == 3 || expected.number == 4;
+        record[105] = expected.number == 2 || expected.number == 4;
+        record[106] = expected.number;
+        for (unsigned byte = 0; byte < 4; ++byte) record[120 + byte] = expected.crc >> (8 * byte);
+        TEST_ASSERT_EQUAL_UINT(record.size(), actual.size());
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(record.data(), actual.data(), record.size());
+        Store reboot;
+        TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, reboot.begin());
+        TEST_ASSERT_EQUAL_UINT8(expected.number, static_cast<uint8_t>(reboot.snapshot().components[0].outcome));
+    }
+}
 
 void test_fresh_namespace_is_ready_and_can_create_first_operation() {
     V1SettingsOperationStore store;
@@ -646,6 +704,7 @@ void test_new_operation_is_rejected_while_one_is_active_and_storage_failures_are
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_component_outcomes_preserve_numeric_names_and_installed_record_bytes);
     RUN_TEST(test_fresh_namespace_is_ready_and_can_create_first_operation);
     RUN_TEST(test_unreadable_pending_record_blocks_replacement_and_recovers_original_on_reload);
     RUN_TEST(test_wrong_type_and_oversized_records_are_corrupt_and_never_replaced);

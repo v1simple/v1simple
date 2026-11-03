@@ -24,19 +24,6 @@
 namespace {
 constexpr uint32_t kConnectionStateProcessMaxGapMs = 1000;
 constexpr uint32_t kConnectedPersistenceDeferralMs = 10000;
-constexpr uint32_t kFreshObservationWaitMs = 5000;
-
-bool settingsSnapshotComplete(const V1DetectorSnapshot& snapshot) {
-    const V1FirmwareCompat::Capabilities capabilities =
-        V1FirmwareCompat::capabilities(snapshot.firmwareVersion);
-    return snapshot.hasUserBytes &&
-        (!capabilities.allVolume || snapshot.hasCurrentVolume) &&
-        (!capabilities.modeObservation || snapshot.hasMode) &&
-        (!capabilities.displayActive || snapshot.hasDisplayOn) &&
-        (!capabilities.customSweeps || (snapshot.hasSweepSections && snapshot.hasMaxSweepIndex &&
-                                         snapshot.hasSweepDefinitions));
-}
-
 ProductAlpState productAlpState(uint8_t heartbeatByte1) {
     switch (heartbeatByte1) {
     case 0x01:
@@ -57,7 +44,8 @@ DriveRuntime::DriveRuntime(SettingsManager& settings, V1ProfileManager& profiles
                            StorageManager& storage, BatteryManager& battery, ProductEventLog& events,
                            HealthJournal& health)
     : settings_(settings), profiles_(profiles), devices_(devices), storage_(storage), battery_(battery),
-      events_(events), health_(health), display_(settings) {}
+      events_(events), health_(health), display_(settings),
+      settingsOperationCoordinator_(settingsOperations_, autoPush_, ble_, makeSettingsOperationEffects()) {}
 
 void DriveRuntime::logBootStage(const char* stage, uint32_t setupStartMs, uint32_t& stageStartedMs) const {
     const uint32_t nowMs = millis();
@@ -72,6 +60,30 @@ bool DriveRuntime::preservedPanicEvidencePresent(esp_reset_reason_t resetReason)
                             resetReason == ESP_RST_TASK_WDT || resetReason == ESP_RST_WDT;
     fs::FS* internalFs = storage_.getLittleFS();
     return crashReset || (internalFs && (internalFs->exists("/panic.txt") || internalFs->exists("/panic.prev.txt")));
+}
+
+SettingsOperationCoordinator::Effects DriveRuntime::makeSettingsOperationEffects() {
+    return {
+        this,
+        [](String& address, void* context) {
+            return static_cast<DriveRuntime*>(context)->connectedV1Address(address);
+        },
+        [](uint32_t boundary, void* context) {
+            return static_cast<DriveRuntime*>(context)->captureDetectorSnapshot(
+                SnapshotPurpose::SettingsOperation, boundary);
+        },
+        [](const String& address, const V1DetectorSnapshot& snapshot, bool flush, void* context) {
+            return static_cast<DriveRuntime*>(context)->persistDetectorSnapshot(address, snapshot, flush);
+        },
+        [](void* context) { return static_cast<DriveRuntime*>(context)->settings_.get().activeSlot; },
+        [](int slot, void* context) {
+            auto& self = *static_cast<DriveRuntime*>(context);
+            self.displayMode_ = DisplayMode::IDLE;
+            self.alertPersistence_.clearPersistence();
+            self.display_.drawProfileIndicator(slot);
+        },
+        [](void* context) { return static_cast<DriveRuntime*>(context)->requestMaintenanceBootRestart(); },
+    };
 }
 
 void DriveRuntime::initializeStorageAndProfiles() {
@@ -154,9 +166,7 @@ bool DriveRuntime::requestMaintenanceBootRestart() {
         Serial.println("[MaintBoot] ERROR: failed to persist maintenance boot request");
         return false;
     }
-    if (settingsOperations_.isTerminal() &&
-        settingsOperations_.snapshot().returnToMaintenance &&
-        !settingsOperations_.acknowledgeReturnToMaintenance()) {
+    if (!settingsOperationCoordinator_.acknowledgePendingMaintenanceReturn()) {
         // The one-shot boot request was committed first so a failed request
         // cannot consume the durable return intent. Roll it back when that
         // intent cannot be acknowledged, or an unrelated later reboot could
@@ -340,11 +350,7 @@ void DriveRuntime::start(uint32_t setupStartMs, uint32_t stageStartedMs, esp_res
         return;
     }
     state_.maintenanceBootActive = false;
-    const bool operationRecovered = settingsOperations_.beginNormalBoot();
-    const auto bootOperation = settingsOperations_.snapshot();
-    settingsOperationBootRecoveryPending_ =
-        !operationRecovered && bootOperation.available && bootOperation.valid;
-    settingsOperationBootRecoveryAttemptMs_ = millis();
+    settingsOperationCoordinator_.beginNormalBoot();
     initializeStorageAndProfiles();
 
     const bool previousShutdownClean = readAndResetCleanShutdownMarker();
@@ -707,287 +713,10 @@ DriveLoopDispatch DriveRuntime::processConnectionDispatch(bool powerPresentation
     return dispatch;
 }
 
-void DriveRuntime::finishSettingsRecapture(
-    const V1SettingsOperationStore::Snapshot& operation, uint32_t nowMs) {
-    String address;
-    if (!connectedV1Address(address) || !settingsOperations_.targetMatches(address.c_str())) return;
-    V1DetectorSnapshot snapshot = captureDetectorSnapshot(
-        SnapshotPurpose::SettingsOperation, settingsRecaptureIngressBoundary_);
-    const bool complete = settingsSnapshotComplete(snapshot);
-    const uint32_t settingsSessionGeneration = ble_.sessionGeneration();
-    if (settingsFreshObservationGate_.shouldWait(
-            complete, nowMs, kFreshObservationWaitMs, settingsSessionGeneration)) return;
-    snapshot.captureTimedOut = snapshot.captureTimedOut || !complete;
-
-    if (!devices_.recordSnapshotInMemory(address, snapshot)) {
-        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
-            V1SettingsOperationStore::Reason::SnapshotStoreUnavailable);
-        return;
-    }
-    bool flushed = false;
-    if (storage_.isSDCard()) {
-        StorageManager::SDTryLock lock(storage_.getSDMutex(), /*checkDmaHeap=*/false);
-        flushed = lock && devices_.flushPendingSave();
-    } else {
-        flushed = devices_.flushPendingSave();
-    }
-    if (!flushed) {
-        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
-            V1SettingsOperationStore::Reason::SnapshotPersistFailed);
-        return;
-    }
-
-    V1SettingsOperationStore::State terminal = V1SettingsOperationStore::State::Succeeded;
-    V1SettingsOperationStore::Reason reason = V1SettingsOperationStore::Reason::None;
-    bool preserveInterruptedFactoryTruth = false;
-    if (operation.kind == V1SettingsOperationStore::Kind::FactoryReset) {
-        if (!V1SettingsOperationStore::hasDurableFactoryResetSend(operation)) {
-            // A reset may have reached the detector before power loss, but no
-            // durable record proves it. Fresh factory-looking values cannot be
-            // promoted into evidence of that destructive send.
-            terminal = V1SettingsOperationStore::State::Partial;
-            reason = V1SettingsOperationStore::Reason::Interrupted;
-            preserveInterruptedFactoryTruth = true;
-        } else {
-            auto components = operation.components;
-            auto& user = components[static_cast<size_t>(V1SettingsOperationStore::Component::UserSettings)];
-            const bool userDefaultsMatch = V1SettingsOperationStore::factoryUserDefaultsMatch(
-                snapshot.userBytes, snapshot.hasUserBytes);
-            if (userDefaultsMatch) {
-                user.verified = true;
-                user.outcome = V1SettingsOperationStore::ComponentOutcome::Verified;
-                user.reason = V1SettingsOperationStore::ComponentReason::None;
-            } else if (snapshot.hasUserBytes) {
-                user.verified = false;
-                user.outcome = V1SettingsOperationStore::ComponentOutcome::Mismatch;
-                user.reason = V1SettingsOperationStore::ComponentReason::FactoryUserDefaultsMismatch;
-            }
-            if (!settingsOperations_.updateComponents(components, 0)) return;
-            terminal = V1SettingsOperationStore::State::Partial;
-            reason = snapshot.hasUserBytes && !userDefaultsMatch
-                ? V1SettingsOperationStore::Reason::FactoryResetDefaultsMismatch
-                : V1SettingsOperationStore::Reason::FactoryResetScopeUnverified;
-        }
-    } else if (operation.reason == V1SettingsOperationStore::Reason::ApplyFailed) {
-        terminal = V1SettingsOperationStore::State::Failed;
-        reason = operation.reason;
-    } else if (operation.reason == V1SettingsOperationStore::Reason::ApplyPartial ||
-               operation.reason == V1SettingsOperationStore::Reason::InTheBoxPersistFailed ||
-               operation.reason == V1SettingsOperationStore::Reason::Interrupted) {
-        terminal = V1SettingsOperationStore::State::Partial;
-        reason = operation.reason;
-    }
-    if (!complete && terminal != V1SettingsOperationStore::State::Failed &&
-        reason != V1SettingsOperationStore::Reason::InTheBoxPersistFailed &&
-        !preserveInterruptedFactoryTruth) {
-        terminal = V1SettingsOperationStore::State::Partial;
-        reason = V1SettingsOperationStore::Reason::RecaptureTimedOut;
-    }
-    (void)settingsOperations_.finish(terminal, reason);
-}
-
-void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
-    // A durable Running record can describe a reset already sent before reboot.
-    // Do not admit any operation until its boot transition has been persisted.
-    if (settingsOperationBootRecoveryPending_) {
-        if (static_cast<uint32_t>(nowMs - settingsOperationBootRecoveryAttemptMs_) < 1000u) return;
-        settingsOperationBootRecoveryAttemptMs_ = nowMs;
-        if (!settingsOperations_.beginNormalBoot()) return;
-        settingsOperationBootRecoveryPending_ = false;
-    }
-    if (settingsWrongDetectorDisconnectPending_) {
-        settingsWrongDetectorDisconnectPending_ = false;
-        ble_.disconnect();
-        return;
-    }
-    const V1SettingsOperationStore::Snapshot initial = settingsOperations_.snapshot();
-    if (!initial.available || !initial.valid) return;
-    if (initial.operationId != observedSettingsOperationId_) {
-        ble_.cancelCommand(V1CommandOwner::FactoryReset);
-        observedSettingsOperationId_ = initial.operationId;
-        observedSettingsOperationState_ = initial.state;
-        settingsOperationStartedMs_ = nowMs;
-        settingsOperationNextActionMs_ = 0;
-        settingsRecaptureIngressBoundary_ = 0;
-        settingsRecaptureStarted_ = false;
-        settingsFreshObservationGate_.reset();
-        factoryResetSendLatch_.reset();
-        factoryResetSummaryPersistedThisBoot_ = false;
-        factoryResetSentComponents_ = {};
-        settingsWrongDetectorDisconnectPending_ = false;
-        settingsReturnRetry_.clear();
-    } else if (initial.state != observedSettingsOperationState_) {
-        observedSettingsOperationState_ = initial.state;
-        settingsOperationNextActionMs_ = 0;
-        if (initial.state == V1SettingsOperationStore::State::Recapturing) {
-            settingsRecaptureIngressBoundary_ = 0;
-            settingsRecaptureStarted_ = false;
-            settingsFreshObservationGate_.reset();
-        }
-    }
-
-    if (settingsOperations_.isTerminal()) {
-        ble_.cancelCommand(V1CommandOwner::FactoryReset);
-        if (initial.returnToMaintenance && settingsReturnRetry_.due(nowMs)) {
-            settingsReturnRetry_.defer(nowMs);
-            requestMaintenanceBootRestart();
-        }
-        return;
-    }
-
-    constexpr uint32_t kDetectorWaitTimeoutMs = 60000u;
-    constexpr uint32_t kOperationTimeoutMs = 90000u;
-    if ((initial.state == V1SettingsOperationStore::State::WaitingForDetector ||
-         initial.state == V1SettingsOperationStore::State::Preparing) &&
-        static_cast<uint32_t>(nowMs - settingsOperationStartedMs_) >= kDetectorWaitTimeoutMs) {
-        ble_.cancelCommand(V1CommandOwner::FactoryReset);
-        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
-            V1SettingsOperationStore::Reason::DetectorTimeout);
-        return;
-    }
-    if (static_cast<uint32_t>(nowMs - settingsOperationStartedMs_) >= kOperationTimeoutMs) {
-        ble_.cancelCommand(V1CommandOwner::FactoryReset);
-        bool detectorWritesSent = false;
-        if (initial.state == V1SettingsOperationStore::State::Running &&
-            initial.kind != V1SettingsOperationStore::Kind::FactoryReset) {
-            auto summary = autoPush_.executionSummary();
-            if (summary.operationId != 0 &&
-                (initial.executorOperationId == 0 || summary.operationId == initial.executorOperationId)) {
-                // Stop the executor before publishing a terminal result, even
-                // if persisting that result must be retried on a later loop.
-                autoPush_.cancelForTimeout();
-                summary = autoPush_.executionSummary();
-                if (!settingsOperations_.updateComponents(summary.components, summary.operationId)) return;
-                for (const auto& component : summary.components) {
-                    detectorWritesSent = detectorWritesSent || component.sent;
-                }
-            }
-        }
-        const auto terminal = initial.state == V1SettingsOperationStore::State::Recapturing || detectorWritesSent
-            ? V1SettingsOperationStore::State::Partial
-            : V1SettingsOperationStore::State::Failed;
-        (void)settingsOperations_.finish(terminal,
-            initial.state == V1SettingsOperationStore::State::Recapturing
-                ? V1SettingsOperationStore::Reason::RecaptureTimedOut
-                : V1SettingsOperationStore::Reason::DetectorTimeout);
-        return;
-    }
-
-    String address;
-    const bool matchingDetector = connectedV1Address(address) &&
-        settingsOperations_.targetMatches(address.c_str());
-    const uint32_t settingsSessionGeneration = ble_.sessionGeneration();
-    if (matchingDetector &&
-        settingsFreshObservationGate_.observeSession(settingsSessionGeneration) &&
-        (initial.state == V1SettingsOperationStore::State::Preparing ||
-         initial.state == V1SettingsOperationStore::State::Recapturing)) {
-        // A recapture started for an earlier BLE session cannot establish
-        // freshness for this one. Either the new connection follow-up will
-        // complete first, or this state starts a fresh explicit recapture.
-        settingsRecaptureIngressBoundary_ = 0;
-        settingsRecaptureStarted_ = false;
-    }
-    if ((initial.state == V1SettingsOperationStore::State::WaitingForDetector ||
-         initial.state == V1SettingsOperationStore::State::Preparing) &&
-        matchingDetector && settingsFreshObservationGate_.completeFor(settingsSessionGeneration)) {
-        const uint32_t requiredBoundary = V1SettingsOperationStore::requiredPreApplyIngressBoundary(
-            initial.state, settingsRecaptureIngressBoundary_);
-        const V1DetectorSnapshot snapshot = captureDetectorSnapshot(
-            SnapshotPurpose::SettingsOperation, requiredBoundary);
-        const bool complete = settingsSnapshotComplete(snapshot);
-        if (settingsFreshObservationGate_.shouldWait(
-                complete, nowMs, kFreshObservationWaitMs, settingsSessionGeneration)) return;
-        if (!persistDetectorSnapshot(address, snapshot, false)) {
-            (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
-                V1SettingsOperationStore::Reason::SnapshotStoreUnavailable);
-            return;
-        }
-        if (initial.kind == V1SettingsOperationStore::Kind::FactoryReset) {
-            auto components = initial.components;
-            for (auto& component : components) {
-                component.requested = true;
-                component.outcome = V1SettingsOperationStore::ComponentOutcome::Pending;
-                component.reason = V1SettingsOperationStore::ComponentReason::None;
-            }
-            if (!settingsOperations_.updateComponents(components, 0)) return;
-            if (!settingsOperations_.markRunning(0)) return;
-            attemptFactoryReset(settingsOperations_.snapshot());
-        } else {
-            queueSettingsApply(initial, snapshot);
-        }
-        return;
-    }
-
-    if (initial.state == V1SettingsOperationStore::State::Preparing && matchingDetector &&
-        !settingsRecaptureStarted_) {
-        settingsRecaptureIngressBoundary_ = ble_.latestV1NotificationIngressSequence();
-        if (ble_.beginSettingsRecapture()) {
-            settingsFreshObservationGate_.beginCapture(settingsSessionGeneration);
-            settingsRecaptureStarted_ = true;
-        }
-        return;
-    }
-
-    if (initial.state == V1SettingsOperationStore::State::Running) {
-        if (initial.kind == V1SettingsOperationStore::Kind::FactoryReset) {
-            if (matchingDetector &&
-                (settingsOperationNextActionMs_ == 0 ||
-                 static_cast<int32_t>(nowMs - settingsOperationNextActionMs_) >= 0)) {
-                settingsOperationNextActionMs_ = nowMs + 50u;
-                attemptFactoryReset(initial);
-            }
-            return;
-        }
-        const AutoPushModule::ExecutionSummary summary = autoPush_.executionSummary();
-        if (summary.operationId == 0 ||
-            (initial.executorOperationId != 0 && summary.operationId != initial.executorOperationId)) return;
-        bool changed = initial.executorOperationId != summary.operationId;
-        for (size_t index = 0; index < V1SettingsOperationStore::kComponentCount && !changed; ++index) {
-            const auto& left = initial.components[index];
-            const auto& right = summary.components[index];
-            changed = left.requested != right.requested || left.sent != right.sent ||
-                      left.verified != right.verified || left.outcome != right.outcome ||
-                      left.reason != right.reason;
-        }
-        if (changed && !settingsOperations_.updateComponents(summary.components, summary.operationId)) return;
-        if (summary.active || summary.result == AutoPushModule::PublicResult::Queued ||
-            summary.result == AutoPushModule::PublicResult::InProgress) return;
-        V1SettingsOperationStore::Reason reason = V1SettingsOperationStore::Reason::ApplyFailed;
-        if (summary.result == AutoPushModule::PublicResult::Succeeded) {
-            reason = V1SettingsOperationStore::Reason::None;
-        } else if (summary.result == AutoPushModule::PublicResult::Partial) {
-            reason = V1SettingsOperationStore::Reason::ApplyPartial;
-        }
-        if (summary.inTheBoxPersistFailed)
-            reason = V1SettingsOperationStore::Reason::InTheBoxPersistFailed;
-        (void)settingsOperations_.markRecapturing(reason);
-        return;
-    }
-
-    if (initial.state == V1SettingsOperationStore::State::Recapturing) {
-        if (!matchingDetector) return;
-        if (!settingsRecaptureStarted_ &&
-            !settingsFreshObservationGate_.completeFor(settingsSessionGeneration)) {
-            settingsRecaptureIngressBoundary_ = ble_.latestV1NotificationIngressSequence();
-            if (ble_.beginSettingsRecapture()) {
-                settingsFreshObservationGate_.beginCapture(settingsSessionGeneration);
-                settingsRecaptureStarted_ = true;
-            }
-            return;
-        }
-        if (settingsFreshObservationGate_.completeFor(settingsSessionGeneration)) {
-            finishSettingsRecapture(initial, nowMs);
-        }
-    }
-}
-
 void DriveRuntime::processPeriodicMaintenance(uint32_t nowMs, bool bleConnected, bool bleBackpressure,
                                               bool loopOverloaded, bool forceTailBleDrainPending) {
     syncRecoveredSettings();
-    processSettingsOperation(nowMs);
-    // Detector transactions run independently of presentation ownership. The
-    // durable deadline/cancellation above is checked before another write.
-    autoPush_.process();
+    settingsOperationCoordinator_.process(nowMs);
     const bool hardPressure = bleBackpressure || loopOverloaded || forceTailBleDrainPending;
     usbTailBusy_ = hardPressure;
     if (!bleConnected) {
@@ -1286,16 +1015,17 @@ V1DetectorSnapshot DriveRuntime::captureDetectorSnapshot(SnapshotPurpose purpose
     return snapshot;
 }
 
-bool DriveRuntime::persistDetectorSnapshot(const String& address,
+SettingsOperationCoordinator::SnapshotPersistResult DriveRuntime::persistDetectorSnapshot(const String& address,
                                            const V1DetectorSnapshot& snapshot,
                                            bool flushImmediately) {
-    if (!devices_.recordSnapshotInMemory(address, snapshot)) return false;
-    if (!flushImmediately) return true;
+    using Result = SettingsOperationCoordinator::SnapshotPersistResult;
+    if (!devices_.recordSnapshotInMemory(address, snapshot)) return Result::StoreUnavailable;
+    if (!flushImmediately) return Result::Ok;
     if (storage_.isSDCard()) {
         StorageManager::SDTryLock lock(storage_.getSDMutex(), /*checkDmaHeap=*/false);
-        return lock && devices_.flushPendingSave();
+        return lock && devices_.flushPendingSave() ? Result::Ok : Result::FlushFailed;
     }
-    return devices_.flushPendingSave();
+    return devices_.flushPendingSave() ? Result::Ok : Result::FlushFailed;
 }
 
 bool DriveRuntime::beginTripleTapProfileCycle(int newSlot) {
@@ -1310,135 +1040,7 @@ bool DriveRuntime::beginTripleTapProfileCycle(int newSlot) {
         Serial.printf("PROFILE CHANGE: local slot %d (no detector apply)\n", newSlot);
         return true;
     }
-    if (autoPush_.isActive() || settingsOperations_.requiresExclusiveDetectorAdmission()) return false;
-    String address;
-    if (!connectedV1Address(address)) return false;
-    const auto started = settingsOperations_.startApply(
-        newSlot, address.c_str(), V1SettingsOperationStore::Source::TripleTap,
-        false, false);
-    if (started.status != V1SettingsOperationStore::StartStatus::Started) return false;
-    if (!settingsOperations_.markPreparing()) {
-        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
-                                         V1SettingsOperationStore::Reason::StorageUnavailable);
-        return false;
-    }
-    observedSettingsOperationId_ = 0;
-    return true;
-}
-
-void DriveRuntime::queueSettingsApply(const V1SettingsOperationStore::Snapshot& operation,
-                                      const V1DetectorSnapshot& preApply) {
-    autoPush_.setPreApplySnapshot(preApply);
-    if (!settingsOperations_.markRunning(0)) return;
-    AutoPushModule::QueueResult queued = AutoPushModule::QueueResult::STAGING_UNAVAILABLE;
-    if (operation.kind == V1SettingsOperationStore::Kind::ApplySlot) {
-        const bool activate = operation.source == V1SettingsOperationStore::Source::TripleTap;
-        queued = autoPush_.queueSlotPush(operation.slot, activate, false);
-    } else {
-        AutoPushModule::PushNowRequest request;
-        request.slotIndex = settings_.get().activeSlot;
-        request.hasProfileOverride = true;
-        request.profileName = operation.profileName;
-        queued = autoPush_.queuePushNow(request);
-    }
-    if (queued != AutoPushModule::QueueResult::QUEUED) {
-        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
-                                         AutoPushModule::durableReasonForQueueResult(queued));
-        return;
-    }
-    if (operation.source == V1SettingsOperationStore::Source::TripleTap) {
-        displayMode_ = DisplayMode::IDLE;
-        alertPersistence_.clearPersistence();
-        display_.drawProfileIndicator(operation.slot);
-    }
-    const AutoPushModule::ExecutionSummary summary = autoPush_.executionSummary();
-    (void)settingsOperations_.updateComponents(summary.components, summary.operationId);
-}
-
-void DriveRuntime::attemptFactoryReset(const V1SettingsOperationStore::Snapshot& operation) {
-    if (operation.kind != V1SettingsOperationStore::Kind::FactoryReset || !ble_.isConnected()) return;
-    if (factoryResetSendLatch_.sent()) {
-        if (!factoryResetSummaryPersistedThisBoot_) {
-            if (!settingsOperations_.updateComponents(factoryResetSentComponents_, 0)) return;
-            factoryResetSummaryPersistedThisBoot_ = true;
-        }
-        (void)settingsOperations_.markRecapturing(
-            V1SettingsOperationStore::Reason::FactoryResetScopeUnverified);
-        return;
-    }
-    auto components = operation.components;
-    V1BLEClient::CommandScope commandScope(ble_, V1CommandOwner::FactoryReset);
-    const uint32_t session = ble_.sessionGeneration();
-    // A pending request may already have reset the detector before its ACK
-    // disappeared. Only poll that exact admitted job; never recreate it after
-    // reconnect or after an error whose durable failure write needs retrying.
-    const bool admittedJobLost = factoryResetSendLatch_.admitted() &&
-        (factoryResetSendLatch_.admittedSession() != session ||
-         !ble_.commandInFlight(V1CommandOwner::FactoryReset));
-    const SendResult result = admittedJobLost ? SendResult::FAILED : ble_.factoryResetDetector();
-    if (result == SendResult::IN_FLIGHT) {
-        factoryResetSendLatch_.noteAdmitted(session);
-        return;
-    }
-    if (result == SendResult::NOT_YET) return;
-    if (result != SendResult::SENT) {
-        const bool unacknowledged = factoryResetSendLatch_.admitted();
-        for (size_t index = 0; index < V1SettingsOperationStore::kComponentCount; ++index) {
-            components[index].outcome = index == static_cast<size_t>(V1SettingsOperationStore::Component::FactoryReset)
-                ? V1SettingsOperationStore::ComponentOutcome::WriteFailed
-                : V1SettingsOperationStore::ComponentOutcome::Blocked;
-            components[index].reason = unacknowledged
-                ? V1SettingsOperationStore::ComponentReason::FactoryDefaultUnverified
-                : V1SettingsOperationStore::ComponentReason::FactoryResetWriteFailed;
-        }
-        (void)settingsOperations_.updateComponents(components, 0);
-        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
-            unacknowledged ? V1SettingsOperationStore::Reason::FactoryResetScopeUnverified
-                          : V1SettingsOperationStore::Reason::FactoryResetSendFailed);
-        return;
-    }
-    for (size_t index = 0; index < V1SettingsOperationStore::kComponentCount; ++index) {
-        components[index].sent = true;
-        components[index].verified = false;
-        components[index].outcome = V1SettingsOperationStore::ComponentOutcome::Sent;
-        components[index].reason = index == static_cast<size_t>(V1SettingsOperationStore::Component::FactoryReset)
-            ? V1SettingsOperationStore::ComponentReason::None
-            : V1SettingsOperationStore::ComponentReason::FactoryDefaultUnverified;
-    }
-    // Latch before either persistence write. A returned SENT must never lead
-    // to a second destructive frame merely because NVS later failed.
-    factoryResetSendLatch_.noteSent();
-    factoryResetSentComponents_ = components;
-    if (!settingsOperations_.updateComponents(components, 0)) return;
-    factoryResetSummaryPersistedThisBoot_ = true;
-    (void)settingsOperations_.markRecapturing(
-        V1SettingsOperationStore::Reason::FactoryResetScopeUnverified);
-}
-
-bool DriveRuntime::handleSettingsOperationStableConnection() {
-    // An unreadable durable job cannot authorize a competing automatic Apply.
-    // Keep the connection for alerts; there is no known target to disconnect.
-    if (!settingsOperations_.snapshot().valid) return true;
-    if (!settingsOperations_.requiresExclusiveDetectorAdmission()) return false;
-    String address;
-    if (!connectedV1Address(address) || !settingsOperations_.targetMatches(address.c_str())) {
-        // A target-bound job owns detector mutation admission until it finishes
-        // and any durable return-to-maintenance intent has been acknowledged.
-        // Ordinary Auto-Push must not mutate another V1 in that interval.
-        settingsWrongDetectorDisconnectPending_ = ble_.isConnected();
-        return true;
-    }
-    const V1SettingsOperationStore::Snapshot operation = settingsOperations_.snapshot();
-    if (operation.state == V1SettingsOperationStore::State::Recapturing) {
-        settingsFreshObservationGate_.noteFollowupComplete(
-            static_cast<uint32_t>(millis()), ble_.sessionGeneration());
-        return true;
-    }
-    if (operation.state != V1SettingsOperationStore::State::WaitingForDetector &&
-        operation.state != V1SettingsOperationStore::State::Preparing) return true;
-    settingsFreshObservationGate_.noteFollowupComplete(
-        static_cast<uint32_t>(millis()), ble_.sessionGeneration());
-    return true;
+    return settingsOperationCoordinator_.beginSlotApply(newSlot);
 }
 
 bool DriveRuntime::persistInTheBoxApply(const V1InTheBoxSettings& settings, void* context) {
@@ -1464,7 +1066,8 @@ void DriveRuntime::onV1Connected() {
         (void)self.devices_.getInTheBoxForAddressChecked(appSettingsAddress, appSettings);
     }
     self.quiet_.setInTheBoxSettings(appSettings, self.ble_.sessionGeneration());
-    if (self.handleSettingsOperationStableConnection()) return;
+    if (self.settingsOperationCoordinator_.onStableConnection() !=
+        SettingsOperationCoordinator::StableAdmission::AllowOrdinaryAutoPush) return;
     const V1Settings& settings = self.settings_.get();
     const int activeSlot = std::max(0, std::min(2, settings.activeSlot));
     int selectedSlot = activeSlot;

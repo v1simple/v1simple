@@ -7,6 +7,7 @@
 #include <array>
 
 #include "ble_client.h"
+#include "detector_operation_contract.h"
 #include "display.h"
 #include "packet_parser.h"
 #include "settings.h"
@@ -101,23 +102,6 @@ class AutoPushModule {
     };
 
     enum class Result : uint8_t { NONE = 0, QUEUED, IN_PROGRESS, SUCCEEDED, PARTIAL, FAILED };
-    enum class Outcome : uint8_t {
-        NOT_REQUESTED = 0,
-        PENDING,
-        UNCHANGED,
-        SENT,
-        VERIFIED,
-        UNSUPPORTED,
-        INVALID,
-        BLOCKED,
-        WRITE_FAILED,
-        READ_FAILED,
-        MISMATCH,
-        TIMEOUT,
-        DISCONNECTED,
-        SESSION_CHANGED,
-        LOAD_FAILED,
-    };
     enum class FailureReason : uint8_t {
         NONE = 0,
         DISCONNECTED,
@@ -169,7 +153,7 @@ class AutoPushModule {
         bool needed = false;
         bool sent = false;
         bool verified = false;
-        Outcome outcome = Outcome::NOT_REQUESTED;
+        DetectorComponentOutcome outcome = DetectorComponentOutcome::NotRequested;
         FailureReason reason = FailureReason::NONE;
     };
 
@@ -261,10 +245,10 @@ class AutoPushModule {
     void advanceAfterDisplay(uint32_t nowMs);
     void advanceAfterMode(uint32_t nowMs);
     void advanceAfterVolume(uint32_t nowMs);
-    bool acceptSendResult(SendResult result, ComponentStatus& component, Outcome failureOutcome,
+    bool acceptSendResult(SendResult result, ComponentStatus& component, DetectorComponentOutcome failureOutcome,
                           FailureReason failureReason, FailureReason timeoutReason, uint32_t nowMs);
-    void failComponent(ComponentStatus& component, Outcome outcome, FailureReason reason);
-    void failWholePlan(ComponentStatus* component, Outcome outcome, FailureReason reason);
+    void failComponent(ComponentStatus& component, DetectorComponentOutcome outcome, FailureReason reason);
+    void failWholePlan(ComponentStatus* component, DetectorComponentOutcome outcome, FailureReason reason);
     void finishOperation();
     bool liveSessionMatches() const;
     static uint8_t modeValueFromObservation(char mode);

@@ -4,6 +4,7 @@
 #include <vector>
 #include "src/v1_devices.h"
 #include "src/settings_types.h"
+#include "src/modules/settings_operation/settings_operation_coordinator.h"
 
 SerialClass Serial;
 unsigned long mockMillis = 123456;
@@ -33,11 +34,14 @@ class DriveRuntime {
     static DriveRuntime* callbackOwner_;
     static void onV1Connected();
     uint32_t bootId_ = 17;
-    bool operationOwnsConnection = false;
-    bool handleSettingsOperationStableConnection() {
-        events.push_back("operation-admission");
-        return operationOwnsConnection;
-    }
+    struct AdmissionProbe {
+        bool ownsConnection = false;
+        SettingsOperationCoordinator::StableAdmission onStableConnection() {
+            events.push_back("operation-admission");
+            return ownsConnection ? SettingsOperationCoordinator::StableAdmission::OwnedOrBlocked
+                                  : SettingsOperationCoordinator::StableAdmission::AllowOrdinaryAutoPush;
+        }
+    } settingsOperationCoordinator_;
     bool connectedV1Address(String& address) {
         if (ble_.address.isNull()) return false;
         address = "AA:BB:CC:DD:EE:FF";
@@ -382,7 +386,7 @@ static void test_connection_early_exits_do_not_capture_or_queue() {
     DriveRuntime::onV1Connected(); eventsAre({});
     for (int condition = 0; condition < 7; ++condition) {
         events.clear(); auto r = ready();
-        if (condition == 0) r.operationOwnsConnection = true;
+        if (condition == 0) r.settingsOperationCoordinator_.ownsConnection = true;
         if (condition == 1) r.ble_.address.value = "short";
         if (condition == 2) r.ble_.address.allocationFails = true;
         if (condition == 3) normalizeAvailable = false;

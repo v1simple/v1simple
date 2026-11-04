@@ -221,7 +221,7 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
     }
     recordI2cSuccess();
 
-    // Response: gesture, point count, then 12-bit X and Y coordinates.
+    // Response: gesture, point count, then event bits and 12-bit X/Y coordinates.
     uint8_t numPoints = buff[1];
     // This controller also reports a released contact as a complete 0x38 fill.
     // Match the entire response so a malformed count alone cannot release a hold.
@@ -241,7 +241,20 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
         return false;
     }
 
-    if (numPoints == 0) {
+    if (numPoints != 0) {
+        x = ((buff[2] & 0x0F) << 8) | buff[3];
+        y = ((buff[4] & 0x0F) << 8) | buff[5];
+
+        // Supplier raw coordinates use the long X axis and short Y axis, with
+        // inclusive endpoints. An impossible report is not a finger release.
+        if (x > 640 || y > 172) {
+            return false;
+        }
+    }
+
+    // AXS UP (event 1) retains the released point's count and coordinates.
+    // Admit it only after the same complete-report and coordinate guards.
+    if (numPoints == 0 || (buff[2] >> 6) == 1) {
         touchAvailable_ = true;
         if (releaseRequired_) {
             releaseRequired_ = false;
@@ -252,14 +265,6 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
         return false;
     }
 
-    x = ((buff[2] & 0x0F) << 8) | buff[3];
-    y = ((buff[4] & 0x0F) << 8) | buff[5];
-
-    // Supplier raw coordinates use the long X axis and short Y axis, with
-    // inclusive endpoints. An impossible report is not a finger release.
-    if (x > 640 || y > 172) {
-        return false;
-    }
     touchAvailable_ = true;
     if (releaseRequired_) {
         return false;

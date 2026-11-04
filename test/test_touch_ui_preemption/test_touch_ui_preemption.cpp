@@ -75,6 +75,16 @@ void queueTouch(uint16_t x, uint16_t y, uint8_t points = 1) {
     Wire.queueRequestFrom(data.size(), data);
 }
 
+void queueTouchEvent(uint8_t event, uint16_t x, uint16_t y) {
+    std::vector<uint8_t> data(32, 0);
+    data[1] = 1;
+    data[2] = static_cast<uint8_t>((event << 6) | (x >> 8));
+    data[3] = x;
+    data[4] = y >> 8;
+    data[5] = y;
+    Wire.queueRequestFrom(data.size(), data);
+}
+
 // Short BOOT press/release: the module's documented enter-adjust gesture.
 unsigned long enterAdjustMode(unsigned long now) {
     processInput(now, true);
@@ -467,6 +477,67 @@ void rapidDragThenWait(bool released) {
 void test_rapid_drag_stationary_flushes_at_50ms() { rapidDragThenWait(false); }
 void test_rapid_drag_release_flushes_at_50ms() { rapidDragThenWait(true); }
 
+void test_up_coordinates_never_edit_sliders_and_next_down_saves() {
+    enterAdjustMode(1000);
+    gDisplay.activeSliderFromTouch = 1;
+    queueTouchEvent(0, 320, 120);
+    processInput(1800, false);
+    TEST_ASSERT_EQUAL_INT(50, gDisplay.lastSettingsVolume);
+    queueTouchEvent(1, 600, 120); // UP carries a different coordinate, not a new value.
+    processInput(2050, false);
+    TEST_ASSERT_FALSE(gTouch.isTouchActive());
+    TEST_ASSERT_EQUAL_INT(50, gDisplay.lastSettingsVolume);
+    TEST_ASSERT_EQUAL_INT(1, gAudioSetVolumeCalls);
+    queueTouchEvent(0, 40, 120);
+    processInput(2300, false);
+    TEST_ASSERT_EQUAL_INT(100, gDisplay.lastSettingsVolume);
+    queueTouchEvent(1, 40, 120);
+    processInput(2550, false);
+    // Explicit post-UP reports avoid the mock's implicit zero-count release.
+    Wire.queueRequestFrom(32, std::vector<uint8_t>(32, 0x3c));
+    processInput(3000, true);
+    TEST_ASSERT_FALSE(processInput(3400, false));
+    TEST_ASSERT_EQUAL_UINT8(100, gSettings.get().voiceVolume);
+    TEST_ASSERT_EQUAL_INT(1, gSettings.saveDeferredBackupCalls);
+    TEST_ASSERT_EQUAL_INT(1, gDisplay.hideBrightnessSliderCalls);
+}
+
+void test_up_unlocks_reopened_settings_without_carrying_a_held_touch() {
+    processInput(1000, true);
+    queueTouchEvent(1, 100, 100); // Release observed after settings takes ownership.
+    TEST_ASSERT_TRUE(processInput(1400, false));
+    gDisplay.activeSliderFromTouch = 0;
+    queueTouchEvent(0, 600, 40);
+    processInput(1800, false);
+    TEST_ASSERT_EQUAL_INT(80, gDisplay.lastSettingsBrightness);
+    queueTouchEvent(1, 600, 40);
+    processInput(2050, false);
+    Wire.queueRequestFrom(32, std::vector<uint8_t>(32, 0x3c));
+    processInput(2500, true);
+    TEST_ASSERT_FALSE(processInput(2900, false));
+    TEST_ASSERT_EQUAL_UINT8(80, gSettings.get().brightness);
+    TEST_ASSERT_EQUAL_INT(1, gSettings.saveDeferredBackupCalls);
+
+    processInput(4000, true);
+    queueTouchEvent(0, 40, 40); // A contact across entry remains canceled.
+    TEST_ASSERT_TRUE(processInput(4400, false));
+    TEST_ASSERT_FALSE(gTouch.isTouchActive());
+    TEST_ASSERT_EQUAL_INT(80, gDisplay.lastSettingsBrightness);
+    queueTouchEvent(1, 40, 40);
+    processInput(4650, false);
+    TEST_ASSERT_FALSE(gTouch.isTouchActive());
+    queueTouchEvent(0, 40, 40);
+    processInput(4750, false);
+    TEST_ASSERT_EQUAL_INT(255, gDisplay.lastSettingsBrightness);
+    queueTouchEvent(1, 40, 40);
+    processInput(5000, false);
+    Wire.queueRequestFrom(32, std::vector<uint8_t>(32, 0x3c));
+    processInput(5500, true);
+    TEST_ASSERT_FALSE(processInput(5900, false));
+    TEST_ASSERT_EQUAL_UINT8(255, gSettings.get().brightness);
+    TEST_ASSERT_EQUAL_INT(2, gSettings.saveDeferredBackupCalls);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_preempt_is_noop_when_menu_closed);
@@ -493,5 +564,7 @@ int main(int, char**) {
     RUN_TEST(test_stationary_slider_contact_keeps_existing_test_voice_debounce);
     RUN_TEST(test_rapid_drag_stationary_flushes_at_50ms);
     RUN_TEST(test_rapid_drag_release_flushes_at_50ms);
+    RUN_TEST(test_up_coordinates_never_edit_sliders_and_next_down_saves);
+    RUN_TEST(test_up_unlocks_reopened_settings_without_carrying_a_held_touch);
     return UNITY_END();
 }

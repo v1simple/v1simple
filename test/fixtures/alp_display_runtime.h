@@ -23,11 +23,11 @@ class WiFiManager {
 #include "../../src/modules/alp/alp_runtime_module.cpp"
 #include "../../src/packet_parser.cpp"
 #include "../../src/packet_parser_alerts.cpp"
-#include "../../src/modules/voice/voice_module.cpp"
 #include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
 #include "../../src/modules/alp/alp_event_latch.cpp"
 #include "../../src/modules/display/render_frame_composer.cpp"
 #include "../../src/modules/display/display_pipeline_module.cpp"
+#include "../support/display_pipeline_fixture.h"
 #include "../../src/display_indicators.cpp"
 #include "../../src/display_top_counter.cpp"
 #include "../../src/display_cards.cpp"
@@ -80,16 +80,6 @@ bool DisplayFontManager::getTopCounterBounds(char, bool, int& min, int& max) {
 GpsRuntimeStatus GpsRuntimeModule::snapshot(uint32_t) const { return {}; }
 ObdRuntimeStatus ObdRuntimeModule::snapshot(uint32_t) const { return {}; }
 void QuietCoordinatorModule::syncCommittedState() { TEST_FAIL_MESSAGE("unexpected quiet owner"); }
-AudioPlaybackResult try_play_frequency_voice(AlertBand, uint16_t, AlertDirection, VoiceAlertMode, bool, uint8_t, AudioPlaybackReceipt*) {
-    TEST_FAIL_MESSAGE("disconnected V1 must not speak"); return AudioPlaybackResult::Unavailable;
-}
-AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t, AudioPlaybackReceipt*) {
-    TEST_FAIL_MESSAGE("disconnected V1 must not speak"); return AudioPlaybackResult::Unavailable;
-}
-AudioPlaybackResult try_play_threat_escalation(AlertBand, uint16_t, AlertDirection, uint8_t, uint8_t, uint8_t, uint8_t,
-                                               VoiceAlertMode, bool, bool, AudioPlaybackReceipt*) {
-    TEST_FAIL_MESSAGE("disconnected V1 must not speak"); return AudioPlaybackResult::Unavailable;
-}
 
 void setUp() { mockMillis = mockMicros = 0; frequencyBand = BAND_NONE; regionTransfers.clear(); }
 void tearDown() { g_displayInstance = nullptr; }
@@ -102,7 +92,6 @@ struct Runtime {
     PacketParser parser;
     V1BLEClient ble;
     AlertPersistenceModule persistence;
-    VoiceModule voice;
     AlpEventLatch latch;
     SpeedSourceSelector speed;
     DisplayMode mode = DisplayMode::IDLE;
@@ -111,7 +100,6 @@ struct Runtime {
     Runtime(bool connected = false, uint8_t persistSec = 0) {
         ble.setConnected(connected);
         settings.alpAlertPersistSec = persistSec;
-        voice.begin(&settings);
         display.setTestCanvas(new Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr));
         display.setAlpRuntimeModule(&alp);
         display.ut_fontMgr().segment7Ready = true;
@@ -122,7 +110,6 @@ struct Runtime {
         deps.settings = &settings;
         deps.ble = &ble;
         deps.alertPersistence = &persistence;
-        deps.voice = &voice;
         deps.alp = &alp;
         deps.alpLatch = &latch;
         deps.speedSelector = &speed;
@@ -142,7 +129,7 @@ struct Runtime {
         alp.testInjectBytes(bytes, sizeof(bytes));
         alp.testSetLastUartByteMs(now);
         alp.process(now);
-        pipeline.handleParsed(now);
+        presentParsedFrame(pipeline, now);
     }
     void live() {
         feed(100, 0xB0, 0x03, 0);
@@ -158,7 +145,7 @@ struct Runtime {
         alp.process(mockMillis);
         TEST_ASSERT_FALSE(alp.currentEvent().active);
         clearPaint();
-        pipeline.handleParsed(mockMillis);
+        presentParsedFrame(pipeline, mockMillis);
     }
     void scan() {
         TEST_ASSERT_EQUAL(DisplayMode::IDLE, mode);
@@ -174,7 +161,7 @@ struct Runtime {
     }
     void tick(uint32_t now) {
         mockMillis = now;
-        if (pipeline.consumeAlpPresentationRefreshDue(now)) pipeline.handleParsed(now);
+        if (pipeline.consumeAlpPresentationRefreshDue(now)) presentParsedFrame(pipeline, now);
     }
 };
 } // namespace

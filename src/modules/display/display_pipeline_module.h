@@ -3,18 +3,17 @@
 #include <stdint.h>
 
 #include "render_frame_composer.h"
-#include "../voice/voice_module.h"
 
 // Forward declarations — full headers included in display_pipeline_module.cpp
 class V1Display;
 struct DisplayState;
+struct V1Settings;
 class PacketParser;
 enum class DisplayMode;
 
 class SettingsManager;
 class V1BLEClient;
 class AlertPersistenceModule;
-class VoiceModule;
 class SpeedMuteModule;
 class QuietCoordinatorModule;
 class AlpRuntimeModule;
@@ -28,7 +27,6 @@ struct DisplayPipelineDependencies {
     SettingsManager* settings = nullptr;
     V1BLEClient* ble = nullptr;
     AlertPersistenceModule* alertPersistence = nullptr;
-    VoiceModule* voice = nullptr;
     SpeedMuteModule* speedMute = nullptr;
     QuietCoordinatorModule* quiet = nullptr;
     AlpRuntimeModule* alp = nullptr;
@@ -40,14 +38,10 @@ class DisplayPipelineModule {
   public:
     void begin(const DisplayPipelineDependencies& dependencies);
 
-    // Process after a successful parser.parse(); expects parser state already updated.
-    void handleParsed(uint32_t nowMs);
-    // Main-loop policy service, independent of display/parsed edges. Cancels
-    // suppressed unheard jobs only; never selects or starts an announcement.
-    void servicePendingVoice();
-    bool hasPendingVoicePlayback() const {
-        return voicePlaybackReceipt_.state.load() == AudioPlaybackReceipt::State::Pending;
-    }
+    // Compose once at the admitted parsed position; voice and paint consume
+    // this same filtered frame. Painting samples its own current entry time.
+    bool prepareParsed(uint32_t nowMs, RenderFrame& out);
+    void presentPrepared(const RenderFrame& frame, uint32_t paintNowMs);
     // Re-renders the current owner without voice side effects when a blink or
     // V1 persistence deadline needs a display update.
     void refreshBlinkTick(uint32_t nowMs);
@@ -63,7 +57,6 @@ class DisplayPipelineModule {
     SettingsManager* settings_ = nullptr;
     V1BLEClient* ble_ = nullptr;
     AlertPersistenceModule* alertPersistence_ = nullptr;
-    VoiceModule* voice_ = nullptr;
     SpeedMuteModule* speedMute_ = nullptr;
     QuietCoordinatorModule* quiet_ = nullptr;
     AlpRuntimeModule* alp_ = nullptr;
@@ -84,22 +77,9 @@ class DisplayPipelineModule {
     uint32_t v1PersistRefreshDeadlineMs_ = 0;
     uint32_t lastV1ClearRevision_ = 0;
     uint32_t lastAlpEndRevision_ = 0;
-    uint32_t voiceAlertLifetime_ = 0;
-    VoiceAction pendingVoiceAction_{};
-    uint32_t pendingVoicePriorityId_ = 0;
-    bool hasPendingVoiceAction_ = false;
-    AudioPlaybackReceipt voicePlaybackReceipt_;
-    bool awaitingVoicePlayback_ = false;
-    uint32_t voiceAcceptedAtMs_ = 0;
-    bool voiceRetryScheduled_ = false;
-    uint32_t nextVoiceAttemptMs_ = 0;
-    static constexpr uint32_t VOICE_RETRY_INTERVAL_MS = 100;
-
     RenderFrame buildRenderFrame(uint32_t nowMs, const V1Settings& settingsRef);
     RenderFrame buildDisconnectedFrame(uint32_t nowMs);
     AlpLaserEvent buildPresentedAlpEvent(const AlpLaserEvent& rawAlpEvent, uint32_t nowMs);
     void updateAlpLatch(const AlpLaserEvent& alpEvent, uint32_t nowMs, uint8_t persistSec);
-    bool settleVoicePlayback(uint32_t nowMs);
-    void runVoice(const RenderFrame& frame, const V1Settings& settingsRef, uint32_t nowMs);
     void renderComposedFrame(uint32_t nowMs, const RenderFrame& frame, bool forceRedraw = false);
 };

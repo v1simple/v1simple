@@ -191,13 +191,15 @@ require exactly seven data bytes, V1 origin, framing and the applicable checksum
    A count-zero row clears the radar table; display-packet mute and primary
    signal bars retain their own authority. Display laser remains separately owned.
 4. The queue publishes its parsed edge. `DriveRuntime::consumeDisplayEdges`
-   and `presentDisplay` dispatch
-   [`DisplayPipelineModule::handleParsed`](../../src/modules/display/display_pipeline_module.cpp).
+   and `presentDisplay` call
+   [`DisplayPipelineModule::prepareParsed`](../../src/modules/display/display_pipeline_module.cpp)
+   once for the frame.
 5. `buildRenderFrame` obtains `getRenderablePriorityAlert`, the complete table,
    V1 display state, and persistence/ALP state. The
    [`RenderFrameComposer`](../../src/modules/display/render_frame_composer.cpp)
    selects the live primary and cards under the display ownership contract.
-6. `renderComposedFrame` calls
+6. [`DriveRuntime::presentDisplay`](../../src/drive_runtime.cpp) admits voice from
+   that same frame before `presentPrepared` → `renderComposedFrame` calls
    [`V1Display::renderFrame`](../../src/display_update.cpp). Its live V1 path
    renders priority frequency/band, V1 display bars/arrows, and secondary cards.
    A live ALP primary can instead carry V1 radar in cards. Successful parsing

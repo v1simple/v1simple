@@ -100,6 +100,8 @@ void tearDown() { queue.end(); }
 #include "src/modules/alp/alp_event_latch.cpp"
 #include "src/modules/quiet/quiet_coordinator_module.cpp"
 #include "src/modules/voice/voice_module.cpp"
+#include "src/modules/voice/voice_playback_coordinator.cpp"
+#include "src/modules/voice/runtime_voice_observation.h"
 #include "src/modules/display/render_frame_composer.cpp"
 #include "src/modules/display/display_pipeline_module.cpp"
 
@@ -138,6 +140,7 @@ struct Runtime {
     VoiceModule voice_;
     AlertPersistenceModule persistence_;
     QuietCoordinatorModule quiet_;
+    VoicePlaybackCoordinator voicePlayback_{voice_, parser_, client, &quiet_};
     DisplayPipelineModule displayPipeline_;
     DisplayMode displayMode_ = DisplayMode::IDLE;
     struct {
@@ -158,6 +161,7 @@ struct Runtime {
         settings_.settings.voiceAlertMode = VOICE_MODE_BAND_ONLY;
         voice_.begin(&settings_);
         quiet_.begin(&client, &parser);
+        voicePlayback_.begin(parser.alertLifetime());
         DisplayPipelineDependencies dependencies;
         dependencies.displayMode = &displayMode_;
         dependencies.display = &display_;
@@ -165,12 +169,19 @@ struct Runtime {
         dependencies.settings = &settings_;
         dependencies.ble = &client;
         dependencies.alertPersistence = &persistence_;
-        dependencies.voice = &voice_;
         dependencies.quiet = &quiet_;
         displayPipeline_.begin(dependencies);
         touch_.begin();
         TouchUiModule::Callbacks callbacks{};
         touchUi_.begin(&display_, &touch_, &settings_, callbacks);
+    }
+    void admit(uint32_t now) {
+        RenderFrame frame;
+        TEST_ASSERT_TRUE(displayPipeline_.prepareParsed(now, frame));
+        const auto& settings = settings_.get();
+        voicePlayback_.onParsedPresentation(makeV1VoiceObservation(frame, parser_.alertLifetime(), client.isProxyClientConnected()),
+            {settings.voiceAlertMode, settings.voiceDirectionEnabled, settings.announceBogeyCount}, now);
+        displayPipeline_.presentPrepared(frame, millis());
     }
     bool active() { return true; }
     DriveLoopTiming beginDriveLoop() {
@@ -293,13 +304,13 @@ static void acceptThenClearVoice(Runtime& runtime) {
     const auto volume = canonicalFrame(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2});
     TEST_ASSERT_TRUE(parser.parse(volume.data(), volume.size()));
     deliver(makeAlertFrame(1, 1, 34700, 0x22, 0x80), 1, 900);
-    runtime.displayPipeline_.handleParsed(900);
+    runtime.admit(900);
     TEST_ASSERT_EQUAL_UINT(1, voiceAdmissions);
     TEST_ASSERT_NOT_NULL(activeVoiceReceipt);
     TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::Pending, activeVoiceReceipt->state.load());
     mockMillis = 950;
     deliver(makeAlertFrame(0, 0, 0, 0, 0), 2, 950);
-    runtime.displayPipeline_.handleParsed(950);
+    runtime.admit(950);
     (void)queue.consumeParsedFlag();
     TEST_ASSERT_FALSE(parser.hasAlerts());
     TEST_ASSERT_TRUE(activeVoiceReceipt->isOwned());
@@ -353,7 +364,7 @@ void test_tail_policy_service_never_admits_new_speech() {
     mockMillis = 1500;
     runtime.finishLoop(false, 0, true);
     TEST_ASSERT_TRUE(parser.hasAlerts());
-    runtime.displayPipeline_.servicePendingVoice();
+    runtime.voicePlayback_.servicePendingCancellation();
     TEST_ASSERT_EQUAL_UINT(0, voiceAdmissions);
     TEST_ASSERT_NULL(activeVoiceReceipt);
     TEST_ASSERT_EQUAL_UINT(0, runtime.presentations);
@@ -372,7 +383,7 @@ void test_tail_refreshes_in_the_box_policy_before_pending_voice_service() {
     deliver(makeAlertFrame(1, 1, 34700, 0x22, 0x80), 1, 1000);
     runtime.quiet_.processInTheBox(1000);
     TEST_ASSERT_FALSE(runtime.quiet_.inTheBoxMuteActive());
-    runtime.displayPipeline_.handleParsed(1000);
+    runtime.admit(1000);
     TEST_ASSERT_EQUAL_UINT(1, voiceAdmissions);
     TEST_ASSERT_TRUE(activeVoiceReceipt->isOwned());
     (void)queue.consumeParsedFlag();

@@ -15,6 +15,7 @@
 #include "modules/health/health_journal.h"
 #include "modules/quiet/quiet_coordinator_templates.h"
 #include "persistent_bootstrap.h"
+#include "modules/voice/runtime_voice_observation.h"
 #include "settings.h"
 #include "storage_manager.h"
 #include "v1_devices.h"
@@ -262,6 +263,7 @@ void DriveRuntime::initializeRuntimeModules() {
     audio_set_volume(settings_.get().voiceVolume);
     volumeFade_.begin(&settings_);
     quiet_.begin(&ble_, &parser_);
+    voicePlayback_.begin(parser_.alertLifetime());
     autoPush_.setInTheBoxApplyCallback(persistInTheBoxApply, this);
 
     DisplayPipelineDependencies pipelineDependencies;
@@ -271,7 +273,6 @@ void DriveRuntime::initializeRuntimeModules() {
     pipelineDependencies.settings = &settings_;
     pipelineDependencies.ble = &ble_;
     pipelineDependencies.alertPersistence = &alertPersistence_;
-    pipelineDependencies.voice = &voice_;
     pipelineDependencies.speedMute = &speedMute_;
     pipelineDependencies.quiet = &quiet_;
     pipelineDependencies.alp = &alp_;
@@ -674,16 +675,31 @@ bool DriveRuntime::processParsedPolicies(const DisplayEdges& edges) {
     parsedContext.parsedReady = edges.parsedReady;
     parsedContext.bootSplashHoldActive = state_.bootSplashHoldActive;
     const bool present = displayOrchestration_.processParsedFrame(parsedContext);
-    displayPipeline_.servicePendingVoice();
+    voicePlayback_.servicePendingCancellation();
     return present;
 }
 
-void DriveRuntime::presentDisplay(const DisplayEdges& edges, bool overloadThisLoop) {
-    bool pipelineRan = false;
-    if (processParsedPolicies(edges)) {
-        displayPipeline_.handleParsed(edges.nowMs);
-        pipelineRan = true;
+void DriveRuntime::admitPreparedVoice(const RenderFrame& frame, uint32_t nowMs) {
+    const V1Settings& settings = settings_.get();
+    const VoiceSettings voiceSettings{settings.voiceAlertMode, settings.voiceDirectionEnabled,
+                                       settings.announceBogeyCount};
+    voicePlayback_.onParsedPresentation(
+        makeV1VoiceObservation(frame, parser_.alertLifetime(), ble_.isProxyClientConnected()),
+        voiceSettings, nowMs);
+}
+
+bool DriveRuntime::presentParsedDisplay(uint32_t nowMs) {
+    RenderFrame frame;
+    if (!displayPipeline_.prepareParsed(nowMs, frame)) {
+        return false;
     }
+    admitPreparedVoice(frame, nowMs);
+    displayPipeline_.presentPrepared(frame, millis());
+    return true;
+}
+
+void DriveRuntime::presentDisplay(const DisplayEdges& edges, bool overloadThisLoop) {
+    const bool pipelineRan = processParsedPolicies(edges) && presentParsedDisplay(edges.nowMs);
 
     DisplayOrchestrationRefreshContext refreshContext;
     refreshContext.nowMs = edges.nowMs;
@@ -792,13 +808,13 @@ uint32_t DriveRuntime::finishLoop(bool bleBackpressure, uint32_t loopStartUs, bo
     // Tail parsing and non-display owners can change suppression without a
     // presentation edge. Recheck before yielding to the audio worker, even
     // when sliders or a warning own the screen. Never admit new speech here.
-    if (displayPipeline_.hasPendingVoicePlayback()) {
+    if (voicePlayback_.hasPendingPlayback()) {
         if (!state_.bootSplashHoldActive) {
             quiet_.setInTheBoxSuspended(autoPush_.isActive() ||
                                         settingsOperations_.requiresExclusiveDetectorAdmission());
             quiet_.processInTheBox(millis());
         }
-        displayPipeline_.servicePendingVoice();
+        voicePlayback_.servicePendingCancellation();
     }
     vTaskDelay(pdMS_TO_TICKS(1));
     return static_cast<uint32_t>(micros() - loopStartUs);

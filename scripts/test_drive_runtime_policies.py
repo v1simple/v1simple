@@ -53,6 +53,10 @@ def run(build: Path, names: list[str], source_root: Path = ROOT) -> None:
     (build / "alert_recovery.inc").write_text(recovery.replace("DriveRuntime::", "RecoveryRuntime::"))
     policies = function(source, "bool DriveRuntime::processParsedPolicies(")
     (build / "slider_policies.inc").write_text(policies.replace("DriveRuntime::", "SliderRuntime::"))
+    presentation = "\n".join([policies, function(source, "void DriveRuntime::admitPreparedVoice("),
+                              function(source, "bool DriveRuntime::presentParsedDisplay("),
+                              function(source, "void DriveRuntime::presentDisplay(")])
+    (build / "voice_presentation.inc").write_text(presentation.replace("DriveRuntime::", "Runtime::"))
     shared = (source_root / "src/main_setup_helpers.cpp").read_text()
     persistence = function(shared, "bool preparePersistenceForShutdown(")
     persistence = persistence.replace("ProductEventLog&", "ShutdownEvents&").replace("HealthJournal&", "ShutdownHealth&")
@@ -80,4 +84,4 @@ def run(build: Path, names: list[str], source_root: Path = ROOT) -> None:
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="drive-runtime-policies-") as temporary:
-        run(Path(temporary), sys.argv[1:] or ["alp_power", "slider_speed", "slider_obd", "slider_tail", "alert_recovery", "shutdown"])
+        run(Path(temporary), sys.argv[1:] or ["alp_power", "slider_speed", "slider_obd", "slider_tail", "voice_presentation", "alert_recovery", "shutdown"])

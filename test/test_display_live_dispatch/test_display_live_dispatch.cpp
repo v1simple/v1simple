@@ -13,7 +13,7 @@
 #include "../mocks/settings.h"
 #include "../../src/packet_parser.h"
 #include "../../src/modules/display/display_pipeline_module.h"
-#include "../../src/modules/voice/voice_module.h"
+#include "../support/display_pipeline_fixture.h"
 #include "../mocks/battery_manager.h"
 
 unsigned long mockMillis = 0;
@@ -705,7 +705,6 @@ struct CounterBlinkRuntime {
     PacketParser parser;
     V1BLEClient ble;
     AlertPersistenceModule persistence;
-    VoiceModule voice;
     AlpRuntimeModule alp;
     SpeedSourceSelector speed;
     DisplayMode mode = DisplayMode::IDLE;
@@ -723,7 +722,6 @@ struct CounterBlinkRuntime {
         dependencies.settings = &settings;
         dependencies.ble = &ble;
         dependencies.alertPersistence = &persistence;
-        dependencies.voice = &voice;
         dependencies.alp = &alp;
         dependencies.speedSelector = &speed;
         pipeline.begin(dependencies);
@@ -748,7 +746,7 @@ struct CounterBlinkRuntime {
         // Complete InfDisplayData packet; aux0 keeps system-status/display-on
         // set, and aux2 supplies the known main/mute volume pair 6/2.
         feed(PACKET_ID_DISPLAY_DATA, {on, off, barBitmap, image1, image2, 0x0C, 0, 0x62}, nowMs);
-        pipeline.handleParsed(static_cast<uint32_t>(mockMillis));
+        presentParsedFrame(pipeline, static_cast<uint32_t>(mockMillis));
     }
 
     void counter(uint8_t on, uint8_t off, uint8_t bandArrows = 0) {

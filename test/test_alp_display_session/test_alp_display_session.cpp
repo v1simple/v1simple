@@ -17,31 +17,13 @@ V1Display::~V1Display() = default;
 #include "../mocks/ble_client.h"
 #include "../../src/packet_parser.cpp"
 #include "../../src/packet_parser_alerts.cpp"
-#include "../../src/modules/voice/voice_module.cpp"
 #include "../../src/display_indicators.cpp"
 #include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
 #include "../../src/modules/alp/alp_event_latch.cpp"
 #include "../../src/modules/display/render_frame_composer.cpp"
 #include "../../src/modules/display/display_pipeline_module.cpp"
+#include "../support/display_pipeline_fixture.h"
 
-// These scenarios have no V1 radar or quiet owner. Unexpected speaker work is
-// a test failure, rather than an accepted action hidden by a permissive stub.
-AudioPlaybackResult try_play_frequency_voice(AlertBand, uint16_t, AlertDirection, VoiceAlertMode, bool, uint8_t, AudioPlaybackReceipt* receipt) {
-    if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
-    TEST_FAIL_MESSAGE("unexpected V1 frequency voice");
-    return AudioPlaybackResult::Unavailable;
-}
-AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t, AudioPlaybackReceipt* receipt) {
-    if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
-    TEST_FAIL_MESSAGE("unexpected V1 direction voice");
-    return AudioPlaybackResult::Unavailable;
-}
-AudioPlaybackResult try_play_threat_escalation(AlertBand, uint16_t, AlertDirection, uint8_t, uint8_t, uint8_t, uint8_t,
-                                               VoiceAlertMode, bool, bool, AudioPlaybackReceipt* receipt) {
-    if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
-    TEST_FAIL_MESSAGE("unexpected V1 escalation voice");
-    return AudioPlaybackResult::Unavailable;
-}
 void QuietCoordinatorModule::syncCommittedState() { TEST_FAIL_MESSAGE("unexpected quiet owner"); }
 
 static RenderFrame renderedFrame;
@@ -66,7 +48,6 @@ struct AlpDisplayRuntime {
     PacketParser parser;
     V1BLEClient ble;
     AlertPersistenceModule persistence;
-    VoiceModule voice;
     AlpEventLatch latch;
     DisplayMode mode = DisplayMode::IDLE;
     DisplayPipelineModule pipeline;
@@ -79,7 +60,6 @@ struct AlpDisplayRuntime {
         dependencies.settings = &settings;
         dependencies.ble = &ble;
         dependencies.alertPersistence = &persistence;
-        dependencies.voice = &voice;
         dependencies.alp = &alp;
         dependencies.alpLatch = &latch;
         pipeline.begin(dependencies);
@@ -92,7 +72,7 @@ struct AlpDisplayRuntime {
         alp.testInjectBytes(bytes, sizeof(bytes));
         alp.testSetLastUartByteMs(now); // Production drainUart records this arrival time.
         alp.process(now);
-        pipeline.handleParsed(now);
+        presentParsedFrame(pipeline, now);
     }
 
     void identifyThenTeardown() {
@@ -175,7 +155,7 @@ void test_batched_unknown_deployment_retains_eligible_event_until_original_expir
     runtime.settings.alpAlertPersistSec = 3;
     runtime.feed(9000, 0xB0, 0x03, 0);
     processUnknownDeploymentBatch(runtime, 10000);
-    runtime.pipeline.handleParsed(12000);
+    presentParsedFrame(runtime.pipeline, 12000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, renderedFrame.primaryKind);
     TEST_ASSERT_EQUAL_UINT32(runtime.alp.currentEvent().sessionGeneration, renderedFrame.alpPrimary.sessionGeneration);
     TEST_ASSERT_FALSE(runtime.display.ut_alpHasLaserEvent());
@@ -183,7 +163,7 @@ void test_batched_unknown_deployment_retains_eligible_event_until_original_expir
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, renderedFrame.primaryKind);
     runtime.pipeline.refreshBlinkTick(13000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, renderedFrame.primaryKind);
-    runtime.pipeline.handleParsed(13001);
+    presentParsedFrame(runtime.pipeline, 13001);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, renderedFrame.primaryKind);
 }
 
@@ -192,10 +172,10 @@ void test_batched_alp_event_cannot_be_renewed_after_expiry_or_runtime_reset() {
     runtime.settings.alpAlertPersistSec = 3;
     runtime.feed(9000, 0xB0, 0x03, 0);
     processUnknownDeploymentBatch(runtime, 10000);
-    runtime.pipeline.handleParsed(13000);
+    presentParsedFrame(runtime.pipeline, 13000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, renderedFrame.primaryKind);
     runtime.alp.begin(true);
-    runtime.pipeline.handleParsed(13100);
+    presentParsedFrame(runtime.pipeline, 13100);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, renderedFrame.primaryKind);
 }
 
@@ -204,7 +184,7 @@ void test_batched_alp_persistence_respects_zero_setting_and_warmup_admission() {
     runtime.settings.alpAlertPersistSec = 0;
     runtime.feed(9000, 0xB0, 0x03, 0);
     processUnknownDeploymentBatch(runtime, 10000);
-    runtime.pipeline.handleParsed(10000);
+    presentParsedFrame(runtime.pipeline, 10000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, renderedFrame.primaryKind);
 
     AlpDisplayRuntime warmupRuntime;
@@ -214,7 +194,7 @@ void test_batched_alp_persistence_respects_zero_setting_and_warmup_admission() {
     warmupRuntime.alp.testInjectBytes(warmup, sizeof(warmup));
     warmupRuntime.alp.testSetLastUartByteMs(11000);
     warmupRuntime.alp.process(11000);
-    warmupRuntime.pipeline.handleParsed(11000);
+    presentParsedFrame(warmupRuntime.pipeline, 11000);
     TEST_ASSERT_FALSE(warmupRuntime.alp.endedEvent().active);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, renderedFrame.primaryKind);
 }
@@ -224,7 +204,7 @@ void test_batched_alp_persistence_keeps_identity_when_new_session_opens() {
     runtime.settings.alpAlertPersistSec = 3;
     runtime.feed(9000, 0xB0, 0x03, 0);
     processUnknownDeploymentBatch(runtime, 10000);
-    runtime.pipeline.handleParsed(10000);
+    presentParsedFrame(runtime.pipeline, 10000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, renderedFrame.primaryKind);
     runtime.alp.begin(true);
     runtime.feed(10100, 0xB0, 0x03, 0);
@@ -240,7 +220,7 @@ void test_batched_alp_close_at_zero_and_rollover_keep_source_age() {
         runtime.settings.alpAlertPersistSec = 3;
         runtime.feed(closedAt - 100u, 0xB0, 0x03, 0);
         processUnknownDeploymentBatch(runtime, closedAt);
-        runtime.pipeline.handleParsed(closedAt + 2999u);
+        presentParsedFrame(runtime.pipeline, closedAt + 2999u);
         TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, renderedFrame.primaryKind);
         runtime.pipeline.refreshBlinkTick(closedAt + 3000u);
         TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, renderedFrame.primaryKind);

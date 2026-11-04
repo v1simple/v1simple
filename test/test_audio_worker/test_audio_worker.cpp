@@ -1,4 +1,4 @@
-#include "../support/audio_pipeline_harness.h"
+#include "../support/audio_worker_harness.h"
 
 void test_failed_mute_is_applied_before_first_pcm_without_another_user_request() {
     mock_queue_semaphore_take_result(pdFALSE);
@@ -430,7 +430,7 @@ void test_idle_service_does_not_disable_amp_while_worker_owns_playback() {
 void test_directory_discovery_failure_recovers_current_episode_without_duplicate_voice() {
     fs::mock_fail_next_read_open("/audio");
     audio_init_sd(audioStorage);
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.alert();
     TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
     // A second fault waits for the due retry instead of being consumed by fast admissions.
@@ -463,7 +463,7 @@ void test_discovery_recovery_does_not_announce_an_ended_or_replaced_episode() {
         setUp();
         fs::mock_fail_next_read_open("/audio");
         audio_init_sd(audioStorage);
-        PipelineAudio runtime;
+        AudioRuntime runtime;
         runtime.alert();
         mockMillis += 100;
         runtime.clear();
@@ -568,16 +568,16 @@ void test_discovery_initialization_cannot_replace_filesystem_owned_by_pending_wo
     TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
 }
 
-static void threeDirectionalAlerts(PipelineAudio& runtime, uint8_t secondaryStrength,
+static void threeDirectionalAlerts(AudioRuntime& runtime, uint8_t secondaryStrength,
                                    uint8_t thirdDirection = 0x44) {
     runtime.packet(PACKET_ID_ALERT_DATA, {0x13, 0x87, 0x8C, 0xAC, 0, 0x22, 0x80});
     runtime.packet(PACKET_ID_ALERT_DATA, {0x23, 0x8A, 0xAC, 0, secondaryStrength, 0x82, 0});
     runtime.packet(PACKET_ID_ALERT_DATA, {0x33, 0x5E, 0x56, 0x90, 0, thirdDirection, 0});
-    runtime.pipeline.handleParsed(mockMillis);
+    runtime.present(mockMillis);
 }
 
 void test_parsed_frequency_only_escalation_plays_all_twelve_clips_once() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.settings.settings.voiceAlertMode = VOICE_MODE_FREQ_ONLY;
     runtime.settings.settings.voiceDirectionEnabled = true;
     runtime.settings.settings.announceBogeyCount = true;
@@ -613,7 +613,7 @@ void test_parsed_frequency_only_escalation_plays_all_twelve_clips_once() {
 }
 
 void test_unchanged_alert_recovers_after_all_worker_startup_attempts_fail() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.alert();
     TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
     for (unsigned i = 0; i < 3; ++i)
@@ -638,7 +638,7 @@ void test_unchanged_alert_recovers_after_all_worker_startup_attempts_fail() {
 }
 
 void test_failed_startup_is_discarded_when_alert_ends() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.alert();
     for (unsigned i = 0; i < 3; ++i)
         mock_queue_semaphore_take_result(pdFALSE);
@@ -658,7 +658,7 @@ void test_failed_startup_is_discarded_when_alert_ends() {
 }
 
 void test_failed_startup_cannot_retry_replaced_priority() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.settings.settings.voiceAlertMode = VOICE_MODE_BAND_FREQ;
     runtime.alert(34700);
     for (unsigned i = 0; i < 3; ++i)
@@ -672,7 +672,7 @@ void test_failed_startup_cannot_retry_replaced_priority() {
 }
 
 void test_partial_pcm_failure_does_not_replay_unchanged_alert() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.alert();
     g_mock_i2s_state.writeResults.push_back(ESP_OK);
     g_mock_i2s_state.writeResults.push_back(ESP_ERR_TIMEOUT);
@@ -686,7 +686,7 @@ void test_partial_pcm_failure_does_not_replay_unchanged_alert() {
 }
 
 void test_unrelated_test_voice_cannot_overwrite_failed_alert_receipt() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.alert();
     for (unsigned i = 0; i < 3; ++i)
         mock_queue_semaphore_take_result(pdFALSE);
@@ -702,7 +702,7 @@ void test_unrelated_test_voice_cannot_overwrite_failed_alert_receipt() {
 }
 
 void test_pending_worker_does_not_admit_duplicate_announcement() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.alert();
     for (unsigned i = 0; i < 10; ++i) {
         mockMillis += 100;
@@ -716,7 +716,7 @@ void test_pending_worker_does_not_admit_duplicate_announcement() {
 }
 
 void test_late_failure_receipt_cannot_consume_new_episode() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.alert();
     mockMillis += 100;
     runtime.clear(); // Old worker has not reported anything yet.
@@ -735,7 +735,7 @@ void test_late_failure_receipt_cannot_consume_new_episode() {
 }
 
 void test_missing_asset_receipt_does_not_retry_forever() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.alert();
     fs::FS missingFiles{audioRoot / "missing"};
     audioFS = &missingFiles;
@@ -749,7 +749,7 @@ void test_missing_asset_receipt_does_not_retry_forever() {
     audio_init_sd(audioStorage);
 }
 
-static void assert_asset_failure_recovers_current_alert(PipelineAudio& runtime) {
+static void assert_asset_failure_recovers_current_alert(AudioRuntime& runtime) {
     TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.writeCalls);
     runtime.alert(); // Consume the failed receipt and establish the retry deadline.
     mockMillis += 99;
@@ -768,7 +768,7 @@ static void assert_asset_failure_recovers_current_alert(PipelineAudio& runtime) 
 }
 
 void test_transient_clip_open_failure_recovers_unheard_live_alert() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     // The default direction clip also exists. Do not play that fragment after
     // a temporary failure of the preceding band clip and consume the episode.
     runtime.alert();
@@ -782,7 +782,7 @@ void test_transient_clip_open_failure_recovers_unheard_live_alert() {
 }
 
 void test_persistent_clip_open_failure_retries_only_after_current_frame_deadline() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.settings.settings.voiceDirectionEnabled = false;
     runtime.alert();
     const std::string path = (audioRoot / "audio/band_ka.mul").string();
@@ -811,7 +811,7 @@ void test_persistent_clip_open_failure_retries_only_after_current_frame_deadline
 void test_zero_and_short_first_clip_reads_recover_without_consuming_voice() {
     for (const size_t availableBytes : {0u, 17u}) {
         setUp();
-        PipelineAudio runtime;
+        AudioRuntime runtime;
         runtime.alert();
         const std::string path = (audioRoot / "audio/band_ka.mul").string();
         fs::mock_set_read_budget_for_full_path(path.c_str(), availableBytes);
@@ -822,7 +822,7 @@ void test_zero_and_short_first_clip_reads_recover_without_consuming_voice() {
 }
 
 void test_unavailable_clip_metadata_remains_retryable() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.alert();
     const auto unavailableRoot = audioRoot / "unavailable-mount";
     fs::FS unavailableFiles{unavailableRoot};
@@ -838,7 +838,7 @@ void test_unavailable_clip_metadata_remains_retryable() {
 void test_clip_read_failure_after_pcm_does_not_replay_or_emit_following_clip() {
     for (const size_t trailingBytes : {0u, 17u}) {
         setUp();
-        PipelineAudio runtime;
+        AudioRuntime runtime;
         runtime.alert();
         const std::string path = (audioRoot / "audio/band_ka.mul").string();
         fs::mock_set_read_budget_for_full_path(path.c_str(), AUDIO_CHUNK_SAMPLES + trailingBytes);
@@ -854,7 +854,7 @@ void test_clip_read_failure_after_pcm_does_not_replay_or_emit_following_clip() {
 }
 
 void test_later_clip_open_failure_does_not_replay_started_speech() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.alert();
     fs::mock_fail_next_read_open("/audio/dir_ahead.mul");
     runAcceptedJob();
@@ -867,7 +867,7 @@ void test_later_clip_open_failure_does_not_replay_started_speech() {
 }
 
 void test_asset_failure_never_retries_an_ended_episode() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.alert();
     fs::mock_fail_next_read_open("/audio/band_ka.mul");
     runAcceptedJob();
@@ -917,7 +917,7 @@ void test_empty_only_asset_job_is_terminal_without_pcm() {
 void test_clip_reads_use_independent_size_when_handle_metadata_is_unavailable() {
     const std::string path = (audioRoot / "audio/band_ka.mul").string();
     fs::mock_zero_file_size_for_full_path(path.c_str());
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.settings.settings.voiceDirectionEnabled = false;
     runtime.alert();
     runAcceptedJob();
@@ -928,7 +928,7 @@ void test_clip_reads_use_independent_size_when_handle_metadata_is_unavailable() 
 }
 
 void test_unheard_direction_retries_without_repeating_full_priority() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.settings.settings.voiceDirectionEnabled = true;
     runtime.alert();
     runAcceptedJob();
@@ -953,14 +953,14 @@ void test_unheard_direction_retries_without_repeating_full_priority() {
     TEST_ASSERT_EQUAL_UINT(3, g_mock_task_notify_state.giveCalls);
 }
 
-static void twoAlerts(PipelineAudio& runtime, uint8_t secondaryStrength) {
+static void twoAlerts(AudioRuntime& runtime, uint8_t secondaryStrength) {
     runtime.packet(PACKET_ID_ALERT_DATA, {0x12, 0x87, 0x8C, 0xAC, 0, 0x22, 0x80});
     runtime.packet(PACKET_ID_ALERT_DATA, {0x22, 0x8A, 0xAC, secondaryStrength, 0, 0x22, 0});
-    runtime.pipeline.handleParsed(mockMillis);
+    runtime.present(mockMillis);
 }
 
 static void assertUnheardPriorityUsesCurrentCount(bool startupFails, bool initiallyTwo, bool finallyTwo) {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.settings.settings.voiceDirectionEnabled = false;
     runtime.settings.settings.announceSecondaryAlerts = false;
     runtime.settings.settings.announceBogeyCount = true;
@@ -1017,7 +1017,7 @@ void test_busy_unheard_priority_preserves_unchanged_count() {
     assertUnheardPriorityUsesCurrentCount(false, true, true);
 }
 
-static void configureEscalation(PipelineAudio& runtime) {
+static void configureEscalation(AudioRuntime& runtime) {
     runtime.settings.settings.voiceAlertMode = VOICE_MODE_FREQ_ONLY;
     runtime.settings.settings.voiceDirectionEnabled = true;
     runtime.settings.settings.announceBogeyCount = true;
@@ -1037,7 +1037,7 @@ static void assertCurrentEscalationBreakdown() {
 }
 
 void test_busy_escalation_recomposes_changed_directions_with_unchanged_count() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     configureEscalation(runtime);
     threeDirectionalAlerts(runtime, 0x90);
     runAcceptedJob();
@@ -1073,7 +1073,7 @@ void test_busy_escalation_recomposes_changed_directions_with_unchanged_count() {
 }
 
 void test_failed_startup_escalation_recomposes_current_direction_breakdown() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     configureEscalation(runtime);
     threeDirectionalAlerts(runtime, 0x90);
     runAcceptedJob();
@@ -1106,7 +1106,7 @@ void test_failed_startup_escalation_recomposes_current_direction_breakdown() {
 }
 
 void test_started_priority_keeps_worker_content_and_does_not_replay_on_count_change() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.settings.settings.voiceDirectionEnabled = false;
     runtime.settings.settings.announceSecondaryAlerts = false;
     twoAlerts(runtime, 0x90);
@@ -1129,7 +1129,7 @@ void test_started_priority_keeps_worker_content_and_does_not_replay_on_count_cha
 }
 
 void test_escalation_honors_band_only_with_direction_and_count_disabled() {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.settings.settings.voiceAlertMode = VOICE_MODE_BAND_ONLY;
     runtime.settings.settings.voiceDirectionEnabled = false;
     runtime.settings.settings.announceBogeyCount = false;
@@ -1162,7 +1162,7 @@ void test_escalation_honors_band_only_with_direction_and_count_disabled() {
 
 static void checkPrimaryCount(unsigned count, VoiceAlertMode mode, bool direction, bool photo,
                               bool announceCount = true) {
-    PipelineAudio runtime;
+    AudioRuntime runtime;
     runtime.settings.settings.voiceAlertMode = mode;
     runtime.settings.settings.voiceDirectionEnabled = direction;
     runtime.settings.settings.announceSecondaryAlerts = false;
@@ -1176,7 +1176,7 @@ static void checkPrimaryCount(unsigned count, VoiceAlertMode mode, bool directio
                         static_cast<uint8_t>(frequency), 0xAC, 0, static_cast<uint8_t>(photo ? 0x24 : 0x22),
                         static_cast<uint8_t>(i == 0 ? (photo ? 0x81 : 0x80) : 0)});
     }
-    runtime.pipeline.handleParsed(mockMillis);
+    runtime.present(mockMillis);
     TEST_ASSERT_EQUAL_UINT(count, runtime.parser.getAlertCount());
     TEST_ASSERT_EQUAL_UINT(before + 1, g_mock_task_notify_state.giveCalls);
     runAcceptedJob();

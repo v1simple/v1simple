@@ -23,7 +23,6 @@ static void audioWorkerDelay(TickType_t ticks) {
 #include "../mocks/settings.h"
 #include "../mocks/storage_manager.h"
 #include "../mocks/ble_client.h"
-#include "../mocks/display.h"
 #include "../../src/packet_parser.h"
 #include "../../src/packet_parser.cpp"
 #include "../../src/packet_parser_alerts.cpp"
@@ -32,11 +31,9 @@ static void audioWorkerDelay(TickType_t ticks) {
 #include "../../src/audio_beep.cpp"
 #include "../../src/audio_voice.cpp"
 #include "../../src/modules/voice/voice_module.cpp"
-#include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
-#include "../../src/modules/alp/alp_event_latch.cpp"
 #include "../../src/modules/quiet/quiet_coordinator_module.cpp"
-#include "../../src/modules/display/render_frame_composer.cpp"
-#include "../../src/modules/display/display_pipeline_module.cpp"
+#include "../../src/modules/voice/voice_playback_coordinator.cpp"
+#include "voice_observation_fixture.h"
 #undef vTaskDelay
 
 SerialClass Serial;
@@ -121,30 +118,25 @@ void tearDown() {
     TEST_ASSERT_TRUE(g_mock_semaphore_state.heldHandles.empty());
 }
 
-// Exercise receipt ownership through the actual parser, pipeline and worker.
-struct PipelineAudio {
+// Exercise receipt ownership through the actual parser, coordinator and worker.
+struct AudioRuntime {
     SettingsManager settings;
     PacketParser parser;
     V1BLEClient ble;
-    V1Display display;
-    AlertPersistenceModule persistence;
     VoiceModule voice;
-    DisplayMode mode = DisplayMode::IDLE;
-    DisplayPipelineModule pipeline;
+    QuietCoordinatorModule quiet;
+    SpeedMuteModule speed;
+    VoicePlaybackCoordinator coordinator{voice, parser, ble, &quiet, &speed};
 
-    PipelineAudio() {
+    AudioRuntime() {
         settings.settings.voiceAlertMode = VOICE_MODE_BAND_ONLY;
         voice.begin(&settings);
-        DisplayPipelineDependencies deps;
-        deps.displayMode = &mode;
-        deps.display = &display;
-        deps.parser = &parser;
-        deps.settings = &settings;
-        deps.ble = &ble;
-        deps.alertPersistence = &persistence;
-        deps.voice = &voice;
-        pipeline.begin(deps);
+        quiet.begin(&ble, &parser);
+        coordinator.begin(parser.alertLifetime());
         packet(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2});
+    }
+    void present(uint32_t nowMs) {
+        coordinator.onParsedPresentation(fixtureVoiceObservation(parser, ble), fixtureVoiceSettings(settings.get()), nowMs);
     }
     void packet(uint8_t id, std::initializer_list<uint8_t> payload) {
         const uint8_t destination =
@@ -162,10 +154,10 @@ struct PipelineAudio {
         packet(PACKET_ID_ALERT_DATA,
                {0x11, static_cast<uint8_t>(frequency >> 8), static_cast<uint8_t>(frequency), 0xAC, 0,
                 static_cast<uint8_t>(direction | 0x02), 0x80});
-        pipeline.handleParsed(mockMillis);
+        present(mockMillis);
     }
     void clear() {
         packet(PACKET_ID_ALERT_DATA, {0, 0, 0, 0, 0, 0, 0});
-        pipeline.handleParsed(mockMillis);
+        present(mockMillis);
     }
 };

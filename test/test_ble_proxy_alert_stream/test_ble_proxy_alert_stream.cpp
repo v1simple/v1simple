@@ -85,24 +85,12 @@ void tearDown() {}
 #include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
 #include "../../src/modules/alp/alp_event_latch.cpp"
 #include "../../src/modules/quiet/quiet_coordinator_module.cpp"
-#include "../../src/modules/voice/voice_module.cpp"
 #include "../../src/modules/display/render_frame_composer.cpp"
 #include "../../src/modules/display/display_pipeline_module.cpp"
+#include "../support/display_pipeline_fixture.h"
 
-// Panel rendering and speaker acceptance are host substitutes. The production
-// pipeline, composer, persistence and encounter/voice state still execute.
-AudioPlaybackResult try_play_frequency_voice(AlertBand, uint16_t, AlertDirection,
-                                             VoiceAlertMode, bool, uint8_t, AudioPlaybackReceipt*) {
-  return AudioPlaybackResult::Unavailable;
-}
-AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t, AudioPlaybackReceipt*) {
-  return AudioPlaybackResult::Unavailable;
-}
-AudioPlaybackResult try_play_threat_escalation(AlertBand, uint16_t, AlertDirection,
-                                               uint8_t, uint8_t, uint8_t, uint8_t,
-                                               VoiceAlertMode, bool, bool, AudioPlaybackReceipt*) {
-  return AudioPlaybackResult::Unavailable;
-}
+// Panel rendering is substituted; the production pipeline, composer and
+// persistence still consume the real BLE/parser encounter state.
 class DisplayPreviewModule {
 public:
   bool isRunning() const { return false; }
@@ -126,7 +114,6 @@ struct StreamFixture {
   V1Display display;
   AlertPersistenceModule persistence;
   SettingsManager settings;
-  VoiceModule voice;
   DisplayMode mode = DisplayMode::IDLE;
   DisplayPipelineModule pipeline;
   ConnectionStateModule connection;
@@ -151,7 +138,6 @@ struct StreamFixture {
     TEST_ASSERT_TRUE(
         queue.begin(&client, &parser, &preview, &power));
     connection.begin(&client, &parser, &display, &power, &queue, &persistence);
-    voice.begin(&settings);
     DisplayPipelineDependencies dependencies;
     dependencies.displayMode = &mode;
     dependencies.display = &display;
@@ -159,7 +145,6 @@ struct StreamFixture {
     dependencies.settings = &settings;
     dependencies.ble = &client;
     dependencies.alertPersistence = &persistence;
-    dependencies.voice = &voice;
     pipeline.begin(dependencies);
     connection.handleSessionOpened(1);
     connection.handleConnected(mockMillis, 1);
@@ -208,7 +193,7 @@ struct StreamFixture {
   void present(bool parsed = true) {
     queue.process();
     TEST_ASSERT_EQUAL(parsed, queue.consumeParsedFlag());
-    pipeline.handleParsed(mockMillis);
+    presentParsedFrame(pipeline, mockMillis);
   }
   void deliver(uint8_t id, std::initializer_list<uint8_t> payload) {
     enqueue(frame(id, payload));

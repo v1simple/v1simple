@@ -1,7 +1,7 @@
-// Exercise policy changes against the real parser, pipeline and audio worker.
+// Exercise policy changes against the real parser, coordinator and audio worker.
 // Hardware and task scheduling are modeled; the startup delay is a legal yield
 // point, not a measurement of physical sound or RF arrival timing.
-#include "../support/audio_pipeline_harness.h"
+#include "../support/audio_worker_harness.h"
 #include "../../src/modules/speed_mute/speed_mute_module.cpp"
 
 enum class Suppression { SoftMute, Proxy, VoiceDisabled, DetectorVolumeZero, Speed, InTheBox };
@@ -9,9 +9,7 @@ static constexpr Suppression suppressions[] = {
     Suppression::SoftMute, Suppression::Proxy, Suppression::VoiceDisabled,
     Suppression::DetectorVolumeZero, Suppression::Speed, Suppression::InTheBox};
 
-struct SuppressionRuntime : PipelineAudio {
-    QuietCoordinatorModule quiet;
-    SpeedMuteModule speed;
+struct SuppressionRuntime : AudioRuntime {
     V1InTheBoxSettings boxSettings;
     uint16_t frequency = 34700;
 
@@ -26,17 +24,6 @@ struct SuppressionRuntime : PipelineAudio {
         }
         quiet.setInTheBoxSettings(boxSettings, ble.sessionGeneration());
         displayMute(false);
-        DisplayPipelineDependencies deps;
-        deps.displayMode = &mode;
-        deps.display = &display;
-        deps.parser = &parser;
-        deps.settings = &settings;
-        deps.ble = &ble;
-        deps.alertPersistence = &persistence;
-        deps.voice = &voice;
-        deps.quiet = &quiet;
-        deps.speedMute = &speed;
-        pipeline.begin(deps);
     }
 
     void displayMute(bool softMuted) {
@@ -54,7 +41,7 @@ struct SuppressionRuntime : PipelineAudio {
     void currentAlert() {
         installCurrentAlert();
         quiet.processInTheBox(mockMillis);
-        pipeline.handleParsed(mockMillis);
+        present(mockMillis);
     }
 
     void apply(Suppression gate, bool active) {
@@ -122,9 +109,9 @@ void test_every_suppression_gate_cancels_at_unlocked_startup_without_a_parsed_fr
             TEST_ASSERT_TRUE(g_mock_semaphore_state.heldHandles.empty());
             assertPending(receipt);
             runtime.apply(gate, true);
-            // No handleParsed()/refresh/render edge: these policy inputs may
+            // No parsed presentation/refresh/render edge: these policy inputs may
             // change independently of detector packet presentation.
-            runtime.pipeline.servicePendingVoice();
+            runtime.coordinator.servicePendingCancellation();
             TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::CancelRequested, receipt->state.load());
             TEST_ASSERT_TRUE(receipt->isOwned());
             TEST_ASSERT_TRUE(audio_playing.load());
@@ -139,7 +126,7 @@ void test_every_suppression_gate_cancels_at_unlocked_startup_without_a_parsed_fr
         // Service alone is cancellation-only; it must not start replacement
         // audio when the mute disappears. The next current alert can retry.
         runtime.apply(gate, false);
-        runtime.pipeline.servicePendingVoice();
+        runtime.coordinator.servicePendingCancellation();
         TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
         mockMillis += 101;
         runtime.currentAlert();
@@ -164,7 +151,7 @@ void test_every_gate_blocks_admission_without_creating_a_worker_job() {
                        {0x11, static_cast<uint8_t>(runtime.frequency >> 8),
                         static_cast<uint8_t>(runtime.frequency), 0xAC, 0, 0x22, 0x80});
         runtime.apply(gate, true);
-        runtime.pipeline.handleParsed(mockMillis);
+        runtime.present(mockMillis);
         TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
         TEST_ASSERT_FALSE(audio_playing.load());
     }
@@ -179,7 +166,7 @@ void test_warm_and_cold_jobs_cancel_before_worker_dispatch() {
         auto* receipt = sdAudioReceipt;
         assertPending(receipt);
         runtime.apply(Suppression::SoftMute, true);
-        runtime.pipeline.servicePendingVoice();
+        runtime.coordinator.servicePendingCancellation();
         TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::CancelRequested, receipt->state.load());
         runAcceptedJob();
         assertCancelled(receipt);
@@ -191,7 +178,7 @@ void test_parse_path_cancels_without_waiting_for_periodic_service() {
     runtime.currentAlert();
     auto* receipt = sdAudioReceipt;
     runtime.apply(Suppression::SoftMute, true);
-    runtime.pipeline.handleParsed(mockMillis);
+    runtime.present(mockMillis);
     TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::CancelRequested, receipt->state.load());
     runAcceptedJob();
     assertCancelled(receipt);
@@ -207,14 +194,14 @@ void test_suppression_after_clear_still_cancels_the_owned_old_job() {
         runtime.clear();
         assertPending(receipt); // A clear itself still retains the brief warning.
         runtime.apply(gate, true);
-        runtime.pipeline.servicePendingVoice();
+        runtime.coordinator.servicePendingCancellation();
         runAcceptedJob();
         assertCancelled(receipt);
         runtime.apply(gate, false);
         for (unsigned i = 0; i < 5; ++i) {
             mockMillis += 100;
-            runtime.pipeline.servicePendingVoice();
-            runtime.pipeline.handleParsed(mockMillis);
+            runtime.coordinator.servicePendingCancellation();
+            runtime.present(mockMillis);
         }
         TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
     }
@@ -230,7 +217,7 @@ void test_clear_and_new_episode_cannot_reuse_cancel_requested_receipt() {
     runtime.frequency = 35500;
     runtime.currentAlert();
     runtime.apply(Suppression::SoftMute, true);
-    runtime.pipeline.servicePendingVoice();
+    runtime.coordinator.servicePendingCancellation();
     TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::CancelRequested, oldReceipt->state.load());
     // Even unmuting and presenting the new episode before worker cleanup
     // cannot overwrite its immutable clips or receipt ownership.
@@ -263,9 +250,9 @@ void test_unmute_before_cleanup_does_not_resurrect_cancelled_job() {
         if (ticks != pdMS_TO_TICKS(50) || transitioned) return;
         transitioned = true;
         runtime.apply(Suppression::SoftMute, true);
-        runtime.pipeline.servicePendingVoice();
+        runtime.coordinator.servicePendingCancellation();
         runtime.apply(Suppression::SoftMute, false);
-        runtime.pipeline.servicePendingVoice();
+        runtime.coordinator.servicePendingCancellation();
         runtime.currentAlert();
         TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::CancelRequested, receipt->state.load());
         TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
@@ -285,7 +272,7 @@ void test_clear_without_suppression_preserves_brief_warning() {
     runtime.currentAlert();
     auto* receipt = sdAudioReceipt;
     runtime.clear();
-    runtime.pipeline.servicePendingVoice();
+    runtime.coordinator.servicePendingCancellation();
     assertPending(receipt);
     runAcceptedJob();
     TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::Started, receipt->state.load());
@@ -301,7 +288,7 @@ void test_priority_change_without_clear_preserves_accepted_job_and_announces_new
     runtime.frequency = 35500;
     runtime.currentAlert();
     TEST_ASSERT_EQUAL_UINT32(lifetime, runtime.parser.alertLifetime());
-    runtime.pipeline.servicePendingVoice();
+    runtime.coordinator.servicePendingCancellation();
     TEST_ASSERT_NOT_NULL(strstr(g_sdAudioTaskParams.filePaths[1], "tens_34"));
     TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
     runAcceptedJob();
@@ -331,7 +318,7 @@ void test_all_suppression_gates_preserve_already_started_speech() {
             TEST_ASSERT_NULL(sdAudioReceipt);
             TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::Started, receipt->state.load());
             runtime.apply(gate, true);
-            runtime.pipeline.servicePendingVoice();
+            runtime.coordinator.servicePendingCancellation();
         };
         runAcceptedJob();
         g_mock_i2s_state.onWrite = nullptr;
@@ -353,7 +340,7 @@ void test_local_speaker_zero_is_applied_before_every_audio_submission() {
         if (ticks != pdMS_TO_TICKS(50) || transitioned) return;
         transitioned = true;
         audio_set_volume(0);
-        runtime.pipeline.servicePendingVoice();
+        runtime.coordinator.servicePendingCancellation();
     };
     g_mock_i2s_state.onWrite = [&] {
         TEST_ASSERT_TRUE(transitioned);
@@ -368,13 +355,13 @@ void test_direct_test_speech_does_not_inherit_cancelled_alert_receipt() {
     SuppressionRuntime runtime;
     runtime.currentAlert();
     runtime.apply(Suppression::Proxy, true);
-    runtime.pipeline.servicePendingVoice();
+    runtime.coordinator.servicePendingCancellation();
     runAcceptedJob();
     TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.writeCalls);
     play_test_voice(); // Receiptless test entrypoint is independent of alert policy.
     TEST_ASSERT_TRUE(audio_playing.load());
     TEST_ASSERT_NULL(sdAudioReceipt);
-    runtime.pipeline.servicePendingVoice();
+    runtime.coordinator.servicePendingCancellation();
     runAcceptedJob();
     TEST_ASSERT_EQUAL_UINT(22, g_mock_i2s_state.writeCalls);
     TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
@@ -389,7 +376,7 @@ static void cancelSelectedActionAndResumeOnce(SuppressionRuntime& runtime,
     const auto submissions = g_mock_i2s_state.writeCalls;
     const auto jobs = g_mock_task_notify_state.giveCalls;
     runtime.apply(Suppression::SoftMute, true);
-    runtime.pipeline.servicePendingVoice();
+    runtime.coordinator.servicePendingCancellation();
     TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::CancelRequested, receipt->state.load());
     runAcceptedJob();
     TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::CancelledBeforeStart, receipt->state.load());
@@ -428,7 +415,7 @@ void test_direction_action_cancels_and_resumes_without_repeating_priority() {
 static void presentTwoAlerts(SuppressionRuntime& runtime) {
     runtime.packet(PACKET_ID_ALERT_DATA, {0x12, 0x87, 0x8C, 0xAC, 0, 0x22, 0x80});
     runtime.packet(PACKET_ID_ALERT_DATA, {0x22, 0x8A, 0xAC, 0x90, 0, 0x22, 0});
-    runtime.pipeline.handleParsed(mockMillis);
+    runtime.present(mockMillis);
 }
 
 void test_secondary_action_cancels_and_resumes_without_repeating_priority() {
@@ -451,7 +438,7 @@ static void presentEscalationTable(SuppressionRuntime& runtime, uint8_t secondar
     runtime.packet(PACKET_ID_ALERT_DATA, {0x13, 0x87, 0x8C, 0xAC, 0, 0x22, 0x80});
     runtime.packet(PACKET_ID_ALERT_DATA, {0x23, 0x8A, 0xAC, 0, secondaryStrength, 0x82, 0});
     runtime.packet(PACKET_ID_ALERT_DATA, {0x33, 0x5E, 0x56, 0x90, 0, 0x44, 0});
-    runtime.pipeline.handleParsed(mockMillis);
+    runtime.present(mockMillis);
 }
 
 void test_escalation_action_cancels_and_resumes_full_breakdown_once() {

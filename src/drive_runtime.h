@@ -33,6 +33,7 @@
 #include "modules/touch/tap_gesture_module.h"
 #include "modules/touch/touch_ui_module.h"
 #include "modules/voice/voice_module.h"
+#include "modules/voice/voice_playback_coordinator.h"
 #include "modules/volume_fade/volume_fade_module.h"
 #include "packet_parser.h"
 #include "runtime_coordinator.h"
@@ -139,6 +140,8 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     void servicePowerAlertPresentation(uint32_t nowMs, bool liveAlertPresentation);
     DisplayEdges consumeDisplayEdges();
     bool processParsedPolicies(const DisplayEdges& edges);
+    void admitPreparedVoice(const RenderFrame& frame, uint32_t nowMs);
+    bool presentParsedDisplay(uint32_t nowMs);
     void presentDisplay(const DisplayEdges& edges, bool overloadThisLoop);
     DriveLoopDispatch processConnectionDispatch(bool powerPresentationOwned);
     void processPeriodicMaintenance(uint32_t nowMs, bool bleConnected, bool bleBackpressure,
@@ -209,6 +212,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     SystemEventBus systemEvents_;
     ObdSettingsSyncModule obdSettingsSync_;
     SpeedMuteModule speedMute_;
+    VoicePlaybackCoordinator voicePlayback_{voice_, parser_, ble_, &quiet_, &speedMute_};
     ConnectionCycleCoordinatorModule connectionCycle_;
     ObdRuntimeModule obd_;
     ObdBleClient obdBle_;

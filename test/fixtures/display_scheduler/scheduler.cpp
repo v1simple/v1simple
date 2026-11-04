@@ -1,8 +1,20 @@
 // The public painter fixture supplies the real ALP/runtime owner chain. Here
 // input goes through DriveLoopCoordinator and the extracted production adapters,
-// never the helper's unconditional feed()/handleParsed() shortcut.
+// never the helper's unconditional parsed-presentation shortcut.
 #define ALP_DISPLAY_REAL_STATUS 1
 #include "test/fixtures/alp_display_runtime.h"
+#include "src/modules/voice/voice_module.cpp"
+#include "src/modules/voice/voice_playback_coordinator.cpp"
+#include "src/modules/voice/runtime_voice_observation.h"
+AudioPlaybackResult try_play_frequency_voice(AlertBand, uint16_t, AlertDirection, VoiceAlertMode, bool, uint8_t, AudioPlaybackReceipt*) {
+    TEST_FAIL_MESSAGE("unexpected voice in display scheduler scenario"); return AudioPlaybackResult::Unavailable;
+}
+AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t, AudioPlaybackReceipt*) {
+    TEST_FAIL_MESSAGE("unexpected voice in display scheduler scenario"); return AudioPlaybackResult::Unavailable;
+}
+AudioPlaybackResult try_play_threat_escalation(AlertBand, uint16_t, AlertDirection, uint8_t, uint8_t, uint8_t, uint8_t, VoiceAlertMode, bool, bool, AudioPlaybackReceipt*) {
+    TEST_FAIL_MESSAGE("unexpected voice in display scheduler scenario"); return AudioPlaybackResult::Unavailable;
+}
 #include "src/display_status_bar.cpp"
 #include "include/display_ble_freshness.h"
 #include "display_context.inc"
@@ -64,6 +76,9 @@ class DriveRuntime : public Runtime {
     GpsRuntimeModule gps;
     // References let the extracted production methods use their real names.
     V1BLEClient& ble_ = ble;
+    PacketParser& parser_ = parser;
+    VoiceModule voice_;
+    VoicePlaybackCoordinator voicePlayback_{voice_, parser_, ble_};
     DisplayPipelineModule& displayPipeline_ = pipeline;
     struct { bool bootSplashHoldActive = false; uint32_t activeScanScreenDwellMs = 0; } state_;
     struct { void setInTheBoxSuspended(bool) {} } quiet_;
@@ -86,6 +101,8 @@ class DriveRuntime : public Runtime {
     bool inSettings = false;
 
     explicit DriveRuntime(bool connected = false, uint8_t persistSec = 0) : Runtime(connected, persistSec) {
+        voice_.begin(&settings);
+        voicePlayback_.begin(parser.alertLifetime());
         alp.setEventBus(&systemEvents_);
         displayOrchestration_.begin(&display, &ble, &preview_, &restore_, &parser, nullptr, nullptr, nullptr);
         connection_.begin(&ble, &parser, &display, nullptr, &bleQueue_, &persistence);
@@ -112,6 +129,8 @@ class DriveRuntime : public Runtime {
 
     struct DisplayEdges { uint32_t nowMs = 0; bool parsedReady = false; };
     DisplayEdges consumeDisplayEdges();
+    void admitPreparedVoice(const RenderFrame&, uint32_t);
+    bool presentParsedDisplay(uint32_t);
     void presentDisplay(const DisplayEdges&, bool overloadThisLoop);
     void presentConnectionState(const ConnectionRuntimeSnapshot&);
     DriveLoopDispatch processConnectionDispatch(bool powerPresentationOwned);

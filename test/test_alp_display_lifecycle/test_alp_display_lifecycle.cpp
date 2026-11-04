@@ -6,7 +6,7 @@ void test_disconnected_alp_end_paints_scan_and_repeated_idle_ticks_do_not_repain
     r.silence();
     r.scan();
     r.clearPaint();
-    r.pipeline.handleParsed(3212);
+    presentParsedFrame(r.pipeline, 3212);
     r.pipeline.refreshBlinkTick(3213);
     TEST_ASSERT_TRUE(regionTransfers.empty());
     TEST_ASSERT_EQUAL_INT(0, r.display.testCanvas()->getFlushCount());
@@ -72,14 +72,14 @@ void test_scan_refreshes_real_alp_badge_without_repainting_primary_or_unchanged_
 
 void test_scan_theme_change_repaints_once_then_returns_to_idle_noop() {
     Runtime r;
-    r.pipeline.handleParsed(100);
+    presentParsedFrame(r.pipeline, 100);
     r.scan();
     r.clearPaint();
     r.display.ut_bumpPaletteRevision();
-    r.pipeline.handleParsed(101);
+    presentParsedFrame(r.pipeline, 101);
     r.scan();
     r.clearPaint();
-    r.pipeline.handleParsed(102);
+    presentParsedFrame(r.pipeline, 102);
     TEST_ASSERT_EQUAL_INT(0, r.display.testCanvas()->getFlushCount());
     TEST_ASSERT_TRUE(regionTransfers.empty());
 }
@@ -141,13 +141,13 @@ void test_connection_changes_preserve_live_and_persisted_alp_then_restore_curren
     r.scan();
     r.clearPaint();
     r.ble.setConnected(true);
-    r.pipeline.handleParsed(6212);
+    presentParsedFrame(r.pipeline, 6212);
     TEST_ASSERT_EQUAL_INT(1, r.display.testCanvas()->getFlushCount());
     TEST_ASSERT_EQUAL_STRING("0", r.display.ut_elementCaches().topCounter.lastText);
     TEST_ASSERT_EQUAL(BAND_NONE, frequencyBand);
     r.clearPaint();
     r.ble.setConnected(false);
-    r.pipeline.handleParsed(6213);
+    presentParsedFrame(r.pipeline, 6213);
     r.scan();
 }
 

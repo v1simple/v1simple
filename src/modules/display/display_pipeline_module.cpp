@@ -1,7 +1,6 @@
 #include "display_pipeline_module.h"
 
 #include <algorithm>
-#include <array>
 #include <cstdio>
 #include <cstring>
 
@@ -15,8 +14,6 @@
 #include "modules/quiet/quiet_coordinator_module.h"
 #include "modules/speed_mute/speed_mute_module.h"
 #include "modules/speed/speed_source_selector.h"
-#include "modules/voice/voice_module.h"
-#include "modules/quiet/quiet_coordinator_voice_templates.h"
 #include "packet_parser.h"
 #include "settings.h"
 
@@ -24,13 +21,6 @@
 static const AlpLaserEvent sAlpEventEmpty{};
 
 namespace {
-
-struct FrameV1Alerts {
-    std::array<AlertData, RenderFrame::MAX_CARDS + 1> alerts{};
-    int alertCount = 0;
-    bool hasPriority = false;
-    AlertData priority{};
-};
 
 bool isAlpPrimaryKind(RenderFramePrimaryKind kind) {
     return kind == RenderFramePrimaryKind::ALP_LIVE || kind == RenderFramePrimaryKind::ALP_PERSISTED;
@@ -70,64 +60,6 @@ DisplayState sanitizeDisconnectedState(const DisplayState& base) {
     return state;
 }
 
-bool isRenderableVoiceAlert(const AlertData& alert) {
-    return alert.isValid && alert.band != BAND_NONE && (alert.band == BAND_LASER || alert.frequency != 0);
-}
-
-FrameV1Alerts buildFrameV1Alerts(const RenderFrame& frame) {
-    FrameV1Alerts result;
-    const bool frameCarriesV1Primary = frame.primaryKind == RenderFramePrimaryKind::V1_LIVE;
-    bool foundFlaggedRenderablePriority = false;
-
-    if (frameCarriesV1Primary) {
-        result.alerts[result.alertCount++] = frame.v1Priority;
-        result.hasPriority = true;
-        result.priority = frame.v1Priority;
-    }
-
-    for (int index = 0; index < frame.cardCount; ++index) {
-        const RenderFrameCard& card = frame.cards[index];
-        if (result.alertCount >= static_cast<int>(result.alerts.size())) {
-            break;
-        }
-        result.alerts[result.alertCount++] = card.v1Alert;
-        if (!result.hasPriority && isRenderableVoiceAlert(card.v1Alert)) {
-            result.hasPriority = true;
-            result.priority = card.v1Alert;
-        }
-        // ALP owns primary presentation, but V1's flagged row still owns its
-        // speaker decision. Keep card order; use the first renderable fallback
-        // only when no flagged renderable row exists.
-        if (!frameCarriesV1Primary && !foundFlaggedRenderablePriority && card.v1Alert.isPriority &&
-            isRenderableVoiceAlert(card.v1Alert)) {
-            result.hasPriority = true;
-            result.priority = card.v1Alert;
-            foundFlaggedRenderablePriority = true;
-        }
-    }
-
-    return result;
-}
-
-bool pendingVoiceActionStillCurrent(const VoiceAction& action, const FrameV1Alerts& alerts) {
-    const auto matches = [&](const AlertData& alert) {
-        const bool isPhoto = alert.band == BAND_K && alert.photoType != 0;
-        return isPhoto == action.sourcePhoto && alert.band == action.sourceBand &&
-               static_cast<uint16_t>(alert.frequency) == action.freq && alert.direction == action.sourceDirection;
-    };
-
-    if (action.type == VoiceAction::Type::ANNOUNCE_PRIORITY ||
-        action.type == VoiceAction::Type::ANNOUNCE_DIRECTION) {
-        return alerts.hasPriority && matches(alerts.priority);
-    }
-    for (int i = 0; i < alerts.alertCount; ++i) {
-        if (matches(alerts.alerts[i])) {
-            return true;
-        }
-    }
-    return false;
-}
-
 } // namespace
 
 void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencies) {
@@ -137,7 +69,6 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
     settings_ = dependencies.settings;
     ble_ = dependencies.ble;
     alertPersistence_ = dependencies.alertPersistence;
-    voice_ = dependencies.voice;
     speedMute_ = dependencies.speedMute;
     quiet_ = dependencies.quiet;
     alp_ = dependencies.alp;
@@ -152,13 +83,6 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
     v1PersistRefreshDeadlineMs_ = 0;
     lastV1ClearRevision_ = 0;
     lastAlpEndRevision_ = 0;
-    voiceAlertLifetime_ = parser_ ? parser_->alertLifetime() : 0;
-    pendingVoiceAction_ = VoiceAction{};
-    pendingVoicePriorityId_ = 0;
-    hasPendingVoiceAction_ = false;
-    awaitingVoicePlayback_ = false;
-    voiceRetryScheduled_ = false;
-    nextVoiceAttemptMs_ = 0;
 }
 
 void DisplayPipelineModule::updateAlpLatch(const AlpLaserEvent& alpEvent, uint32_t nowMs, uint8_t persistSec) {
@@ -380,179 +304,6 @@ RenderFrame DisplayPipelineModule::buildDisconnectedFrame(uint32_t nowMs) {
     return composer_.compose(v1, alp);
 }
 
-// Admission only reserves the worker. Voice dedup is committed once PCM can
-// have started (or a missing asset is known terminal).
-// Startup failure leaves this exact action unheard; current-frame validation
-// below decides whether it is still eligible for another attempt.
-bool DisplayPipelineModule::settleVoicePlayback(uint32_t nowMs) {
-    // A clear/new episode may discard selection while the worker still owns
-    // this receipt. Cancellation is not acknowledged until cleanup finishes.
-    if (voicePlaybackReceipt_.isOwned()) return false;
-    if (!awaitingVoicePlayback_) return true;
-    const auto state = voicePlaybackReceipt_.state.load();
-    awaitingVoicePlayback_ = false;
-    if (state == AudioPlaybackReceipt::State::CancelledBeforeStart) {
-        // Unheard, not terminally missing: select from current policy/alerts
-        // when suppression lifts, without committing stale content or dedup.
-        hasPendingVoiceAction_ = false;
-        voiceRetryScheduled_ = false;
-        nextVoiceAttemptMs_ = 0;
-    } else if (state == AudioPlaybackReceipt::State::FailedBeforeStart) {
-        voiceRetryScheduled_ = true;
-        nextVoiceAttemptMs_ = nowMs + VOICE_RETRY_INTERVAL_MS;
-    } else {
-        voice_->commitAction(pendingVoiceAction_, voiceAcceptedAtMs_);
-        hasPendingVoiceAction_ = false;
-        voiceRetryScheduled_ = false;
-        nextVoiceAttemptMs_ = 0;
-    }
-    return true;
-}
-
-void DisplayPipelineModule::servicePendingVoice() {
-    if (!hasPendingVoicePlayback() || !parser_ || !voice_ || !ble_) return;
-    const DisplayState& state = parser_->getDisplayState();
-    VoiceContext ctx;
-    ctx.isMuted = state.muted;
-    ctx.isSoftMuted = state.softMuted;
-    ctx.mainVolume = state.mainVolume;
-    ctx.isProxyConnected = ble_->isProxyClientConnected();
-    if (quiet_) {
-        // The accepted job itself supplies alert content, even after the live
-        // table clears. Speed suppression must still apply to that job.
-        quiet_->applyVoicePresentation(ctx, speedMute_, true, pendingVoiceAction_.sourceBand);
-    }
-    if (voice_->isContextSuppressed(ctx)) {
-        (void)voicePlaybackReceipt_.requestCancellation();
-    }
-}
-
-void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings& settingsRef, uint32_t nowMs) {
-    servicePendingVoice();
-    const FrameV1Alerts v1Alerts = buildFrameV1Alerts(frame);
-    // A queue drain can clear and reopen an encounter before we see its idle
-    // frame. Re-arm voice from the parser's episode boundary, including an
-    // identical frequency, without resetting cooldown on ordinary row updates.
-    const uint32_t lifetime = parser_->alertLifetime();
-    const bool episodeChanged = lifetime != voiceAlertLifetime_;
-    voiceAlertLifetime_ = lifetime;
-    if (episodeChanged || v1Alerts.alertCount == 0) {
-        awaitingVoicePlayback_ = false;
-        hasPendingVoiceAction_ = false;
-        voiceRetryScheduled_ = false;
-        nextVoiceAttemptMs_ = 0;
-        voice_->clearAllState();
-    }
-    if (v1Alerts.alertCount == 0 || !settleVoicePlayback(nowMs)) {
-        return;
-    }
-
-    VoiceContext voiceCtx;
-    voiceCtx.alerts = v1Alerts.alerts.data();
-    voiceCtx.alertCount = v1Alerts.alertCount;
-    voiceCtx.priority = v1Alerts.hasPriority ? &v1Alerts.priority : nullptr;
-    voiceCtx.isMuted = frame.context.muted;
-    voiceCtx.isSoftMuted = frame.context.softMuted;
-    voiceCtx.isProxyConnected = ble_->isProxyClientConnected();
-    voiceCtx.mainVolume = frame.context.mainVolume;
-    voiceCtx.isSuppressed = false;
-    voiceCtx.now = nowMs;
-
-    if (quiet_) {
-        quiet_->applyVoicePresentation(voiceCtx, speedMute_, v1Alerts.hasPriority,
-                                       v1Alerts.hasPriority ? v1Alerts.priority.band : BAND_NONE);
-    }
-
-    const uint32_t priorityId =
-        v1Alerts.hasPriority ? VoiceModule::makeAlertId(
-                                  v1Alerts.priority.band, static_cast<uint16_t>(v1Alerts.priority.frequency),
-                                  v1Alerts.priority.band == BAND_K && v1Alerts.priority.photoType != 0)
-                            : 0;
-    // An unheard secondary/escalation was selected under the old priority.
-    // Re-evaluate it before its retry deadline when priority changes; otherwise
-    // accepting it could restart the cooldown and silence a short new threat.
-    if (hasPendingVoiceAction_ &&
-        (pendingVoicePriorityId_ != priorityId ||
-         !pendingVoiceActionStillCurrent(pendingVoiceAction_, v1Alerts))) {
-        hasPendingVoiceAction_ = false;
-        voiceRetryScheduled_ = false;
-        nextVoiceAttemptMs_ = 0;
-    }
-    // Zero is a valid retry deadline at millis() wrap, not an unarmed timer.
-    if (voiceRetryScheduled_ && static_cast<int32_t>(nowMs - nextVoiceAttemptMs_) < 0) {
-        return;
-    }
-    voiceRetryScheduled_ = false;
-
-    if (hasPendingVoiceAction_ && !voice_->canAnnounceContext(voiceCtx)) {
-        return; // Keep the unheard action eligible when current suppression lifts.
-    }
-
-    // Busy and FailedBeforeStart have not consumed voice state. Select again
-    // from this admission frame so counts, direction breakdowns and eligibility
-    // reflect the current table. Once Started, settleVoicePlayback commits the
-    // accepted action instead, so already-heard speech is never replayed.
-    hasPendingVoiceAction_ = false;
-    const VoiceAction voiceAction = voice_->prepareAction(voiceCtx);
-
-    if (!voiceAction.hasAction()) {
-        return;
-    }
-
-    AudioPlaybackResult playbackResult = AudioPlaybackResult::Unavailable;
-    switch (voiceAction.type) {
-    case VoiceAction::Type::ANNOUNCE_PRIORITY:
-        playbackResult = try_play_frequency_voice(voiceAction.band, voiceAction.freq, voiceAction.dir,
-                                                  settingsRef.voiceAlertMode, settingsRef.voiceDirectionEnabled,
-                                                  voiceAction.bogeyCount, &voicePlaybackReceipt_);
-        break;
-
-    case VoiceAction::Type::ANNOUNCE_DIRECTION:
-        playbackResult = try_play_direction_only(voiceAction.dir, voiceAction.bogeyCount, &voicePlaybackReceipt_);
-        break;
-
-    case VoiceAction::Type::ANNOUNCE_SECONDARY:
-        playbackResult = try_play_frequency_voice(voiceAction.band, voiceAction.freq, voiceAction.dir,
-                                                  settingsRef.voiceAlertMode, settingsRef.voiceDirectionEnabled, 1,
-                                                  &voicePlaybackReceipt_);
-        break;
-
-    case VoiceAction::Type::ANNOUNCE_ESCALATION:
-        playbackResult = try_play_threat_escalation(voiceAction.band, voiceAction.freq, voiceAction.dir,
-                                                    voiceAction.bogeyCount, voiceAction.aheadCount,
-                                                    voiceAction.behindCount, voiceAction.sideCount,
-                                                    settingsRef.voiceAlertMode, settingsRef.voiceDirectionEnabled,
-                                                    settingsRef.announceBogeyCount, &voicePlaybackReceipt_);
-        break;
-
-    case VoiceAction::Type::NONE:
-    default:
-        break;
-    }
-
-    if (playbackResult == AudioPlaybackResult::Accepted) {
-        pendingVoiceAction_ = voiceAction;
-        pendingVoicePriorityId_ = priorityId;
-        hasPendingVoiceAction_ = true;
-        awaitingVoicePlayback_ = true;
-        voiceAcceptedAtMs_ = nowMs;
-        (void)settleVoicePlayback(nowMs); // Also handles a worker that already finished.
-    } else if (playbackResult == AudioPlaybackResult::Busy) {
-        pendingVoiceAction_ = voiceAction;
-        pendingVoicePriorityId_ = priorityId;
-        hasPendingVoiceAction_ = true;
-        voiceRetryScheduled_ = true;
-        nextVoiceAttemptMs_ = nowMs + VOICE_RETRY_INTERVAL_MS;
-    } else {
-        // Missing/disabled audio is terminal for this attempt. Do not commit
-        // dedup state, but also do not let one unavailable clip starve newer
-        // current-frame decisions forever.
-        hasPendingVoiceAction_ = false;
-        voiceRetryScheduled_ = true;
-        nextVoiceAttemptMs_ = nowMs + 1000;
-    }
-}
-
 void DisplayPipelineModule::renderComposedFrame(uint32_t nowMs, const RenderFrame& frame, bool forceRedraw) {
     const bool deferSecondaryCards =
         ble_->isConnectBurstSettling() && isLivePrimaryKind(frame.primaryKind) && frame.cardCount > 0;
@@ -600,13 +351,13 @@ void DisplayPipelineModule::renderComposedFrame(uint32_t nowMs, const RenderFram
     display_->renderFrame(*renderFramePtr);
 }
 
-void DisplayPipelineModule::handleParsed(uint32_t nowMs) {
-    if (!display_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ || !voice_ || !displayMode_) {
-        return;
+bool DisplayPipelineModule::prepareParsed(uint32_t nowMs, RenderFrame& frame) {
+    if (!display_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ || !displayMode_) {
+        return false;
     }
 
     const V1Settings& settingsRef = settings_->get();
-    RenderFrame frame = buildRenderFrame(nowMs, settingsRef);
+    frame = buildRenderFrame(nowMs, settingsRef);
     if (ble_->isConnected() && frame.primaryKind == RenderFramePrimaryKind::IDLE &&
         settingsRef.stealthEnabled && speedSelector_) {
         const SpeedSelection spd = speedSelector_->selectedSpeed();
@@ -614,8 +365,11 @@ void DisplayPipelineModule::handleParsed(uint32_t nowMs) {
         frame.stealthSpeedMph = spd.speedMph;
         frame.stealthSpeedValid = spd.valid;
     }
-    runVoice(frame, settingsRef, nowMs);
-    renderComposedFrame(nowMs, frame);
+    return true;
+}
+
+void DisplayPipelineModule::presentPrepared(const RenderFrame& frame, uint32_t paintNowMs) {
+    renderComposedFrame(paintNowMs, frame);
 }
 
 // Recompose without voice; persistence follows the same live source and expiry
@@ -644,7 +398,7 @@ void DisplayPipelineModule::refreshBlinkTick(uint32_t nowMs) {
 }
 
 bool DisplayPipelineModule::restoreCurrentOwner(uint32_t nowMs) {
-    if (!display_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ || !voice_ || !displayMode_) {
+    if (!display_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ || !displayMode_) {
         return false;
     }
 

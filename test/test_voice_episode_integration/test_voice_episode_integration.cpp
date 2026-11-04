@@ -1,5 +1,5 @@
-// Real BLE queue -> parser -> presentation pipeline -> voice decisions.
-// Hardware transport, settings, panel and playback acceptance are substitutes.
+// Real BLE queue -> parser -> voice coordinator -> worker admission.
+// Hardware transport, settings and playback acceptance are substitutes.
 #include <unity.h>
 
 #include <initializer_list>
@@ -8,7 +8,6 @@
 #include "../mocks/Arduino.h"
 #include "../mocks/ble_client.h"
 #include "../mocks/settings.h"
-#include "../mocks/display.h"
 #include "../mocks/modules/power/power_module.h"
 
 SerialClass Serial;
@@ -19,12 +18,10 @@ unsigned long mockMicros = 0;
 #include "../../src/packet_parser.h"
 #include "../../src/packet_parser.cpp"
 #include "../../src/packet_parser_alerts.cpp"
-#include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
-#include "../../src/modules/alp/alp_event_latch.cpp"
 #include "../../src/modules/quiet/quiet_coordinator_module.cpp"
 #include "../../src/modules/voice/voice_module.cpp"
-#include "../../src/modules/display/render_frame_composer.cpp"
-#include "../../src/modules/display/display_pipeline_module.cpp"
+#include "../../src/modules/voice/voice_playback_coordinator.cpp"
+#include "../support/voice_observation_fixture.h"
 
 class DisplayPreviewModule {
   public:
@@ -32,7 +29,6 @@ class DisplayPreviewModule {
     void cancel() {}
 };
 #include "../../src/modules/ble/ble_queue_module.cpp"
-#include "../../src/modules/ble/connection_state_module.cpp"
 
 namespace {
 AudioPlaybackResult playbackResult = AudioPlaybackResult::Accepted;
@@ -49,30 +45,17 @@ struct VoiceRuntime {
     DisplayPreviewModule preview;
     PowerModule power;
     SettingsManager settings;
-    V1Display display;
-    AlertPersistenceModule persistence;
     VoiceModule voice;
-    DisplayMode mode = DisplayMode::IDLE;
-    DisplayPipelineModule pipeline;
-    ConnectionStateModule connection;
+    VoicePlaybackCoordinator coordinator{voice, parser, ble};
     uint32_t ingressSequence = 0;
     uint32_t generation = 9;
 
     VoiceRuntime() {
         settings.settings.voiceAlertMode = VOICE_MODE_BAND_FREQ;
         voice.begin(&settings);
-        DisplayPipelineDependencies dependencies;
-        dependencies.displayMode = &mode;
-        dependencies.display = &display;
-        dependencies.parser = &parser;
-        dependencies.settings = &settings;
-        dependencies.ble = &ble;
-        dependencies.alertPersistence = &persistence;
-        dependencies.voice = &voice;
-        pipeline.begin(dependencies);
+        coordinator.begin(parser.alertLifetime());
         TEST_ASSERT_TRUE(queue.begin(&ble, &parser, &preview, &power));
-        connection.begin(&ble, &parser, &display, &power, &queue, &persistence);
-        connection.handleSessionOpened(generation);
+        queue.openSession(generation);
         enqueue(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2}, 9000);
         present(9000);
     }
@@ -90,10 +73,19 @@ struct VoiceRuntime {
         TEST_ASSERT_TRUE(queue.tryOnNotify(frame.data(), frame.size(), 0xB2CE, generation, nowMs, ++ingressSequence));
     }
 
+    void closeSession() {
+        queue.closeSession();
+        parser.resetAlertState();
+        parser.resetVolumeState();
+        parser.resetModeAndDisplayState();
+        ble.resetSessionSettingsCapture();
+    }
+
     void reconnect(uint32_t nowMs) {
         mockMillis = nowMs;
-        connection.handleSessionClosed(nowMs, ++generation);
-        connection.handleSessionOpened(generation);
+        closeSession();
+        parser.resetV1Version();
+        queue.openSession(++generation);
         enqueue(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2}, nowMs + 1u);
     }
 
@@ -121,11 +113,15 @@ struct VoiceRuntime {
                  static_cast<uint8_t>(active ? 0x21 : 0x22), 0x04, 0, 0x50}, nowMs);
     }
 
+    void admit(uint32_t nowMs) {
+        coordinator.onParsedPresentation(fixtureVoiceObservation(parser, ble), fixtureVoiceSettings(settings.get()), nowMs);
+    }
+
     void present(uint32_t nowMs) {
         mockMillis = nowMs;
         queue.process();
         TEST_ASSERT_TRUE(queue.consumeParsedFlag());
-        pipeline.handleParsed(nowMs);
+        admit(nowMs);
         TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
     }
 };
@@ -380,91 +376,22 @@ void test_priority_replacing_pending_secondary_still_honors_suppression() {
     TEST_ASSERT_EQUAL(AlertBand::LASER, attemptedBands.back());
 }
 
-void test_batched_completed_encounter_retains_priority_without_obsolete_voice() {
+void test_completed_radar_and_laser_episodes_never_submit_obsolete_speech() {
     VoiceRuntime runtime;
-    runtime.settings.slotAlertPersistSec[0] = 3;
     runtime.alert(10000, 34700, true);
     runtime.clear(10100);
     runtime.present(11500);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, runtime.display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_EQUAL_UINT32(34700, runtime.display.lastRenderFrame.v1Priority.frequency);
+    TEST_ASSERT_FALSE(runtime.parser.hasAlerts());
     TEST_ASSERT_EQUAL_UINT(0, attemptedFrequencies.size());
-    runtime.pipeline.refreshBlinkTick(13099);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, runtime.display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_TRUE(runtime.pipeline.v1PersistenceRefreshDue(13100));
-    runtime.pipeline.refreshBlinkTick(13100);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
-    runtime.pipeline.handleParsed(13200);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
-}
-
-void test_delayed_completed_encounter_cannot_renew_expired_persistence() {
-    VoiceRuntime runtime;
-    runtime.settings.slotAlertPersistSec[0] = 3;
-    runtime.alert(10000);
-    runtime.clear(10100);
-    runtime.present(13100);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_FALSE(runtime.persistence.getPersistedAlert().isValid);
+    runtime.enqueue(PACKET_ID_DISPLAY_DATA, {0x49, 0, 0xFF, 0x21, 0, 0x0C, 0, 0x62}, 12000);
+    runtime.enqueue(PACKET_ID_DISPLAY_DATA, {0x3F, 0, 0, 0, 0, 0x0C, 0, 0x62}, 12100);
+    runtime.present(12100);
+    TEST_ASSERT_FALSE(runtime.parser.hasAlerts());
     TEST_ASSERT_EQUAL_UINT(0, attemptedFrequencies.size());
-}
-
-void test_completed_encounter_timestamp_wrap_and_zero_keep_original_expiry() {
-    for (uint32_t clearedAt : {uint32_t{0}, UINT32_MAX - 999u}) {
-        VoiceRuntime runtime;
-        runtime.settings.slotAlertPersistSec[0] = 3;
-        runtime.alert(clearedAt - 100u);
-        runtime.clear(clearedAt);
-        runtime.present(clearedAt + 2000u);
-        TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, runtime.display.lastRenderFrame.primaryKind);
-        runtime.pipeline.refreshBlinkTick(clearedAt + 2999u);
-        TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, runtime.display.lastRenderFrame.primaryKind);
-        runtime.pipeline.refreshBlinkTick(clearedAt + 3000u);
-        TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
-    }
-}
-
-void test_completed_encounter_does_not_replace_new_live_or_survive_session_reset() {
-    VoiceRuntime runtime;
-    runtime.settings.slotAlertPersistSec[0] = 3;
-    runtime.alert(10000);
-    runtime.clear(10100);
-    runtime.alert(10200, 35500);
-    runtime.present(10200);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, runtime.display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_EQUAL_UINT32(35500, runtime.display.lastRenderFrame.v1Priority.frequency);
+    runtime.alert(12200, 35500);
+    runtime.present(12200);
     TEST_ASSERT_EQUAL_UINT(1, attemptedFrequencies.size());
-    runtime.clear(10300);
-    runtime.present(10300);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, runtime.display.lastRenderFrame.primaryKind);
-    runtime.queue.openSession(10);
-    runtime.parser.resetAlertState(); // Connection owner resets parser session state.
-    runtime.pipeline.handleParsed(10400);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
-}
-
-void test_slot_switch_cannot_resurrect_unpresented_or_expired_encounter() {
-    VoiceRuntime runtime;
-    runtime.settings.slotAlertPersistSec[0] = 0;
-    runtime.settings.slotAlertPersistSec[1] = 3;
-    runtime.alert(10000);
-    runtime.clear(10100);
-    runtime.present(10100);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
-    runtime.settings.settings.activeSlot = 1;
-    runtime.pipeline.handleParsed(10200);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
-}
-
-void test_batched_display_laser_clear_retains_laser_without_radar_rows() {
-    VoiceRuntime runtime;
-    runtime.settings.slotAlertPersistSec[0] = 3;
-    runtime.enqueue(PACKET_ID_DISPLAY_DATA, {0x49, 0, 0xFF, 0x21, 0, 0x0C, 0, 0x62}, 10000);
-    runtime.enqueue(PACKET_ID_DISPLAY_DATA, {0x3F, 0, 0, 0, 0, 0x0C, 0, 0x62}, 10100);
-    runtime.present(10100);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, runtime.display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_EQUAL(BAND_LASER, runtime.display.lastRenderFrame.v1Priority.band);
-    TEST_ASSERT_EQUAL_UINT(0, attemptedFrequencies.size());
+    TEST_ASSERT_EQUAL_UINT16(35500, attemptedFrequencies.back());
 }
 
 static void seedMutedSession(VoiceRuntime& runtime) {
@@ -481,9 +408,9 @@ void test_reconnect_short_alert_is_announced_before_fresh_display_data() {
     runtime.reconnect(11000);
     runtime.alert(11002);
     runtime.present(11002);
-    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, runtime.display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_FALSE(runtime.display.lastRenderFrame.primaryState.muted);
-    TEST_ASSERT_FALSE(runtime.display.lastRenderFrame.primaryState.softMuted);
+    TEST_ASSERT_TRUE(runtime.parser.hasAlerts());
+    TEST_ASSERT_FALSE(runtime.parser.getDisplayState().muted);
+    TEST_ASSERT_FALSE(runtime.parser.getDisplayState().softMuted);
     TEST_ASSERT_EQUAL_UINT(1, attemptedFrequencies.size());
     TEST_ASSERT_EQUAL_UINT16(34700, attemptedFrequencies.back());
 
@@ -501,13 +428,13 @@ void test_reconnect_requires_two_new_frames_to_confirm_display_mute() {
     runtime.displayMute(11002, true, false);
     runtime.alert(11002);
     runtime.present(11002);
-    TEST_ASSERT_FALSE(runtime.display.lastRenderFrame.primaryState.muted);
-    TEST_ASSERT_FALSE(runtime.display.lastRenderFrame.primaryState.softMuted);
+    TEST_ASSERT_FALSE(runtime.parser.getDisplayState().muted);
+    TEST_ASSERT_FALSE(runtime.parser.getDisplayState().softMuted);
     TEST_ASSERT_EQUAL_UINT(1, attemptedFrequencies.size());
 
     runtime.displayMute(11100, true, false);
     runtime.present(11100);
-    TEST_ASSERT_TRUE(runtime.display.lastRenderFrame.primaryState.muted);
+    TEST_ASSERT_TRUE(runtime.parser.getDisplayState().muted);
     TEST_ASSERT_EQUAL_UINT(1, attemptedFrequencies.size());
 }
 
@@ -518,7 +445,7 @@ void test_reconnect_fresh_soft_mute_still_suppresses_until_unmuted() {
     runtime.displayMute(11002, false, true);
     runtime.alert(11002);
     runtime.present(11002);
-    TEST_ASSERT_TRUE(runtime.display.lastRenderFrame.primaryState.softMuted);
+    TEST_ASSERT_TRUE(runtime.parser.getDisplayState().softMuted);
     TEST_ASSERT_EQUAL_UINT(0, attemptedFrequencies.size());
 
     runtime.displayMute(11300, false, false);
@@ -535,8 +462,8 @@ void test_table_clear_within_session_preserves_display_mute_authority() {
     runtime.present(10300);
     runtime.alert(10400);
     runtime.present(10400);
-    TEST_ASSERT_TRUE(runtime.display.lastRenderFrame.primaryState.muted);
-    TEST_ASSERT_TRUE(runtime.display.lastRenderFrame.primaryState.softMuted);
+    TEST_ASSERT_TRUE(runtime.parser.getDisplayState().muted);
+    TEST_ASSERT_TRUE(runtime.parser.getDisplayState().softMuted);
     TEST_ASSERT_EQUAL_UINT(0, attemptedFrequencies.size());
 }
 
@@ -550,11 +477,11 @@ void test_session_close_pending_voice_follows_configured_volume_zero_policy() {
         runtime.present(10000);
         TEST_ASSERT_NOT_NULL(activeReceipt);
         TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::Pending, activeReceipt->state.load());
-        runtime.connection.handleSessionClosed(10010, ++runtime.generation);
+        runtime.closeSession();
         TEST_ASSERT_FALSE(runtime.parser.hasAlerts());
         TEST_ASSERT_FALSE(runtime.parser.getDisplayState().hasVolumeData);
         TEST_ASSERT_EQUAL_UINT8(0, runtime.parser.getDisplayState().mainVolume);
-        runtime.pipeline.servicePendingVoice();
+        runtime.coordinator.servicePendingCancellation();
         // Session reset already clears the detector volume to zero. Keep the
         // same configured policy as admission; no new volume-known exception.
         TEST_ASSERT_EQUAL(muteAtZero ? AudioPlaybackReceipt::State::CancelRequested
@@ -566,17 +493,12 @@ void test_session_close_pending_voice_follows_configured_volume_zero_policy() {
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_completed_radar_and_laser_episodes_never_submit_obsolete_speech);
     RUN_TEST(test_session_close_pending_voice_follows_configured_volume_zero_policy);
     RUN_TEST(test_reconnect_short_alert_is_announced_before_fresh_display_data);
     RUN_TEST(test_reconnect_requires_two_new_frames_to_confirm_display_mute);
     RUN_TEST(test_reconnect_fresh_soft_mute_still_suppresses_until_unmuted);
     RUN_TEST(test_table_clear_within_session_preserves_display_mute_authority);
-    RUN_TEST(test_batched_display_laser_clear_retains_laser_without_radar_rows);
-    RUN_TEST(test_batched_completed_encounter_retains_priority_without_obsolete_voice);
-    RUN_TEST(test_delayed_completed_encounter_cannot_renew_expired_persistence);
-    RUN_TEST(test_completed_encounter_timestamp_wrap_and_zero_keep_original_expiry);
-    RUN_TEST(test_completed_encounter_does_not_replace_new_live_or_survive_session_reset);
-    RUN_TEST(test_slot_switch_cannot_resurrect_unpresented_or_expired_encounter);
     RUN_TEST(test_coalesced_clear_rearms_same_frequency_once);
     RUN_TEST(test_separately_presented_clear_also_rearms_inside_cooldown);
     RUN_TEST(test_continuing_encounter_preserves_dedup_and_frequency_change_cooldown);

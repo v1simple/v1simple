@@ -413,7 +413,17 @@ void test_real_module_session_open_invalidates_detector_version() {
     bleQueueModule.setLastRxMillis(999);
     bleQueueModule.setBackpressured(true);
     bleQueueModule.setParsedFlag(true);
+    parser.setMainVolume(6);
+    parser.state.softMuted = true;
+    parser.state.muted = true;
+    bleClient.hasSessionAllVolumeFlag = true;
     real.handleSessionOpened(7);
+
+    TEST_ASSERT_FALSE(parser.state.hasVolumeData);
+    TEST_ASSERT_EQUAL_UINT8(0, parser.state.mainVolume);
+    TEST_ASSERT_FALSE(parser.state.softMuted);
+    TEST_ASSERT_FALSE(parser.state.muted);
+    TEST_ASSERT_FALSE(bleClient.hasSessionAllVolumeFlag);
 
     TEST_ASSERT_EQUAL(1, parser.resetV1VersionCalls);
     TEST_ASSERT_FALSE(parser.state.hasV1Version);
@@ -691,6 +701,10 @@ void test_real_module_generation_change_forces_session_reset() {
 
     parser.reset();
     powerModule.reset();
+    parser.setMainVolume(6);
+    parser.state.softMuted = true;
+    parser.state.muted = true;
+    bleClient.hasSessionAllVolumeFlag = true;
     bleQueueModule.closeSessionCalls = 0;
     alertPersistenceModule.clearPersistenceCalls = 0;
 
@@ -699,6 +713,11 @@ void test_real_module_generation_change_forces_session_reset() {
     bleClient.setSessionGeneration(9);
     TEST_ASSERT_TRUE(real.process(1100));
     TEST_ASSERT_EQUAL(1, parser.resetAlertStateCalls);
+    TEST_ASSERT_FALSE(parser.state.hasVolumeData);
+    TEST_ASSERT_EQUAL_UINT8(0, parser.state.mainVolume);
+    TEST_ASSERT_FALSE(parser.state.softMuted);
+    TEST_ASSERT_FALSE(parser.state.muted);
+    TEST_ASSERT_FALSE(bleClient.hasSessionAllVolumeFlag);
     TEST_ASSERT_EQUAL(1, bleQueueModule.closeSessionCalls);
     TEST_ASSERT_EQUAL(1, alertPersistenceModule.clearPersistenceCalls);
     TEST_ASSERT_TRUE(bleQueueModule.sessionOpen);

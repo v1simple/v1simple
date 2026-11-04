@@ -20,7 +20,6 @@ unsigned long mockMicros = 0;
 
 #include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
 
-static int g_voiceProcessCalls = 0;
 static AudioPlaybackResult g_voicePlaybackResult = AudioPlaybackResult::Accepted;
 static int g_voicePlaybackAttempts = 0;
 static int g_escalationPlaybackAttempts = 0;
@@ -53,6 +52,8 @@ AlpGunType alpLookupGunDetect(uint8_t, uint8_t) { return AlpGunType::UNKNOWN; }
 #include "../../src/modules/speed_mute/speed_mute_module.cpp"
 #include "../../src/modules/quiet/quiet_coordinator_module.cpp"
 #include "../../src/modules/voice/voice_module.cpp"
+#include "../../src/modules/voice/voice_playback_coordinator.cpp"
+#include "../../src/modules/voice/runtime_voice_observation.h"
 #include "../../src/modules/alp/alp_event_latch.cpp"
 #include "../../src/modules/display/render_frame_composer.cpp"
 #include "../../src/modules/display/display_pipeline_module.cpp"
@@ -96,6 +97,7 @@ static AlertPersistenceModule alertPersistence;
 static QuietCoordinatorModule quiet;
 static SpeedMuteModule speedMute;
 static VoiceModule voice;
+static VoicePlaybackCoordinator coordinator{voice, parser, ble, &quiet, &speedMute};
 static DisplayPipelineModule module;
 static AlpRuntimeModule alpModule;
 static AlpEventLatch alpLatch;
@@ -137,12 +139,21 @@ static void beginModule() {
     dependencies.settings = &settings;
     dependencies.ble = &ble;
     dependencies.alertPersistence = &alertPersistence;
-    dependencies.voice = &voice;
     dependencies.speedMute = &speedMute;
     dependencies.quiet = &quiet;
     dependencies.alp = &alpModule;
     dependencies.alpLatch = &alpLatch;
     module.begin(dependencies);
+}
+
+#include "../support/display_pipeline_fixture.h"
+
+static void presentWithVoice(uint32_t nowMs) {
+    RenderFrame frame;
+    TEST_ASSERT_TRUE(module.prepareParsed(nowMs, frame));
+    coordinator.onParsedPresentation(makeV1VoiceObservation(frame, parser.alertLifetime(), ble.isProxyClientConnected()),
+        {settings.get().voiceAlertMode, settings.get().voiceDirectionEnabled, settings.get().announceBogeyCount}, nowMs);
+    module.presentPrepared(frame, nowMs);
 }
 
 void setUp() {
@@ -154,12 +165,11 @@ void setUp() {
     alertPersistence = AlertPersistenceModule{};
     speedMute = SpeedMuteModule{};
     voice = VoiceModule{};
-    // begin() resets the pipeline while preserving its receipt address.
+    // begin() resets the coordinator while preserving its receipt address.
     alpModule = AlpRuntimeModule{};
     alpLatch = AlpEventLatch{};
     displayMode = DisplayMode::IDLE;
     settings = SettingsManager{};
-    g_voiceProcessCalls = 0;
     g_voicePlaybackResult = AudioPlaybackResult::Accepted;
     g_voicePlaybackAttempts = 0;
     g_escalationPlaybackAttempts = 0;
@@ -167,6 +177,7 @@ void setUp() {
     g_lastVoiceBand = AlertBand::KA;
     quiet.begin(&ble, &parser);
     voice.begin(&settings);
+    coordinator.begin(parser.alertLifetime());
     beginModule();
 }
 
@@ -178,7 +189,7 @@ void test_handle_parsed_updates_live_display_when_alert_present() {
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
@@ -200,7 +211,7 @@ void test_handle_parsed_promotes_display_v1_laser_and_keeps_radar_cards() {
     parser.state.signalBars = 2;
     parser.setAlerts({makeKAlert()});
 
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_TRUE(display.hasLastRenderFrame);
@@ -216,424 +227,10 @@ void test_handle_parsed_promotes_display_v1_laser_and_keeps_radar_cards() {
                                     "display-only V1 laser must keep the source bitmap strength");
 }
 
-void test_busy_voice_keeps_exact_action_until_playback_accepts() {
-    parser.setMainVolume(5);
-    parser.setAlerts({makeKAlert(24148)});
-    g_voicePlaybackResult = AudioPlaybackResult::Busy;
-
-    module.handleParsed(1000);
-    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(24148, g_lastVoiceFrequency);
-
-    module.handleParsed(1050);
-    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(1100);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(24148, g_lastVoiceFrequency);
-
-    module.handleParsed(1150);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-}
-
-void test_voice_without_retry_announces_across_signed_uptime_boundary() {
-    for (uint32_t nowMs : {0x7FFFFFFFu, 0x80000000u, 0xFFFFFFF0u}) {
-        setUp();
-        parser.setMainVolume(5);
-        parser.setAlerts({makeKAlert()});
-        module.handleParsed(nowMs);
-        TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, display.lastRenderFrame.primaryKind);
-        TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-
-        // Clearing an encounter must leave the next one eligible at any uptime.
-        parser.setAlerts({});
-        module.handleParsed(nowMs + 1u);
-        parser.setAlerts({makeKAlert(24250)});
-        module.handleParsed(nowMs + 2u);
-        TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-        TEST_ASSERT_EQUAL_UINT16(24250, g_lastVoiceFrequency);
-    }
-}
-
-void test_busy_voice_retry_waits_across_wrap_including_zero_deadline() {
-    for (uint32_t startedAt : {UINT32_MAX - 49u, UINT32_MAX - 99u}) {
-        setUp();
-        parser.setMainVolume(5);
-        parser.setAlerts({makeKAlert()});
-        g_voicePlaybackResult = AudioPlaybackResult::Busy;
-        module.handleParsed(startedAt);
-        TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-
-        g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-        module.handleParsed(startedAt + 99u);
-        TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-        module.handleParsed(startedAt + 100u);
-        TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-        TEST_ASSERT_EQUAL_UINT16(24148, g_lastVoiceFrequency);
-        module.handleParsed(startedAt + 101u);
-        TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    }
-}
-
-void test_unavailable_voice_retry_waits_across_wrap_with_zero_deadline() {
-    parser.setMainVolume(5);
-    parser.setAlerts({makeKAlert()});
-    const uint32_t startedAt = UINT32_MAX - 999u;
-    g_voicePlaybackResult = AudioPlaybackResult::Unavailable;
-    module.handleParsed(startedAt);
-    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(startedAt + 999u);
-    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-    module.handleParsed(0u);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    module.handleParsed(1u);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-}
-
-void test_busy_voice_drops_stale_pending_action_when_alert_changes() {
-    parser.setMainVolume(5);
-    parser.setAlerts({makeKAlert(24148)});
-    g_voicePlaybackResult = AudioPlaybackResult::Busy;
-    module.handleParsed(1000);
-    TEST_ASSERT_EQUAL_UINT16(24148, g_lastVoiceFrequency);
-
-    parser.setAlerts({makeKAlert(24250)});
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(1050);
-
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(24250, g_lastVoiceFrequency);
-}
-
-enum class RetryGate { SoftMute, VolumeZero, SpeedMute, Proxy, Disabled };
-
-static void setRetryGate(RetryGate gate, bool active) {
-    switch (gate) {
-    case RetryGate::SoftMute: parser.state.softMuted = active; break;
-    case RetryGate::VolumeZero: parser.setMainVolume(active ? 0 : 5); break;
-    case RetryGate::SpeedMute:
-        if (active) {
-            speedMute.begin(true, 25, 3, 0, true);
-            speedMute.update(0.0f, true, 2100);
-        } else {
-            speedMute.update(0.0f, false, 2151); // Lost speed fails open immediately.
-        }
-        break;
-    case RetryGate::Proxy: ble.setProxyConnected(active); break;
-    case RetryGate::Disabled:
-        settings.settings.voiceAlertMode = active ? VOICE_MODE_DISABLED : VOICE_MODE_BAND_FREQ;
-        break;
-    }
-}
-
-static void assertBusyRetryHonorsCurrentGate(RetryGate gate) {
-    settings.settings.muteVoiceIfVolZero = true;
-    parser.setMainVolume(5);
-    parser.setAlerts({makeKAlert()});
-    g_voicePlaybackResult = AudioPlaybackResult::Busy;
-    module.handleParsed(1000);
-    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-
-    setRetryGate(gate, true);
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(2100);
-    module.handleParsed(2150);
-    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-
-    setRetryGate(gate, false);
-    module.handleParsed(2151); // Suppressed calls must not postpone eligibility.
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(24148, g_lastVoiceFrequency);
-    module.handleParsed(2200);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-}
-
-void test_busy_voice_honors_new_soft_mute_then_recovers() {
-    assertBusyRetryHonorsCurrentGate(RetryGate::SoftMute);
-}
-void test_busy_voice_honors_new_volume_zero_then_recovers() {
-    assertBusyRetryHonorsCurrentGate(RetryGate::VolumeZero);
-}
-void test_busy_voice_honors_new_speed_suppression_then_recovers() {
-    assertBusyRetryHonorsCurrentGate(RetryGate::SpeedMute);
-}
-void test_busy_voice_honors_new_proxy_then_recovers() {
-    assertBusyRetryHonorsCurrentGate(RetryGate::Proxy);
-}
-void test_busy_voice_honors_disabled_mode_then_recovers() {
-    assertBusyRetryHonorsCurrentGate(RetryGate::Disabled);
-}
-void test_busy_k_voice_is_replaced_by_current_photo_presentation() {
-    parser.setMainVolume(5);
-    AlertData alert = makeKAlert();
-    parser.setAlerts({alert});
-    g_voicePlaybackResult = AudioPlaybackResult::Busy;
-    module.handleParsed(1000);
-    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL(AlertBand::K, g_lastVoiceBand);
-
-    alert.photoType = 1;
-    parser.setAlerts({alert});
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(1100);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL(AlertBand::PHOTO, g_lastVoiceBand);
-    module.handleParsed(1150);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-}
-
-void test_busy_voice_visible_mute_and_optional_volume_zero_remain_allowed() {
-    for (bool volumeZero : {false, true}) {
-        setUp();
-        parser.setMainVolume(5);
-        parser.setAlerts({makeKAlert()});
-        g_voicePlaybackResult = AudioPlaybackResult::Busy;
-        module.handleParsed(1000);
-        TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-        if (volumeZero) {
-            settings.settings.muteVoiceIfVolZero = false;
-            parser.setMainVolume(0);
-        } else {
-            parser.state.muted = true;
-        }
-        g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-        module.handleParsed(1100);
-        TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    }
-}
-
-void test_busy_secondary_survives_mute_without_consuming_unheard_dedup() {
-    settings.settings.announceSecondaryAlerts = true;
-    settings.settings.secondaryK = true;
-    parser.setMainVolume(5);
-    AlertData priority = makeKaAlert();
-    priority.isPriority = true;
-    AlertData secondary = makeKAlert();
-    secondary.isPriority = false;
-    parser.setAlerts({priority, secondary});
-    module.handleParsed(1000);
-    TEST_ASSERT_EQUAL_UINT16(priority.frequency, g_lastVoiceFrequency);
-    g_voicePlaybackResult = AudioPlaybackResult::Busy;
-    module.handleParsed(3000);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(secondary.frequency, g_lastVoiceFrequency);
-    parser.state.softMuted = true;
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(3100);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    parser.state.softMuted = false;
-    module.handleParsed(3101);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(secondary.frequency, g_lastVoiceFrequency);
-    module.handleParsed(3150);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-}
-
-void test_blocked_pending_voice_does_not_survive_source_replacement_or_clear() {
-    for (bool clear : {false, true}) {
-        setUp();
-        parser.setMainVolume(5);
-        parser.setAlerts({makeKAlert()});
-        g_voicePlaybackResult = AudioPlaybackResult::Busy;
-        module.handleParsed(1000);
-        parser.state.softMuted = true;
-        if (clear) parser.setAlerts({});
-        else parser.setAlerts({makeKAlert(24250)});
-        g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-        module.handleParsed(1100);
-        TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-        parser.state.softMuted = false;
-        parser.setAlerts({makeKAlert(24250)});
-        module.handleParsed(1101);
-        TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-        TEST_ASSERT_EQUAL_UINT16(24250, g_lastVoiceFrequency);
-        module.handleParsed(1200);
-        TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    }
-}
-
-static void prepareBusySecondary(AlertData& priority, AlertData& secondary) {
-    settings.settings.announceSecondaryAlerts = true;
-    settings.settings.secondaryK = true;
-    parser.setMainVolume(5);
-    priority = makeKaAlert();
-    priority.isPriority = true;
-    secondary = makeKAlert(24125);
-    secondary.isPriority = false;
-    parser.setAlerts({priority, secondary});
-    module.handleParsed(1000);
-    TEST_ASSERT_EQUAL_UINT16(priority.frequency, g_lastVoiceFrequency);
-    g_voicePlaybackResult = AudioPlaybackResult::Busy;
-    module.handleParsed(3000);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
-}
-
-void test_busy_secondary_reclassified_as_photo_replaces_stale_k_action() {
-    AlertData priority, secondary;
-    prepareBusySecondary(priority, secondary);
-    secondary.photoType = 1;
-    parser.setAlerts({priority, secondary});
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(3100);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL(AlertBand::PHOTO, g_lastVoiceBand);
-    TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
-    module.handleParsed(3150);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-}
-
-void test_reclassified_photo_secondary_does_not_block_later_ordinary_k() {
-    AlertData priority, secondary;
-    prepareBusySecondary(priority, secondary);
-    secondary.photoType = 1;
-    AlertData later = makeKAlert(24200);
-    later.isPriority = false;
-    parser.setAlerts({priority, secondary, later});
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(3100);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL(AlertBand::PHOTO, g_lastVoiceBand);
-    TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
-    module.handleParsed(3150);
-    TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL(AlertBand::K, g_lastVoiceBand);
-    TEST_ASSERT_EQUAL_UINT16(24200, g_lastVoiceFrequency);
-}
-
-void test_ordinary_busy_secondary_retains_its_retry_timing_and_frequency() {
-    AlertData priority, secondary;
-    prepareBusySecondary(priority, secondary);
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(3099);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    module.handleParsed(3100);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
-    module.handleParsed(3150);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-}
-
-void test_busy_secondary_rechecks_current_band_filter_before_retry() {
-    AlertData priority, secondary;
-    prepareBusySecondary(priority, secondary);
-    settings.settings.secondaryK = false;
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(3100);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    settings.settings.secondaryK = true;
-    module.handleParsed(3101);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
-    module.handleParsed(3150);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-}
-
-static void prepareBusyEscalation(AlertData& priority, AlertData& secondary) {
-    settings.settings.announceSecondaryAlerts = true;
-    settings.settings.secondaryK = true;
-    parser.setMainVolume(5);
-    priority = makeKaAlert();
-    priority.isPriority = true;
-    secondary = makeKAlert(24125);
-    secondary.isPriority = false;
-    secondary.frontStrength = 2;
-    parser.setAlerts({priority, secondary});
-    module.handleParsed(1000);
-    module.handleParsed(4000); // Accept the ordinary secondary first.
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    voice.testUpdateAlertHistory(BAND_K, 24125, 2, 4100);
-    voice.testUpdateAlertHistory(BAND_K, 24125, 5, 4200);
-    secondary.frontStrength = 5;
-    parser.setAlerts({priority, secondary});
-    g_voicePlaybackResult = AudioPlaybackResult::Busy;
-    module.handleParsed(4800);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_INT(1, g_escalationPlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
-}
-
-void test_busy_escalation_reclassified_as_photo_replaces_stale_action() {
-    AlertData priority, secondary;
-    prepareBusyEscalation(priority, secondary);
-    secondary.photoType = 1;
-    parser.setAlerts({priority, secondary});
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(4900);
-    TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_INT(1, g_escalationPlaybackAttempts);
-    TEST_ASSERT_EQUAL(AlertBand::PHOTO, g_lastVoiceBand);
-    secondary.photoType = 0;
-    parser.setAlerts({priority, secondary});
-    module.handleParsed(4901);
-    TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_INT(1, g_escalationPlaybackAttempts);
-    module.handleParsed(5400); // The replacement announcement owns the normal 500 ms escalation cooldown.
-    TEST_ASSERT_EQUAL_INT(5, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_INT(2, g_escalationPlaybackAttempts);
-    TEST_ASSERT_EQUAL(AlertBand::K, g_lastVoiceBand);
-    TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
-    module.handleParsed(5450);
-    TEST_ASSERT_EQUAL_INT(5, g_voicePlaybackAttempts);
-}
-
-void test_ordinary_busy_escalation_remains_retryable_until_accepted_once() {
-    AlertData priority, secondary;
-    prepareBusyEscalation(priority, secondary);
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(4899);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-    module.handleParsed(4900);
-    TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_INT(2, g_escalationPlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
-    module.handleParsed(5000);
-    TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
-}
-
-void test_busy_escalation_rechecks_sustained_strength_before_retry() {
-    AlertData priority, secondary;
-    prepareBusyEscalation(priority, secondary);
-    secondary.frontStrength = 2;
-    parser.setAlerts({priority, secondary});
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(4900);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-    secondary.frontStrength = 5;
-    parser.setAlerts({priority, secondary});
-    module.handleParsed(5000);
-    module.handleParsed(5499);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-    module.handleParsed(5500);
-    TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_INT(2, g_escalationPlaybackAttempts);
-    module.handleParsed(5600);
-    TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
-}
-
-void test_unavailable_voice_is_not_retried_every_frame_or_committed() {
-    parser.setMainVolume(5);
-    parser.setAlerts({makeKAlert(24148)});
-    g_voicePlaybackResult = AudioPlaybackResult::Unavailable;
-    module.handleParsed(1000);
-    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-
-    module.handleParsed(1100);
-    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
-
-    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
-    module.handleParsed(2000);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(24148, g_lastVoiceFrequency);
-}
-
 void test_handle_parsed_updates_resting_display_when_idle() {
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
 
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
@@ -647,13 +244,13 @@ void test_handle_parsed_prefers_persisted_alert_when_configured() {
     settings.slotAlertPersistSec[0] = 2;
     // Establish the active persistence slot before preloading a previously
     // live alert; production clears persistence on slot changes.
-    module.handleParsed(900);
+    presentParsedFrame(module, 900);
     display.reset();
     alertPersistence.setPersistedAlert(makeKAlert());
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
 
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
@@ -669,14 +266,14 @@ void test_first_post_disconnect_display_frame_is_idle_not_stale_v1() {
     alertPersistence.setPersistedAlert(makeKAlert(24150));
     alertPersistence.startPersistence(900);
 
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, display.lastRenderFrame.primaryKind);
 
     parser.resetAlertState();
     alertPersistence.clearPersistence();
     display.reset();
 
-    module.handleParsed(1100);
+    presentParsedFrame(module, 1100);
 
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
     TEST_ASSERT_TRUE(display.hasLastRenderFrame);
@@ -694,7 +291,7 @@ void test_handle_parsed_defers_secondary_cards_while_connect_burst_settles() {
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
@@ -752,7 +349,7 @@ void test_restore_current_owner_restores_live_display_when_alerts_present() {
 
 void test_restore_current_owner_restores_v1_persisted_owner() {
     settings.slotAlertPersistSec[0] = 2;
-    module.handleParsed(900); // Establish the active persistence slot.
+    presentParsedFrame(module, 900); // Establish the active persistence slot.
     alertPersistence.setPersistedAlert(makeKAlert());
     display.reset();
 
@@ -773,7 +370,7 @@ void test_restore_current_owner_restores_v1_persisted_owner() {
 // secondary alert context, but ALP still owns the main laser
 // presentation.
 //
-// These tests cover the ALP-primary frame branches in handleParsed() /
+// These tests cover the ALP-primary frame branches in prepareParsed() /
 // restoreCurrentOwner().
 
 static void configureAlpActiveWithGun(AlpGunType gun,
@@ -790,7 +387,7 @@ void test_v1_persistence_tracks_latest_priority_under_live_alp() {
         settings.alpAlertPersistSec = 0;
         if (hadEarlierV1) {
             parser.setAlerts({makeKAlert(24148)});
-            module.handleParsed(1000);
+            presentParsedFrame(module, 1000);
         }
 
         configureAlpActiveWithGun(AlpGunType::PL3_PROLITE, AlpLaserDirection::FRONT);
@@ -799,13 +396,13 @@ void test_v1_persistence_tracks_latest_priority_under_live_alp() {
         AlertData latest = makeKaAlert(35500);
         latest.isPriority = true;
         parser.setAlerts({secondary, latest});
-        module.handleParsed(2000);
+        presentParsedFrame(module, 2000);
         TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
         TEST_ASSERT_EQUAL_INT(2, display.lastRenderFrame.cardCount);
 
         parser.setAlerts({});
         alpModule.testCloseSession(3000);
-        module.handleParsed(3000);
+        presentParsedFrame(module, 3000);
         TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, display.lastRenderFrame.primaryKind);
         TEST_ASSERT_EQUAL(BAND_KA, display.lastRenderFrame.v1Priority.band);
         TEST_ASSERT_EQUAL_UINT16(35500, display.lastRenderFrame.v1Priority.frequency);
@@ -817,9 +414,9 @@ void test_new_v1_under_alp_restarts_hold_and_lightweight_refresh_expires_it() {
     settings.slotAlertPersistSec[0] = 2;
     settings.alpAlertPersistSec = 0;
     parser.setAlerts({makeKAlert(24148)});
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
     parser.setAlerts({});
-    module.handleParsed(1500); // First hold would expire at 3500.
+    presentParsedFrame(module, 1500); // First hold would expire at 3500.
     TEST_ASSERT_TRUE(alertPersistence.isPersistenceActive());
 
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE, AlpLaserDirection::FRONT);
@@ -828,14 +425,14 @@ void test_new_v1_under_alp_restarts_hold_and_lightweight_refresh_expires_it() {
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_FALSE(alertPersistence.isPersistenceActive());
     parser.setAlerts({});
-    module.handleParsed(3000); // New hold starts while ALP still owns primary.
+    presentParsedFrame(module, 3000); // New hold starts while ALP still owns primary.
     module.refreshBlinkTick(3500);
     module.refreshBlinkTick(4000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_FALSE(module.v1PersistenceRefreshDue(4999));
 
     alpModule.testCloseSession(4500);
-    module.handleParsed(4500);
+    presentParsedFrame(module, 4500);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL_UINT16(35500, display.lastRenderFrame.v1Priority.frequency);
     module.refreshBlinkTick(4999);
@@ -853,21 +450,21 @@ void test_slot_change_under_alp_discards_old_v1_hold_and_keeps_current_live_v1()
         settings.slotAlertPersistSec[1] = 5;
         settings.alpAlertPersistSec = 0;
         parser.setAlerts({makeKAlert(24148)});
-        module.handleParsed(1000);
+        presentParsedFrame(module, 1000);
         configureAlpActiveWithGun(AlpGunType::PL3_PROLITE, AlpLaserDirection::FRONT);
         parser.setAlerts({makeKaAlert(35500)});
-        module.handleParsed(2000);
+        presentParsedFrame(module, 2000);
         if (!v1StillLive) {
             parser.setAlerts({});
-            module.handleParsed(2100);
+            presentParsedFrame(module, 2100);
         }
         settings.settings.activeSlot = 1;
-        module.handleParsed(2200);
+        presentParsedFrame(module, 2200);
         TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
         TEST_ASSERT_FALSE(module.v1PersistenceRefreshDue(10000));
         parser.setAlerts({});
         alpModule.testCloseSession(2300);
-        module.handleParsed(2300);
+        presentParsedFrame(module, 2300);
         TEST_ASSERT_EQUAL(v1StillLive ? RenderFramePrimaryKind::V1_PERSISTED : RenderFramePrimaryKind::IDLE,
                           display.lastRenderFrame.primaryKind);
         if (v1StillLive) {
@@ -880,13 +477,13 @@ void test_live_alp_hides_duplicate_v1_laser_but_keeps_its_independent_hold() {
     settings.slotAlertPersistSec[0] = 2;
     settings.alpAlertPersistSec = 0;
     parser.setAlerts({makeKAlert(24148)});
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE, AlpLaserDirection::FRONT);
     parser.state.activeBands = BAND_LASER;
     parser.state.arrows = DIR_REAR;
     AlertData laser = parser.getPriorityAlert();
     parser.setAlerts({laser, makeKAlert(24148)});
-    module.handleParsed(2000);
+    presentParsedFrame(module, 2000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL_INT(1, display.lastRenderFrame.cardCount);
     TEST_ASSERT_EQUAL(BAND_K, display.lastRenderFrame.cards[0].v1Alert.band);
@@ -894,7 +491,7 @@ void test_live_alp_hides_duplicate_v1_laser_but_keeps_its_independent_hold() {
     parser.state.activeBands = BAND_NONE;
     parser.setAlerts({});
     alpModule.testCloseSession(3000);
-    module.handleParsed(3000);
+    presentParsedFrame(module, 3000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(BAND_LASER, display.lastRenderFrame.v1Priority.band);
     TEST_ASSERT_EQUAL(DIR_REAR, display.lastRenderFrame.v1Priority.direction);
@@ -907,7 +504,7 @@ void test_handle_parsed_synthesizes_laser_alert_when_alp_active_and_no_v1() {
 
     mockMillis = 2000;
     mockMicros = 2000 * 1000UL;
-    module.handleParsed(2000);
+    presentParsedFrame(module, 2000);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
@@ -943,7 +540,7 @@ void test_handle_parsed_keeps_unknown_alp_direction_off_screen() {
 
     mockMillis = 2050;
     mockMicros = 2050 * 1000UL;
-    module.handleParsed(2050);
+    presentParsedFrame(module, 2050);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
@@ -971,7 +568,7 @@ void test_handle_parsed_prioritizes_alp_laser_over_v1_radar() {
 
     mockMillis = 2100;
     mockMicros = 2100 * 1000UL;
-    module.handleParsed(2100);
+    presentParsedFrame(module, 2100);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
@@ -1003,7 +600,7 @@ void test_handle_parsed_keeps_v1_cards_when_alp_is_primary() {
 
     mockMillis = 2150;
     mockMicros = 2150 * 1000UL;
-    module.handleParsed(2150);
+    presentParsedFrame(module, 2150);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
@@ -1012,6 +609,26 @@ void test_handle_parsed_keeps_v1_cards_when_alp_is_primary() {
     TEST_ASSERT_EQUAL(BAND_K, display.lastRenderFrame.cards[0].v1Alert.band);
     TEST_ASSERT_EQUAL(24210, display.lastRenderFrame.cards[0].v1Alert.frequency);
     TEST_ASSERT_EQUAL(DIR_FRONT, display.lastRenderFrame.cards[0].v1Alert.direction);
+}
+
+void test_alp_live_voice_uses_the_filtered_frame_without_v1_laser() {
+    configureAlpActiveWithGun(AlpGunType::MARKSMAN_ULTRALYTE, AlpLaserDirection::FRONT);
+    parser.setMainVolume(5);
+    AlertData laser = makeKAlert(0);
+    laser.band = BAND_LASER;
+    AlertData radar = makeKaAlert(34700);
+    radar.isPriority = false;
+    parser.setAlerts({laser, radar});
+
+    mockMillis = 2200;
+    presentWithVoice(2200);
+
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(1, display.lastRenderFrame.cardCount);
+    TEST_ASSERT_EQUAL(BAND_KA, display.lastRenderFrame.cards[0].v1Alert.band);
+    TEST_ASSERT_EQUAL_UINT16(34700, g_lastVoiceFrequency);
+    TEST_ASSERT_EQUAL(AlertBand::KA, g_lastVoiceBand);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
 }
 
 void test_alp_live_voice_uses_nonfirst_flagged_v1_priority_without_reordering_cards() {
@@ -1026,7 +643,7 @@ void test_alp_live_voice_uses_nonfirst_flagged_v1_priority_without_reordering_ca
 
     mockMillis = 2200;
     mockMicros = 2200 * 1000UL;
-    module.handleParsed(2200);
+    presentWithVoice(2200);
 
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(2, display.lastRenderFrame.cardCount);
@@ -1048,7 +665,7 @@ void test_alp_live_voice_falls_back_when_flagged_v1_row_is_not_renderable() {
 
     mockMillis = 2250;
     mockMicros = 2250 * 1000UL;
-    module.handleParsed(2250);
+    presentWithVoice(2250);
 
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(2, display.lastRenderFrame.cardCount);
@@ -1073,7 +690,7 @@ void test_alp_live_voice_fallback_skips_all_unrenderable_v1_cards() {
 
     mockMillis = 2300;
     mockMicros = 2300 * 1000UL;
-    module.handleParsed(2300);
+    presentWithVoice(2300);
 
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(3, display.lastRenderFrame.cardCount);
@@ -1093,7 +710,7 @@ void test_handle_parsed_does_not_synthesize_when_alp_inactive() {
 
     mockMillis = 2000;
     mockMicros = 2000 * 1000UL;
-    module.handleParsed(2000);
+    presentParsedFrame(module, 2000);
 
     // Should fall through to idle, NOT render a synthetic laser
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
@@ -1112,7 +729,7 @@ void test_handle_parsed_suppresses_synthetic_alert_during_alp_warm_up() {
 
     mockMillis = 2000;
     mockMicros = 2000 * 1000UL;
-    module.handleParsed(2000);
+    presentParsedFrame(module, 2000);
 
     // During Warm-Up suppression the display must stay clean
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
@@ -1130,7 +747,7 @@ static void assertV1AlpOwnershipLifecycle(bool restoreOwner) {
         if (restoreOwner) {
             TEST_ASSERT_TRUE(module.restoreCurrentOwner(now));
         } else {
-            module.handleParsed(now);
+            presentParsedFrame(module, now);
         }
         TEST_ASSERT_TRUE(display.hasLastRenderFrame);
     };
@@ -1212,7 +829,7 @@ void test_handle_parsed_clears_alp_projection_during_teardown_gap() {
 
     mockMillis = 2500;
     mockMicros = 2500 * 1000UL;
-    module.handleParsed(2500);
+    presentParsedFrame(module, 2500);
 
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
@@ -1232,7 +849,7 @@ void test_handle_parsed_keeps_alp_alert_live_until_normal_listening_heartbeat_re
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
@@ -1248,7 +865,7 @@ void test_handle_parsed_keeps_alp_alert_live_until_normal_listening_heartbeat_re
     display.reset();
     mockMillis = 1100;
     mockMicros = 1100 * 1000UL;
-    module.handleParsed(1100);
+    presentParsedFrame(module, 1100);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
@@ -1263,7 +880,7 @@ void test_handle_parsed_keeps_alp_alert_live_until_normal_listening_heartbeat_re
     display.reset();
     mockMillis = 1200;
     mockMicros = 1200 * 1000UL;
-    module.handleParsed(1200);
+    presentParsedFrame(module, 1200);
 
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
@@ -1277,7 +894,7 @@ void test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
 
@@ -1290,7 +907,7 @@ void test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell
     display.reset();
     mockMillis = 1500;
     mockMicros = 1500 * 1000UL;
-    module.handleParsed(1500);
+    presentParsedFrame(module, 1500);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
@@ -1301,7 +918,7 @@ void test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell
     display.reset();
     mockMillis = 2501;
     mockMicros = 2501 * 1000UL;
-    module.handleParsed(2501);
+    presentParsedFrame(module, 2501);
 
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
@@ -1313,14 +930,14 @@ void test_alp_hold_and_persistence_deadlines_each_request_one_refresh() {
     configureAlpActiveWithGun(AlpGunType::MARKSMAN_ULTRALYTE,
                               AlpLaserDirection::REAR);
 
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
 
     // Close into the existing abnormal-listening hold. No packet arrives at
     // either expiry; the runtime deadline consumer is the only wake source.
     alpModule.testSetLastHbByte1(0x00);
     alpModule.testSetState(AlpState::LISTENING, UINT32_MAX - 999u);
     alpModule.testCloseSession(UINT32_MAX - 999u);
-    module.handleParsed(UINT32_MAX - 999u);
+    presentParsedFrame(module, UINT32_MAX - 999u);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 
     TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(0u));
@@ -1330,17 +947,17 @@ void test_alp_hold_and_persistence_deadlines_each_request_one_refresh() {
     setUp();
     settings.alpAlertPersistSec = 2;
     configureAlpActiveWithGun(AlpGunType::MARKSMAN_ULTRALYTE, AlpLaserDirection::REAR);
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
     alpModule.testSetState(AlpState::TEARDOWN, UINT32_MAX - 1999u);
     alpModule.testCloseSession(UINT32_MAX - 1999u);
-    module.handleParsed(UINT32_MAX - 1999u);
+    presentParsedFrame(module, UINT32_MAX - 1999u);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
 
     TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(0u));
     TEST_ASSERT_TRUE(module.consumeAlpPresentationRefreshDue(1u));
     TEST_ASSERT_FALSE(module.consumeAlpPresentationRefreshDue(1u));
 
-    module.handleParsed(1u);
+    presentParsedFrame(module, 1u);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
 }
 
@@ -1350,7 +967,7 @@ void test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_upd
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
     TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
     const uint32_t sessionGeneration = display.lastAlpLaserEvent.sessionGeneration;
@@ -1362,7 +979,7 @@ void test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_upd
     display.reset();
     mockMillis = 1100;
     mockMicros = 1100 * 1000UL;
-    module.handleParsed(1100);
+    presentParsedFrame(module, 1100);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
@@ -1377,7 +994,7 @@ void test_new_alp_session_does_not_inherit_identity_even_at_same_millis_tick() {
     alpModule.testSetState(AlpState::ALERT_ACTIVE, 1200);
     alpModule.testOpenSession(AlpGunType::PL3_PROLITE, false,
                               AlpLaserDirection::REAR, 1200);
-    module.handleParsed(1200);
+    presentParsedFrame(module, 1200);
     const AlpLaserEvent previous = display.lastAlpLaserEvent;
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, previous.gun);
     TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, previous.direction);
@@ -1392,7 +1009,7 @@ void test_new_alp_session_does_not_inherit_identity_even_at_same_millis_tick() {
     TEST_ASSERT_NOT_EQUAL(previous.sessionGeneration, fresh.sessionGeneration);
 
     display.reset();
-    module.handleParsed(1200);
+    presentParsedFrame(module, 1200);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, display.lastAlpLaserEvent.gun);
     TEST_ASSERT_EQUAL(AlpLaserDirection::UNKNOWN, display.lastAlpLaserEvent.direction);
@@ -1405,7 +1022,7 @@ void test_handle_parsed_clears_prior_alp_context_during_unknown_teardown() {
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
@@ -1421,7 +1038,7 @@ void test_handle_parsed_clears_prior_alp_context_during_unknown_teardown() {
     display.reset();
     mockMillis = 1200;
     mockMicros = 1200 * 1000UL;
-    module.handleParsed(1200);
+    presentParsedFrame(module, 1200);
 
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
@@ -1462,7 +1079,7 @@ void test_restore_current_owner_synthesizes_laser_alert_when_alp_active() {
 void test_restore_current_owner_restores_alp_persisted_owner() {
     settings.alpAlertPersistSec = 2;
     configureAlpActiveWithGun(AlpGunType::PL3_PROLITE, AlpLaserDirection::REAR);
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
 
     alpModule.testSetState(AlpState::TEARDOWN);
     alpModule.testCloseSession();
@@ -1512,7 +1129,7 @@ void test_handle_parsed_keeps_latched_alp_event_within_persist_window() {
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
 
     alpModule.testSetState(AlpState::TEARDOWN);
     alpModule.testCloseSession(1500); // Source close time, before presentation.
@@ -1520,7 +1137,7 @@ void test_handle_parsed_keeps_latched_alp_event_within_persist_window() {
     display.reset();
     mockMillis = 1500;
     mockMicros = 1500 * 1000UL;
-    module.handleParsed(1500);
+    presentParsedFrame(module, 1500);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
@@ -1540,19 +1157,19 @@ void test_handle_parsed_clears_latched_alp_event_after_persist_window() {
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
 
     alpModule.testSetState(AlpState::TEARDOWN);
     alpModule.testCloseSession(1500); // Source close time, before presentation.
 
     mockMillis = 1500;
     mockMicros = 1500 * 1000UL;
-    module.handleParsed(1500);
+    presentParsedFrame(module, 1500);
 
     display.reset();
     mockMillis = 3500;
     mockMicros = 3500 * 1000UL;
-    module.handleParsed(3500);
+    presentParsedFrame(module, 3500);
 
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
@@ -1570,26 +1187,26 @@ void test_handle_parsed_does_not_restart_alp_persistence_window() {
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
 
     alpModule.testSetState(AlpState::TEARDOWN);
     alpModule.testCloseSession(1500); // Source close time, before presentation.
 
     mockMillis = 1500;
     mockMicros = 1500 * 1000UL;
-    module.handleParsed(1500);
+    presentParsedFrame(module, 1500);
 
     display.reset();
     mockMillis = 3200;
     mockMicros = 3200 * 1000UL;
-    module.handleParsed(3200);
+    presentParsedFrame(module, 3200);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
 
     display.reset();
     mockMillis = 3501;
     mockMicros = 3501 * 1000UL;
-    module.handleParsed(3501);
+    presentParsedFrame(module, 3501);
 
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
@@ -1603,20 +1220,20 @@ void test_handle_parsed_keeps_latched_alp_event_after_live_ownership_drops() {
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
 
     alpModule.testSetState(AlpState::TEARDOWN);
     alpModule.testCloseSession();
 
     mockMillis = 1500;
     mockMicros = 1500 * 1000UL;
-    module.handleParsed(1500);
+    presentParsedFrame(module, 1500);
 
     display.reset();
     alpModule.testSetState(AlpState::IDLE);  // simulate heartbeat timeout dropping live ownership
     mockMillis = 4500;
     mockMicros = 4500 * 1000UL;
-    module.handleParsed(4500);
+    presentParsedFrame(module, 4500);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
@@ -1634,7 +1251,7 @@ void test_handle_parsed_swaps_to_new_live_alp_event_when_new_event_arrives_mid_p
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
 
     alpModule.testSetState(AlpState::TEARDOWN);
     alpModule.testCloseSession();
@@ -1642,7 +1259,7 @@ void test_handle_parsed_swaps_to_new_live_alp_event_when_new_event_arrives_mid_p
     display.reset();
     mockMillis = 1500;
     mockMicros = 1500 * 1000UL;
-    module.handleParsed(1500);
+    presentParsedFrame(module, 1500);
 
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
@@ -1654,7 +1271,7 @@ void test_handle_parsed_swaps_to_new_live_alp_event_when_new_event_arrives_mid_p
     display.reset();
     mockMillis = 1800;
     mockMicros = 1800 * 1000UL;
-    module.handleParsed(1800);
+    presentParsedFrame(module, 1800);
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
@@ -1682,7 +1299,7 @@ void test_handle_parsed_drops_alp_immediately_when_persist_disabled() {
 
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
-    module.handleParsed(1000);
+    presentParsedFrame(module, 1000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 
     // Engagement ends — session closes.
@@ -1692,7 +1309,7 @@ void test_handle_parsed_drops_alp_immediately_when_persist_disabled() {
     display.reset();
     mockMillis = 1100;
     mockMicros = 1100 * 1000UL;
-    module.handleParsed(1100);
+    presentParsedFrame(module, 1100);
 
     // Must be IDLE immediately — no ALP_PERSISTED tail.
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
@@ -1704,28 +1321,6 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_handle_parsed_updates_live_display_when_alert_present);
     RUN_TEST(test_handle_parsed_promotes_display_v1_laser_and_keeps_radar_cards);
-    RUN_TEST(test_busy_voice_keeps_exact_action_until_playback_accepts);
-    RUN_TEST(test_voice_without_retry_announces_across_signed_uptime_boundary);
-    RUN_TEST(test_busy_voice_retry_waits_across_wrap_including_zero_deadline);
-    RUN_TEST(test_unavailable_voice_retry_waits_across_wrap_with_zero_deadline);
-    RUN_TEST(test_busy_voice_drops_stale_pending_action_when_alert_changes);
-    RUN_TEST(test_busy_voice_honors_new_soft_mute_then_recovers);
-    RUN_TEST(test_busy_voice_honors_new_volume_zero_then_recovers);
-    RUN_TEST(test_busy_voice_honors_new_speed_suppression_then_recovers);
-    RUN_TEST(test_busy_voice_honors_new_proxy_then_recovers);
-    RUN_TEST(test_busy_voice_honors_disabled_mode_then_recovers);
-    RUN_TEST(test_busy_k_voice_is_replaced_by_current_photo_presentation);
-    RUN_TEST(test_busy_voice_visible_mute_and_optional_volume_zero_remain_allowed);
-    RUN_TEST(test_busy_secondary_survives_mute_without_consuming_unheard_dedup);
-    RUN_TEST(test_blocked_pending_voice_does_not_survive_source_replacement_or_clear);
-    RUN_TEST(test_busy_secondary_reclassified_as_photo_replaces_stale_k_action);
-    RUN_TEST(test_reclassified_photo_secondary_does_not_block_later_ordinary_k);
-    RUN_TEST(test_ordinary_busy_secondary_retains_its_retry_timing_and_frequency);
-    RUN_TEST(test_busy_secondary_rechecks_current_band_filter_before_retry);
-    RUN_TEST(test_busy_escalation_reclassified_as_photo_replaces_stale_action);
-    RUN_TEST(test_ordinary_busy_escalation_remains_retryable_until_accepted_once);
-    RUN_TEST(test_busy_escalation_rechecks_sustained_strength_before_retry);
-    RUN_TEST(test_unavailable_voice_is_not_retried_every_frame_or_committed);
     RUN_TEST(test_handle_parsed_updates_resting_display_when_idle);
     RUN_TEST(test_handle_parsed_prefers_persisted_alert_when_configured);
     RUN_TEST(test_first_post_disconnect_display_frame_is_idle_not_stale_v1);
@@ -1742,6 +1337,7 @@ int main() {
     RUN_TEST(test_handle_parsed_keeps_unknown_alp_direction_off_screen);
     RUN_TEST(test_handle_parsed_prioritizes_alp_laser_over_v1_radar);
     RUN_TEST(test_handle_parsed_keeps_v1_cards_when_alp_is_primary);
+    RUN_TEST(test_alp_live_voice_uses_the_filtered_frame_without_v1_laser);
     RUN_TEST(test_alp_live_voice_uses_nonfirst_flagged_v1_priority_without_reordering_cards);
     RUN_TEST(test_alp_live_voice_falls_back_when_flagged_v1_row_is_not_renderable);
     RUN_TEST(test_alp_live_voice_fallback_skips_all_unrenderable_v1_cards);

@@ -364,6 +364,109 @@ void test_short_and_double_boot_thresholds_are_unchanged() {
     TEST_ASSERT_EQUAL_INT(1, gDisplay.hideBrightnessSliderCalls);
 }
 
+
+// Independent literal drag regression: endpoints match the published physical
+// slider range. Initial points are the unchanged current knob positions.
+void dragGesture(int slider, int knobX, int16_t y, bool liftBeforeMove) {
+    const unsigned long now = enterAdjustMode(1000);
+    gDisplay.activeSliderFromTouch = slider;
+    queueTouch(0, 0, 0);
+    TEST_ASSERT_TRUE(processInput(now + 100, false));
+    queueTouch(knobX, y);
+    TEST_ASSERT_TRUE(processInput(now + 400, false));
+    TEST_ASSERT_TRUE(gTouch.isTouchActive());
+    if (liftBeforeMove) {
+        queueTouch(0, 0, 0);
+        TEST_ASSERT_TRUE(processInput(now + 700, false));
+        TEST_ASSERT_FALSE(gTouch.isTouchActive());
+    }
+    queueTouch(600, y);
+    TEST_ASSERT_TRUE(processInput(now + 1000, false));
+    TEST_ASSERT_TRUE(gTouch.isTouchActive());
+    TEST_ASSERT_TRUE(gModule.preemptForLiveAlert());
+}
+void test_brightness_held_drag_updates_from_existing_knob() {
+    dragGesture(0, 280, 40, false);
+    TEST_ASSERT_EQUAL_UINT8(80, gSettings.get().brightness);
+}
+void test_speaker_held_drag_updates_from_existing_knob() {
+    dragGesture(1, 264, 120, false);
+    TEST_ASSERT_EQUAL_UINT8(0, gSettings.get().voiceVolume);
+    TEST_ASSERT_EQUAL_UINT8(0, gLastAudioVolume);
+}
+void test_brightness_separate_tap_control_updates() {
+    dragGesture(0, 280, 40, true);
+    TEST_ASSERT_EQUAL_UINT8(80, gSettings.get().brightness);
+}
+void test_speaker_separate_tap_control_updates() {
+    dragGesture(1, 264, 120, true);
+    TEST_ASSERT_EQUAL_UINT8(0, gSettings.get().voiceVolume);
+    TEST_ASSERT_EQUAL_UINT8(0, gLastAudioVolume);
+}
+
+void test_slider_held_invalid_or_failed_poll_cannot_change_values() {
+    const unsigned long now = enterAdjustMode(1000);
+    gDisplay.activeSliderFromTouch = 1;
+    queueTouch(0, 0, 0);
+    processInput(now + 100, false);
+    queueTouch(264, 120);
+    processInput(now + 400, false);
+    TEST_ASSERT_TRUE(gTouch.isTouchActive());
+    queueTouch(600, 514);
+    processInput(now + 700, false);
+    TEST_ASSERT_FALSE(gTouch.isTouchActive());
+    TEST_ASSERT_EQUAL_INT(60, gDisplay.lastSettingsVolume);
+    TEST_ASSERT_EQUAL_INT(0, gAudioSetVolumeCalls);
+    Wire.queueEndTransmission(2);
+    processInput(now + 1000, false);
+    TEST_ASSERT_FALSE(gTouch.isTouchActive());
+    TEST_ASSERT_EQUAL_INT(60, gDisplay.lastSettingsVolume);
+    TEST_ASSERT_EQUAL_INT(0, gAudioSetVolumeCalls);
+    TEST_ASSERT_TRUE(gModule.preemptForLiveAlert());
+    TEST_ASSERT_EQUAL_UINT8(60, gSettings.get().voiceVolume);
+}
+void test_stationary_slider_contact_keeps_existing_test_voice_debounce() {
+    const unsigned long now = enterAdjustMode(1000);
+    gDisplay.activeSliderFromTouch = 1;
+    queueTouch(0, 0, 0);
+    processInput(now + 100, false);
+    queueTouch(320, 120);
+    processInput(now + 400, false);
+    TEST_ASSERT_EQUAL_INT(50, gDisplay.lastSettingsVolume);
+    queueTouch(320, 120);
+    processInput(now + 1399, false);
+    TEST_ASSERT_EQUAL_INT(0, gPlayTestVoiceCalls);
+    queueTouch(320, 120);
+    processInput(now + 1400, false);
+    TEST_ASSERT_TRUE(gTouch.isTouchActive());
+    TEST_ASSERT_EQUAL_INT(1, gPlayTestVoiceCalls);
+}
+
+void rapidDragThenWait(bool released) {
+    const unsigned long now = enterAdjustMode(1000);
+    gDisplay.activeSliderFromTouch = 1;
+    queueTouch(0, 0, 0);
+    processInput(now + 100, false);
+    queueTouch(320, 120);
+    processInput(now + 400, false);
+    TEST_ASSERT_EQUAL_INT(50, gDisplay.lastSettingsVolume);
+    TEST_ASSERT_EQUAL_INT(1, gDisplay.updateSettingsSlidersCalls);
+    queueTouch(600, 120);
+    processInput(now + 420, false);
+    TEST_ASSERT_EQUAL_UINT8(0, gLastAudioVolume);
+    TEST_ASSERT_EQUAL_INT(50, gDisplay.lastSettingsVolume);
+    TEST_ASSERT_EQUAL_INT(1, gDisplay.updateSettingsSlidersCalls);
+    queueTouch(600, 120, released ? 0 : 1);
+    processInput(now + 449, false);
+    TEST_ASSERT_EQUAL_INT(1, gDisplay.updateSettingsSlidersCalls);
+    queueTouch(600, 120, released ? 0 : 1);
+    processInput(now + 450, false);
+    TEST_ASSERT_EQUAL_INT(0, gDisplay.lastSettingsVolume);
+    TEST_ASSERT_EQUAL_INT(2, gDisplay.updateSettingsSlidersCalls);
+}
+void test_rapid_drag_stationary_flushes_at_50ms() { rapidDragThenWait(false); }
+void test_rapid_drag_release_flushes_at_50ms() { rapidDragThenWait(true); }
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_preempt_is_noop_when_menu_closed);
@@ -382,5 +485,13 @@ int main(int, char**) {
     RUN_TEST(test_obd_release_uses_current_safety_and_status_with_maintenance_fallback);
     RUN_TEST(test_ten_second_hold_in_settings_keeps_maintenance_save_fallback);
     RUN_TEST(test_short_and_double_boot_thresholds_are_unchanged);
+    RUN_TEST(test_brightness_held_drag_updates_from_existing_knob);
+    RUN_TEST(test_speaker_held_drag_updates_from_existing_knob);
+    RUN_TEST(test_brightness_separate_tap_control_updates);
+    RUN_TEST(test_speaker_separate_tap_control_updates);
+    RUN_TEST(test_slider_held_invalid_or_failed_poll_cannot_change_values);
+    RUN_TEST(test_stationary_slider_contact_keeps_existing_test_voice_debounce);
+    RUN_TEST(test_rapid_drag_stationary_flushes_at_50ms);
+    RUN_TEST(test_rapid_drag_release_flushes_at_50ms);
     return UNITY_END();
 }

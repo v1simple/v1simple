@@ -104,6 +104,12 @@ bool TouchUiModule::process(unsigned long nowMs, bool bootPressed) {
     // If in settings adjustment mode, handle touch sliders and debounce test voice.
     if (brightnessAdjustMode_) {
         const bool touched = handleSliderTouch(nowMs);
+        if (sliderRedrawPending_ && (nowMs - lastSliderRedrawMs_) >= SLIDER_REDRAW_MIN_MS) {
+            const auto inputs = presentation_->captureForPaint();
+            display_->updateSettingsSliders(inputs.context(), brightnessAdjustValue_, volumeAdjustValue_, activeSlider_);
+            lastSliderRedrawMs_ = nowMs;
+            sliderRedrawPending_ = false;
+        }
         if (!touched && lastVolumeChangeMs_ > 0 && (nowMs - lastVolumeChangeMs_) >= VOLUME_TEST_DEBOUNCE_MS) {
             play_test_voice();
             lastVolumeChangeMs_ = 0;
@@ -148,6 +154,7 @@ bool TouchUiModule::restorePresentationIfOwned() {
         const auto inputs = presentation_->captureForPaint();
         display_->showSettingsSliders(inputs.context(), brightnessAdjustValue_, volumeAdjustValue_);
     }
+    sliderRedrawPending_ = false;
     return true;
 }
 
@@ -178,6 +185,7 @@ void TouchUiModule::enterAdjustMode() {
     volumeAdjustValue_ = s.voiceVolume;
     activeSlider_ = 0;
     lastVolumeChangeMs_ = 0;
+    sliderRedrawPending_ = false;
     {
         const auto inputs = presentation_->captureForPaint();
         display_->showSettingsSliders(inputs.context(), brightnessAdjustValue_, volumeAdjustValue_);
@@ -189,6 +197,7 @@ void TouchUiModule::enterAdjustMode() {
 void TouchUiModule::exitAdjustModeAndSave(bool deferPersistence) {
     touchHandler_->requireRelease();
     brightnessAdjustMode_ = false;
+    sliderRedrawPending_ = false;
     settings_->updateBrightness(brightnessAdjustValue_);
     settings_->updateVoiceVolume(volumeAdjustValue_);
     bool persisted = false;
@@ -215,7 +224,9 @@ void TouchUiModule::exitAdjustModeAndSave(bool deferPersistence) {
 
 bool TouchUiModule::handleSliderTouch(unsigned long nowMs) {
     int16_t touchX, touchY;
-    if (!touchHandler_->getTouchPoint(touchX, touchY)) {
+    const bool touchStarted = touchHandler_->getTouchPoint(touchX, touchY);
+    // Sliders follow valid held samples; ordinary taps retain edge semantics.
+    if (!touchHandler_->isTouchActive()) {
         return false;
     }
 
@@ -225,7 +236,7 @@ bool TouchUiModule::handleSliderTouch(unsigned long nowMs) {
 
     int touchedSlider = display_->getActiveSliderFromTouch(touchY);
     if (touchedSlider < 0 || touchX < sliderX || touchX > sliderX + sliderWidth) {
-        return true; // touch occurred but not on slider region
+        return touchStarted; // Preserve the test-voice debounce's tap boundary.
     }
 
     activeSlider_ = touchedSlider;
@@ -238,13 +249,7 @@ bool TouchUiModule::handleSliderTouch(unsigned long nowMs) {
             newLevel = 255;
         if (newLevel != brightnessAdjustValue_) {
             brightnessAdjustValue_ = newLevel;
-            if ((nowMs - lastSliderRedrawMs_) >= SLIDER_REDRAW_MIN_MS) {
-                {
-                    const auto inputs = presentation_->captureForPaint();
-                    display_->updateSettingsSliders(inputs.context(), brightnessAdjustValue_, volumeAdjustValue_, activeSlider_);
-                }
-                lastSliderRedrawMs_ = nowMs;
-            }
+            sliderRedrawPending_ = true;
         }
     } else if (activeSlider_ == 1) {
         int newVolume = 100 - (((touchX - sliderX) * 100) / sliderWidth);
@@ -255,16 +260,10 @@ bool TouchUiModule::handleSliderTouch(unsigned long nowMs) {
         if (newVolume != volumeAdjustValue_) {
             volumeAdjustValue_ = static_cast<uint8_t>(newVolume);
             audio_set_volume(volumeAdjustValue_);
-            if ((nowMs - lastSliderRedrawMs_) >= SLIDER_REDRAW_MIN_MS) {
-                {
-                    const auto inputs = presentation_->captureForPaint();
-                    display_->updateSettingsSliders(inputs.context(), brightnessAdjustValue_, volumeAdjustValue_, activeSlider_);
-                }
-                lastSliderRedrawMs_ = nowMs;
-            }
+            sliderRedrawPending_ = true;
             lastVolumeChangeMs_ = nowMs;
         }
     }
 
-    return true;
+    return touchStarted;
 }

@@ -71,6 +71,7 @@ class TouchUiModule {
     int activeSlider_ = 0;
     unsigned long lastVolumeChangeMs_ = 0;
     unsigned long lastSliderRedrawMs_ = 0;
+    bool sliderRedrawPending_ = false;
 
     unsigned long bootPressStart_ = 0;
     bool bootWasPressed_ = false;

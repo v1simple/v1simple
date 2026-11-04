@@ -87,7 +87,7 @@ using DisplayLayout::TOP_COUNTER_FONT_SIZE;
 using DisplayLayout::TOP_COUNTER_PAD_RIGHT;
 using DisplayLayout::TOP_COUNTER_TEXT_Y;
 
-V1Display::V1Display() {
+V1Display::V1Display() : fontMgr_{} {
     currentPalette_ = ColorThemes::STANDARD();
     g_displayInstance = this;
 

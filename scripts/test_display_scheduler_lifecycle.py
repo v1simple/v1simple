@@ -41,17 +41,16 @@ def build_and_run(build: Path, orchestration_source: str | None = None) -> None:
     selection += between(source, "void DriveRuntime::processTapGesture(",
                          "void DriveRuntime::openBootReadyGate(")
     (build / "profile_cycle.inc").write_text(selection, encoding="utf-8")
+    first = source.index("void DriveRuntime::presentProfileIndicator(")
+    last = source.index("\n}\n", first) + 3
+    (build / "profile_presentation.inc").write_text(source[first:last], encoding="utf-8")
     source = orchestration_source or (ROOT / "src/modules/display/display_orchestration_module.cpp").read_text(
         encoding="utf-8")
     orchestration = between(source, "void DisplayOrchestrationModule::begin(",
-                            "void DisplayOrchestrationModule::syncQuietPresentation()")
-    # Quiet policy is disabled in this fixture. All scheduling gates below it
-    # are extracted unchanged, so the fixture cannot force a parsed refresh.
+                            "bool DisplayOrchestrationModule::processSpeedVolume(")
+    # Keep the actual acquisition/scheduling gates; quiet effects remain scripted.
     orchestration += source[source.index("void DisplayOrchestrationModule::processEarly("):]
     (build / "orchestration.inc").write_text(orchestration, encoding="utf-8")
-    source = (ROOT / "src/display.cpp").read_text(encoding="utf-8")
-    (build / "display_context.inc").write_text(
-        between(source, "void V1Display::setBleContext(", "void V1Display::flush()"), encoding="utf-8")
     compiler = shlex.split(os.environ.get("CXX", "clang++" if shutil.which("clang++") else "c++"))
     deps = ROOT / ".pio/libdeps/native-sanitized"
     includes = [build, ROOT, ROOT / "src", ROOT / "include", ROOT / "test/mocks",

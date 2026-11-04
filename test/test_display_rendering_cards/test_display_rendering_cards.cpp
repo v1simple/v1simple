@@ -26,6 +26,8 @@ SerialClass Serial;
 
 #include "../../src/display.h"
 
+#include "../support/presentation_leaf_fixture.h"
+
 V1Display* g_displayInstance = nullptr;
 SettingsManager settings;
 int bandIndicatorDrawCount = 0;
@@ -36,23 +38,21 @@ int bandIndicatorDrawOrder = 0;
 int gpsIndicatorDrawOrder = 0;
 int drawOrder = 0;
 
-V1Display::V1Display(SettingsManager& injectedSettings) : settings_(injectedSettings) {
+V1Display::V1Display() {
     currentPalette_ = ColorThemes::STANDARD();
-    currentPalette_.colorMuted = settings_.get().colorMuted;
-    currentPalette_.colorPersisted = settings_.get().colorPersisted;
+    currentPalette_.colorMuted = settings.get().colorMuted;
+    currentPalette_.colorPersisted = settings.get().colorPersisted;
     g_displayInstance = this;
 }
 V1Display::~V1Display() = default;
 
-void V1Display::setPreviewIndicatorOverridesActive(bool active) {
-    previewIndicatorOverridesActive_ = active;
-}
+static CardPersistencePolicy cardPolicy = CardPersistencePolicy::LiveGrace;
 
 const char* V1Display::bandToString(Band band) {
     return bandName(band);
 }
 
-uint16_t V1Display::getBandColor(Band band) {
+uint16_t V1Display::getBandColor(const ResolvedPaintStatus& paint, Band band) {
     const V1Settings& s = settings.get();
     switch (band) {
         case BAND_LASER: return s.colorBandL;
@@ -64,7 +64,7 @@ uint16_t V1Display::getBandColor(Band band) {
     }
 }
 
-bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t) {
+bool V1Display::drawBandIndicators(const ResolvedPaintStatus& paint, uint8_t bandMask, bool muted, uint8_t) {
     bandIndicatorDrawCount++;
     bandIndicatorDrawOrder = ++drawOrder;
     lastBandIndicatorMask = bandMask;
@@ -77,7 +77,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t) {
     return true;
 }
 
-void V1Display::drawGpsIndicator() {
+void V1Display::drawGpsIndicator(const ResolvedPaintStatus& paint) {
     gpsIndicatorDrawCount++;
     gpsIndicatorDrawOrder = ++drawOrder;
     dirty_.gpsIndicator = false;
@@ -94,7 +94,7 @@ void V1Display::drawGpsIndicator() {
 // Top-counter font priming is outside these frequency/card tests.
 bool DisplayFontManager::getTopCounterBounds(char, bool, int&, int&) { return false; }
 
-V1Display display(settings);
+V1Display display;
 
 namespace {
 
@@ -104,7 +104,8 @@ Arduino_Canvas* canvas() {
 
 void resetDisplayForTest() {
     display.~V1Display();
-    new (&display) V1Display(settings);
+    new (&display) V1Display();
+    cardPolicy = CardPersistencePolicy::LiveGrace;
     display.setTestCanvas(new Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr));
     display.ut_elementCaches() = DisplayElementCaches{};
     display.ut_resetDrawnRegion();
@@ -160,7 +161,7 @@ CardMeterPaint paintCardAtStrength(uint8_t bars) {
     AlertData priority = AlertData::create(BAND_X, DIR_REAR, 1, 0, 10525, true, true);
     AlertData secondary = AlertData::create(BAND_KA, DIR_FRONT, bars, 0, 34700, true, false);
     AlertData alerts[2] = {priority, secondary};
-    display.ut_drawSecondaryAlertCards(alerts, 2, priority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), alerts, 2, priority, false);
     return cardMeterPaint(0);
 }
 
@@ -175,7 +176,7 @@ void tearDown() {}
 void test_empty_card_clear_is_noop_when_no_cards_were_drawn() {
     AlertData emptyPriority;
 
-    display.ut_drawSecondaryAlertCards(nullptr, 0, emptyPriority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), nullptr, 0, emptyPriority, false);
 
     TEST_ASSERT_EQUAL_UINT_MESSAGE(0u, canvas()->fillRectCalls.size(),
         "empty resting card clear must not repaint the already-empty card area");
@@ -201,7 +202,7 @@ void test_card_clear_repaints_and_resets_previous_drawn_card_state() {
     bands.valid = true;
 
     AlertData emptyPriority;
-    display.ut_drawSecondaryAlertCards(nullptr, 0, emptyPriority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), nullptr, 0, emptyPriority, false);
 
     TEST_ASSERT_GREATER_THAN_UINT_MESSAGE(0u, canvas()->fillRectCalls.size(),
         "clearing a previously drawn card must repaint the card area");
@@ -224,13 +225,13 @@ void test_same_k_card_repaints_when_v1_reclassifies_it_as_photo() {
     AlertData priority = AlertData::create(BAND_X, DIR_REAR, 2, 0, 10525, true, true);
     AlertData ordinary = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24125, true, false);
     AlertData first[2] = {priority, ordinary};
-    display.ut_drawSecondaryAlertCards(first, 2, priority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), first, 2, priority, false);
 
     canvas()->resetCounters();
     AlertData photo = ordinary;
     photo.photoType = 1;
     AlertData second[2] = {priority, photo};
-    display.ut_drawSecondaryAlertCards(second, 2, priority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), second, 2, priority, false);
 
     TEST_ASSERT_GREATER_THAN_UINT_MESSAGE(
         0u, canvas()->fillRoundRectCalls.size(),
@@ -256,7 +257,7 @@ void test_photo_card_shows_subtype_instead_of_rf_frequency() {
         photo.photoType = sample.first;
         AlertData alerts[] = {priority, photo};
 
-        display.ut_drawSecondaryAlertCards(alerts, 2, priority, false);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), alerts, 2, priority, false);
 
         TEST_ASSERT_EQUAL_UINT_MESSAGE(1u, text->prints.size(),
             "a Photo card should print one subtype label, not P plus a numeric frequency");
@@ -271,7 +272,7 @@ void test_distinct_v1_rows_at_same_frequency_keep_secondary_card() {
     secondary.v1Index = 2;
     AlertData alerts[] = {priority, secondary};
 
-    display.ut_drawSecondaryAlertCards(alerts, 2, priority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), alerts, 2, priority, false);
 
     const auto& cards = display.ut_elementCaches().cards;
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, cards.lastDrawnCount,
@@ -289,7 +290,7 @@ void test_three_same_frequency_v1_rows_keep_both_secondary_cards() {
     secondaryB.v1Index = 3;
     AlertData alerts[] = {priority, secondaryA, secondaryB};
 
-    display.ut_drawSecondaryAlertCards(alerts, 3, priority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), alerts, 3, priority, false);
 
     const auto& cards = display.ut_elementCaches().cards;
     TEST_ASSERT_EQUAL_INT_MESSAGE(2, cards.lastDrawnCount,
@@ -309,7 +310,7 @@ void test_compacted_same_frequency_rows_keep_one_to_one_card_continuity() {
     AlertData oldSecondaryB = AlertData::create(BAND_K, DIR_REAR, 4, 0, 24125, true, false);
     oldSecondaryB.v1Index = 3;
     AlertData before[] = {oldPriority, oldSecondaryA, oldSecondaryB};
-    display.ut_drawSecondaryAlertCards(before, 3, oldPriority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), before, 3, oldPriority, false);
     TEST_ASSERT_EQUAL_INT(2, display.ut_elementCaches().cards.lastDrawnCount);
 
     AlertData newPriority = oldSecondaryA;
@@ -319,7 +320,7 @@ void test_compacted_same_frequency_rows_keep_one_to_one_card_continuity() {
     remainingSecondary.v1Index = 2;
     AlertData after[] = {newPriority, remainingSecondary};
     ++mockMillis;
-    display.ut_drawSecondaryAlertCards(after, 2, newPriority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), after, 2, newPriority, false);
 
     const auto& cards = display.ut_elementCaches().cards;
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, cards.lastDrawnCount,
@@ -338,7 +339,7 @@ void test_nearby_photo_row_remains_distinct_from_ordinary_k_priority() {
     photo.photoType = 1;
     AlertData alerts[] = {priority, photo};
 
-    display.ut_drawSecondaryAlertCards(alerts, 2, priority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), alerts, 2, priority, false);
 
     const auto& cards = display.ut_elementCaches().cards;
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, cards.lastDrawnCount,
@@ -355,13 +356,13 @@ void test_nearby_photo_row_remains_distinct_from_ordinary_k_priority() {
 void test_priority_frequency_jitter_does_not_admit_ghost_card() {
     AlertData p1 = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
     AlertData alerts1[1] = {p1};
-    display.ut_drawSecondaryAlertCards(alerts1, 1, p1, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), alerts1, 1, p1, false);
     TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
 
     mockMillis += 100;
     AlertData p2 = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34704, true, true);  // +4 MHz jitter
     AlertData alerts2[1] = {p2};
-    display.ut_drawSecondaryAlertCards(alerts2, 1, p2, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), alerts2, 1, p2, false);
 
     auto& cards = display.ut_elementCaches().cards;
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, cards.slots[0].lastSeen,
@@ -381,13 +382,13 @@ void test_secondary_frequency_jitter_refreshes_slot_without_duplicate() {
     AlertData p = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
     AlertData b1 = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24150, true, true);
     AlertData frame1[2] = {p, b1};
-    display.ut_drawSecondaryAlertCards(frame1, 2, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), frame1, 2, p, false);
     TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
 
     mockMillis += 100;
     AlertData b2 = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24154, true, true);  // +4 MHz jitter
     AlertData frame2[2] = {p, b2};
-    display.ut_drawSecondaryAlertCards(frame2, 2, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), frame2, 2, p, false);
 
     auto& cards = display.ut_elementCaches().cards;
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, cards.lastDrawnCount,
@@ -402,7 +403,7 @@ void test_secondary_frequency_jitter_refreshes_slot_without_duplicate() {
     mockMillis += 100;
     AlertData c = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24160, true, true);
     AlertData frame3[3] = {p, b2, c};
-    display.ut_drawSecondaryAlertCards(frame3, 3, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), frame3, 3, p, false);
     TEST_ASSERT_EQUAL_INT_MESSAGE(2, cards.lastDrawnCount,
         "a bogey outside the continuity window is a distinct card");
 
@@ -433,7 +434,7 @@ void test_secondary_frequency_drift_repaints_text_despite_bar_updates() {
                 changeBars && step % 2 ? 4 : 2, 0, 24150 + step * 3, true, false);
             AlertData alerts[] = {priority, secondary};
             mockMillis += 100;
-            display.ut_drawSecondaryAlertCards(alerts, 2, priority, false);
+            display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), alerts, 2, priority, false);
 
             char expected[10];
             std::snprintf(expected, sizeof(expected), "24.%03u", 150 + (step / 2) * 6);
@@ -450,10 +451,10 @@ void test_priority_replacement_honors_zero_and_positive_persistence() {
         settings.slotAlertPersistSec[0] = persistSec;
         AlertData old = AlertData::create(BAND_KA, DIR_REAR, 4, 0, 35500, true, true);
         AlertData next = AlertData::create(BAND_K, DIR_SIDE, 2, 0, 24150, true, true);
-        display.ut_drawSecondaryAlertCards(&old, 1, old, false);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), &old, 1, old, false);
         canvas()->resetCounters();
         display.ut_resetDrawnRegion();
-        display.ut_drawSecondaryAlertCards(&next, 1, next, false);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), &next, 1, next, false);
         auto& cards = display.ut_elementCaches().cards;
         TEST_ASSERT_EQUAL_INT(persistSec == 0 ? 0 : 1, cards.lastDrawnCount);
         if (persistSec == 0) {
@@ -464,10 +465,10 @@ void test_priority_replacement_honors_zero_and_positive_persistence() {
             TEST_ASSERT_EQUAL_UINT32(35500, cards.lastDrawnPositions[0].frequency);
             TEST_ASSERT_TRUE(cards.lastDrawnPositions[0].isGraced);
             mockMillis += 2000;
-            display.ut_drawSecondaryAlertCards(&next, 1, next, false);
+            display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), &next, 1, next, false);
             TEST_ASSERT_EQUAL_INT(1, cards.lastDrawnCount);
             ++mockMillis;
-            display.ut_drawSecondaryAlertCards(&next, 1, next, false);
+            display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), &next, 1, next, false);
             TEST_ASSERT_EQUAL_INT(0, cards.lastDrawnCount);
         }
     }
@@ -481,12 +482,12 @@ void test_zero_persistence_clears_missing_secondary_in_same_millisecond() {
         AlertData p = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
         AlertData s = AlertData::create(BAND_K, DIR_SIDE, 2, 0, 24150, true, false);
         AlertData both[] = {p, s};
-        display.ut_drawSecondaryAlertCards(both, 2, p, false);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), both, 2, p, false);
         TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
         settings.slotAlertPersistSec[0] = 0;
         canvas()->resetCounters();
         display.ut_resetDrawnRegion();
-        display.ut_drawSecondaryAlertCards(&p, 1, p, false);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), &p, 1, p, false);
         TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
         TEST_ASSERT_EQUAL_UINT8(BAND_NONE, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
         TEST_ASSERT_GREATER_THAN_UINT(0u, canvas()->fillRectCalls.size());
@@ -500,12 +501,12 @@ void test_zero_persistence_releases_absent_slots_for_new_live_cards_immediately(
     AlertData old1 = AlertData::create(BAND_K, DIR_REAR, 2, 0, 24150, true, false);
     AlertData old2 = AlertData::create(BAND_X, DIR_SIDE, 3, 0, 10525, true, false);
     AlertData before[] = {p, old1, old2};
-    display.ut_drawSecondaryAlertCards(before, 3, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), before, 3, p, false);
     TEST_ASSERT_EQUAL_INT(2, display.ut_elementCaches().cards.lastDrawnCount);
     AlertData next1 = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24170, true, false);
     AlertData next2 = AlertData::create(BAND_KA, DIR_REAR, 5, 0, 35500, true, false);
     AlertData after[] = {p, next1, next2};
-    display.ut_drawSecondaryAlertCards(after, 3, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), after, 3, p, false);
     const auto& cards = display.ut_elementCaches().cards;
     TEST_ASSERT_EQUAL_INT(2, cards.lastDrawnCount);
     TEST_ASSERT_EQUAL_UINT32(24170, cards.lastDrawnPositions[0].frequency);
@@ -523,12 +524,12 @@ void test_live_cards_replace_persisted_cards_before_grace_expires() {
             AlertData old1 = AlertData::create(BAND_K, DIR_REAR, 2, 0, 24150);
             AlertData old2 = AlertData::create(BAND_X, DIR_SIDE, 3, 0, 10525);
             AlertData before[] = {p, old1, old2};
-            display.ut_drawSecondaryAlertCards(before, 3, p, false);
+            display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), before, 3, p, false);
             AlertData next1 = AlertData::create(BAND_KA, DIR_REAR, 5, 0, 35500);
             AlertData next2 = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24170);
             AlertData after[] = {p, next1, next2};
             mockMillis += elapsed;
-            display.ut_drawSecondaryAlertCards(after, 1 + newCount, p, false);
+            display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), after, 1 + newCount, p, false);
             const auto& cards = display.ut_elementCaches().cards;
             TEST_ASSERT_EQUAL_INT(2, cards.lastDrawnCount);
             TEST_ASSERT_EQUAL_UINT32(35500, cards.lastDrawnPositions[0].frequency);
@@ -548,11 +549,11 @@ void test_new_card_evicts_only_persisted_slot_and_keeps_jittering_live_slot() {
         AlertData live = AlertData::create(BAND_K, DIR_REAR, 2, 0, 24150);
         AlertData stale = AlertData::create(BAND_X, DIR_SIDE, 3, 0, 10525);
         AlertData before[] = {p, liveSlot == 0 ? live : stale, liveSlot == 0 ? stale : live};
-        display.ut_drawSecondaryAlertCards(before, 3, p, false);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), before, 3, p, false);
         live.frequency += 3; // Continuity jitter, beyond the identity tolerance.
         AlertData next = AlertData::create(BAND_KA, DIR_REAR, 5, 0, 35500);
         AlertData after[] = {p, next, live}; // New arrival precedes the surviving card.
-        display.ut_drawSecondaryAlertCards(after, 3, p, false);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), after, 3, p, false);
         const auto& cards = display.ut_elementCaches().cards;
         TEST_ASSERT_EQUAL_INT(2, cards.lastDrawnCount);
         TEST_ASSERT_EQUAL_UINT32(24153, cards.slots[liveSlot].alert.frequency);
@@ -572,9 +573,9 @@ void test_synthetic_laser_keeps_live_radar_cards_and_is_not_graced_on_exit() {
         AlertData secondary = AlertData::create(BAND_K, DIR_REAR, 2, 0, 24150, true, false);
         AlertData laser = AlertData::create(BAND_LASER, DIR_FRONT, 8, 0, 0, true, true);
         AlertData radarRows[] = {radar, secondary};
-        display.ut_drawSecondaryAlertCards(radarRows, 2, radar, false);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), radarRows, 2, radar, false);
         ++mockMillis;
-        display.ut_drawSecondaryAlertCards(radarRows, 2, laser, false);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), radarRows, 2, laser, false);
         const auto& cards = display.ut_elementCaches().cards;
         TEST_ASSERT_EQUAL_INT(2, cards.lastDrawnCount);
         TEST_ASSERT_EQUAL_UINT32(24150, cards.lastDrawnPositions[0].frequency);
@@ -582,7 +583,7 @@ void test_synthetic_laser_keeps_live_radar_cards_and_is_not_graced_on_exit() {
         TEST_ASSERT_FALSE(cards.lastDrawnPositions[0].isGraced);
         TEST_ASSERT_FALSE(cards.lastDrawnPositions[1].isGraced);
         ++mockMillis;
-        display.ut_drawSecondaryAlertCards(radarRows, 2, radar, false);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), radarRows, 2, radar, false);
         TEST_ASSERT_EQUAL_INT(1, cards.lastDrawnCount);
         TEST_ASSERT_EQUAL_UINT32(24150, cards.lastDrawnPositions[0].frequency);
         TEST_ASSERT_FALSE(cards.lastDrawnPositions[0].isGraced);
@@ -602,7 +603,7 @@ void test_promoted_secondary_releases_its_card_for_the_still_live_old_priority()
             AlertData b = AlertData::create(BAND_K, DIR_SIDE, 3, 0, 24150, true, false);
             AlertData c = AlertData::create(BAND_X, DIR_REAR, 2, 0, 10525, true, false);
             AlertData before[] = {a, b, c};
-            display.ut_drawSecondaryAlertCards(before, 3, a, false);
+            display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), before, 3, a, false);
             TEST_ASSERT_EQUAL_INT(2, display.ut_elementCaches().cards.lastDrawnCount);
 
             a.isPriority = false;
@@ -613,7 +614,7 @@ void test_promoted_secondary_releases_its_card_for_the_still_live_old_priority()
             mockMillis += 100;
             canvas()->resetCounters();
             display.ut_resetDrawnRegion();
-            display.ut_drawSecondaryAlertCards(after, 3, b, false);
+            display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), after, 3, b, false);
             auto& cards = display.ut_elementCaches().cards;
             TEST_ASSERT_EQUAL_INT(2, cards.lastDrawnCount);
             TEST_ASSERT_EQUAL_UINT32(34700, cards.lastDrawnPositions[0].frequency);
@@ -626,7 +627,7 @@ void test_promoted_secondary_releases_its_card_for_the_still_live_old_priority()
                 mockMillis += 100;
                 canvas()->resetCounters();
                 display.ut_resetDrawnRegion();
-                display.ut_drawSecondaryAlertCards(after, 3, b, false);
+                display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), after, 3, b, false);
                 TEST_ASSERT_EQUAL_INT(2, cards.lastDrawnCount);
                 TEST_ASSERT_EQUAL_UINT32(34700, cards.lastDrawnPositions[0].frequency);
                 TEST_ASSERT_EQUAL_UINT32(10525, cards.lastDrawnPositions[1].frequency);
@@ -644,11 +645,11 @@ void test_promoted_secondary_leaves_capacity_to_grace_the_vanished_old_priority(
     AlertData b = AlertData::create(BAND_K, DIR_SIDE, 3, 0, 24150, true, false);
     AlertData c = AlertData::create(BAND_X, DIR_REAR, 2, 0, 10525, true, false);
     AlertData before[] = {a, b, c};
-    display.ut_drawSecondaryAlertCards(before, 3, a, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), before, 3, a, false);
     b.isPriority = true;
     AlertData after[] = {b, c};
     mockMillis += 100;
-    display.ut_drawSecondaryAlertCards(after, 2, b, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), after, 2, b, false);
     auto& cards = display.ut_elementCaches().cards;
     TEST_ASSERT_EQUAL_INT(2, cards.lastDrawnCount);
     TEST_ASSERT_EQUAL_UINT32(34700, cards.lastDrawnPositions[0].frequency);
@@ -658,7 +659,7 @@ void test_promoted_secondary_leaves_capacity_to_grace_the_vanished_old_priority(
     mockMillis += 2001;
     canvas()->resetCounters();
     display.ut_resetDrawnRegion();
-    display.ut_drawSecondaryAlertCards(after, 2, b, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), after, 2, b, false);
     TEST_ASSERT_EQUAL_INT(1, cards.lastDrawnCount);
     TEST_ASSERT_EQUAL_UINT32(10525, cards.lastDrawnPositions[0].frequency);
     TEST_ASSERT_EQUAL_UINT8(BAND_NONE, cards.lastDrawnPositions[1].band);
@@ -674,11 +675,11 @@ void test_new_live_card_uses_promoted_slot_before_new_old_priority_grace() {
     AlertData c = AlertData::create(BAND_X, DIR_REAR, 2, 0, 10525, true, false);
     AlertData d = AlertData::create(BAND_KA, DIR_REAR, 5, 0, 35500, true, false);
     AlertData before[] = {a, b, c};
-    display.ut_drawSecondaryAlertCards(before, 3, a, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), before, 3, a, false);
     b.isPriority = true;
     AlertData after[] = {b, c, d};
     mockMillis += 100;
-    display.ut_drawSecondaryAlertCards(after, 3, b, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), after, 3, b, false);
     auto& cards = display.ut_elementCaches().cards;
     TEST_ASSERT_EQUAL_INT(2, cards.lastDrawnCount);
     TEST_ASSERT_EQUAL_UINT32(35500, cards.lastDrawnPositions[0].frequency);
@@ -693,12 +694,12 @@ void test_preview_promotion_does_not_grace_the_vanished_old_priority() {
     AlertData b = AlertData::create(BAND_K, DIR_SIDE, 3, 0, 24150, true, false);
     AlertData c = AlertData::create(BAND_X, DIR_REAR, 2, 0, 10525, true, false);
     AlertData before[] = {a, b, c};
-    display.ut_drawSecondaryAlertCards(before, 3, a, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), before, 3, a, false);
     b.isPriority = true;
     AlertData after[] = {b, c};
-    display.setPreviewIndicatorOverridesActive(true);
+    cardPolicy = CardPersistencePolicy::PreviewImmediate;
     mockMillis += 100;
-    display.ut_drawSecondaryAlertCards(after, 2, b, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), after, 2, b, false);
     auto& cards = display.ut_elementCaches().cards;
     TEST_ASSERT_EQUAL_INT(1, cards.lastDrawnCount);
     TEST_ASSERT_EQUAL_UINT32(10525, cards.lastDrawnPositions[0].frequency);
@@ -715,20 +716,20 @@ void test_secondary_card_expires_and_clears_after_grace_when_only_priority_remai
     AlertData p = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
     AlertData b = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24150, true, true);
     AlertData both[2] = {p, b};
-    display.ut_drawSecondaryAlertCards(both, 2, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), both, 2, p, false);
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, display.ut_elementCaches().cards.lastDrawnCount,
         "secondary bogey should occupy one card while priority is filtered out");
 
     // B's signal ends; the list still carries the live priority.
     AlertData onlyP[1] = {p};
     mockMillis += 500;
-    display.ut_drawSecondaryAlertCards(onlyP, 1, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), onlyP, 1, p, false);
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, display.ut_elementCaches().cards.lastDrawnCount,
         "expired signal should hold as a graced card inside the grace window");
 
     mockMillis += 2600;  // past the 2 s grace window
     canvas()->resetCounters();
-    display.ut_drawSecondaryAlertCards(onlyP, 1, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), onlyP, 1, p, false);
 
     auto& cards = display.ut_elementCaches().cards;
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, cards.lastDrawnCount,
@@ -746,26 +747,26 @@ void test_secondary_card_refresh_tracks_each_held_slot_until_its_own_expiry() {
     const AlertData k = AlertData::create(BAND_K, DIR_SIDE, 2, 0, 24150, true, false);
     const AlertData x = AlertData::create(BAND_X, DIR_REAR, 0, 2, 10525, true, false);
     AlertData rows[] = {p, k, x};
-    display.ut_drawSecondaryAlertCards(rows, 3, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), rows, 3, p, false);
     TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(5000)); // Live cards never expire.
 
     mockMillis = 1200;
     AlertData remaining[] = {p, x};
-    display.ut_drawSecondaryAlertCards(remaining, 2, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), remaining, 2, p, false);
     mockMillis = 1300;
-    display.ut_drawSecondaryAlertCards(&p, 1, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), &p, 1, p, false);
     TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(3000));
     TEST_ASSERT_TRUE(display.secondaryCardRefreshDue(3001));
 
     mockMillis = 3001;
-    display.ut_drawSecondaryAlertCards(&p, 1, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), &p, 1, p, false);
     TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
     TEST_ASSERT_EQUAL_INT(BAND_X, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
     TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(3001));
     TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(3200));
     TEST_ASSERT_TRUE(display.secondaryCardRefreshDue(3201));
     mockMillis = 3201;
-    display.ut_drawSecondaryAlertCards(&p, 1, p, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), &p, 1, p, false);
     TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
     TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(5000));
     settings.slotAlertPersistSec[0] = 0;
@@ -780,29 +781,29 @@ void test_secondary_card_refresh_is_cancelled_by_live_replacement_and_resets() {
         const AlertData k = AlertData::create(BAND_K, DIR_SIDE, 2, 0, 24150, true, false);
         const AlertData x = AlertData::create(BAND_X, DIR_REAR, 0, 2, 10525, true, false);
         AlertData rows[] = {p, k, x};
-        display.ut_drawSecondaryAlertCards(rows, 3, p, false);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), rows, 3, p, false);
         mockMillis = 1100;
-        display.ut_drawSecondaryAlertCards(&p, 1, p, false);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), &p, 1, p, false);
         TEST_ASSERT_TRUE(display.secondaryCardRefreshDue(3001));
 
         mockMillis = 1200;
         switch (change) {
         case 0: // Both vanished rows revive before their old deadline.
-            display.ut_drawSecondaryAlertCards(rows, 3, p, false);
+            display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), rows, 3, p, false);
             break;
         case 1: // New live rows replace all graced capacity immediately.
             rows[1].frequency = 24300;
             rows[2].frequency = 10600;
-            display.ut_drawSecondaryAlertCards(rows, 3, p, false);
+            display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), rows, 3, p, false);
             TEST_ASSERT_EQUAL_UINT32(24300, display.ut_elementCaches().cards.lastDrawnPositions[0].frequency);
             TEST_ASSERT_EQUAL_UINT32(10600, display.ut_elementCaches().cards.lastDrawnPositions[1].frequency);
             break;
         case 2:
-            display.ut_drawSecondaryAlertCards(nullptr, 0, AlertData{}, false);
+            display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), nullptr, 0, AlertData{}, false);
             break;
         case 3:
             settings.mutableSettings().activeSlot = 1;
-            display.ut_drawSecondaryAlertCards(&p, 1, p, false);
+            display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), &p, 1, p, false);
             break;
         case 4:
             display.ut_elementCaches().invalidateAll();
@@ -825,7 +826,7 @@ void test_removing_card0_leaves_non_overlapping_ku_and_gps_caches_untouched() {
     AlertData priority = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
     AlertData secondary = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24150, true, true);
     AlertData both[2] = {priority, secondary};
-    display.ut_drawSecondaryAlertCards(both, 2, priority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), both, 2, priority, false);
     TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
 
     auto& bands = display.ut_elementCaches().bands;
@@ -842,7 +843,7 @@ void test_removing_card0_leaves_non_overlapping_ku_and_gps_caches_untouched() {
 
     AlertData onlyPriority[1] = {priority};
     mockMillis += 100;
-    display.ut_drawSecondaryAlertCards(onlyPriority, 1, priority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), onlyPriority, 1, priority, false);
 
     TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
     TEST_ASSERT_EQUAL_UINT8(BAND_NONE, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
@@ -864,12 +865,12 @@ void test_visual_preview_bypasses_profile_card_grace() {
     AlertData priority = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
     AlertData secondary = AlertData::create(BAND_K, DIR_SIDE, 3, 0, 24150, true, true);
     AlertData both[2] = {priority, secondary};
-    display.ut_drawSecondaryAlertCards(both, 2, priority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), both, 2, priority, false);
     TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
 
-    display.setPreviewIndicatorOverridesActive(true);
+    cardPolicy = CardPersistencePolicy::PreviewImmediate;
     AlertData onlyPriority[1] = {priority};
-    display.ut_drawSecondaryAlertCards(onlyPriority, 1, priority, false);
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), onlyPriority, 1, priority, false);
 
     TEST_ASSERT_EQUAL_INT_MESSAGE(
         0,
@@ -877,7 +878,7 @@ void test_visual_preview_bypasses_profile_card_grace() {
         "visual preview transitions must match their manifest instead of profile grace settings");
     TEST_ASSERT_EQUAL_UINT32(0u, display.ut_elementCaches().cards.slots[0].lastSeen);
 
-    display.setPreviewIndicatorOverridesActive(false);
+    cardPolicy = CardPersistencePolicy::LiveGrace;
     settings.slotAlertPersistSec[0] = 0;
 }
 
@@ -980,7 +981,7 @@ void test_parsed_ku_secondary_uses_production_band_name_and_frequency() {
     TEST_ASSERT_EQUAL_INT(BAND_KU, parser.getAllAlerts()[1].band);
     auto* text = new TextCanvas;
     display.setTestCanvas(text);
-    display.ut_drawSecondaryAlertCards(parser.getAllAlerts().data(), parser.getAlertCount(),
+    display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), parser.getAllAlerts().data(), parser.getAlertCount(),
                                        parser.getPriorityAlert(), false);
     TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
     TEST_ASSERT_EQUAL_UINT(2, text->labels.size());
@@ -1017,8 +1018,8 @@ void test_frequency_updates_preserve_cached_card_border() {
         AlertData primary = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
         const AlertData secondary = AlertData::create(BAND_X, DIR_REAR, 0, 2, 10525, true, false);
         AlertData alerts[2] = {primary, secondary};
-        display.ut_drawFrequency(primary.frequency, primary.band);
-        display.ut_drawSecondaryAlertCards(alerts, 2, primary, false);
+        display.ut_drawFrequency(testDisplayInputs(settings).context(cardPolicy), primary.frequency, primary.band);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), alerts, 2, primary, false);
         const auto card = DisplayLayout::cardRect(0);
         std::vector<uint16_t> before;
         for (int x = card.x + 5; x < card.x + card.w - 5; ++x) {
@@ -1028,8 +1029,8 @@ void test_frequency_updates_preserve_cached_card_border() {
         pixels->resetCounters();
         mockMillis += 100;
         primary.frequency = alerts[0].frequency = 34701;
-        display.ut_drawFrequency(primary.frequency, primary.band);
-        display.ut_drawSecondaryAlertCards(alerts, 2, primary, false);
+        display.ut_drawFrequency(testDisplayInputs(settings).context(cardPolicy), primary.frequency, primary.band);
+        display.ut_drawSecondaryAlertCards(testDisplayInputs(settings).context(cardPolicy), alerts, 2, primary, false);
         for (int x = card.x + 5; x < card.x + card.w - 5; ++x) {
             TEST_ASSERT_EQUAL_UINT16(before[x - card.x - 5], pixels->pixel(x, card.y));
         }
@@ -1037,7 +1038,7 @@ void test_frequency_updates_preserve_cached_card_border() {
             TEST_ASSERT_FALSE(call.x == card.x && call.y == card.y && call.w == card.w && call.h == card.h);
         }
         pixels->resetCounters();
-        display.ut_drawFrequency(primary.frequency, primary.band);
+        display.ut_drawFrequency(testDisplayInputs(settings).context(cardPolicy), primary.frequency, primary.band);
         TEST_ASSERT_TRUE(pixels->fillRectCalls.empty());
         TEST_ASSERT_TRUE(pixels->fillRoundRectCalls.empty());
     }
@@ -1047,14 +1048,14 @@ void test_fallback_shorter_text_clears_previous_text_extent() {
     auto* pixels = new FrequencyCardCanvas;
     display.setTestCanvas(pixels);
     display.ut_fontMgr().segment7Ready = false;
-    display.ut_drawFrequency(0, BAND_LASER);
-    display.ut_drawFrequency(0, BAND_LASER, "LTI");
+    display.ut_drawFrequency(testDisplayInputs(settings).context(cardPolicy), 0, BAND_LASER);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(cardPolicy), 0, BAND_LASER, "LTI");
     const std::vector<uint16_t> after(pixels->getFramebuffer(),
                                      pixels->getFramebuffer() + CANVAS_WIDTH * CANVAS_HEIGHT);
     resetDisplayForTest();
     pixels = new FrequencyCardCanvas;
     display.setTestCanvas(pixels);
-    display.ut_drawFrequency(0, BAND_LASER, "LTI");
+    display.ut_drawFrequency(testDisplayInputs(settings).context(cardPolicy), 0, BAND_LASER, "LTI");
     TEST_ASSERT_EQUAL_UINT16_ARRAY(pixels->getFramebuffer(), after.data(), after.size());
 }
 

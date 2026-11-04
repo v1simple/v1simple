@@ -17,7 +17,7 @@ warm-up suppression is an explicitly named project deviation.
 | Runtime → presentation wake | [`SystemEventBus`](../../src/modules/system/system_event_bus.h) coalesces edges; [`DriveRuntime::consumeDisplayEdges`](../../src/drive_runtime.cpp) also services presentation deadlines. |
 | Snapshot → presentation/latch | [`DisplayPipelineModule::buildPresentedAlpEvent`, `updateAlpLatch`](../../src/modules/display/display_pipeline_module.cpp) retain context only within a session and manage the separate ALP tail. |
 | Sources → selected owner | [`RenderFrameComposer::compose`](../../src/modules/display/render_frame_composer.cpp) orders ALP live, V1 live, ALP persisted, V1 persisted, idle. |
-| Selected owner → stored label | [`renderComposedFrame`](../../src/modules/display/display_pipeline_module.cpp) calls the real [`V1Display::setAlpLaserEvent`](../../src/display_indicators.cpp) before `renderFrame`. |
+| Selected owner → stored label | [`renderFrame`](../../src/display_update.cpp) resolves the supplied frame through [`resolvePaintStatus`, `setAlpLaserEvent`](../../src/display_presentation.cpp) before painting. SCAN explicitly supplies an empty laser event. |
 | Stored label → paint | [`renderFrame`](../../src/display_update.cpp) synthesizes the laser alert; [`resolveFrequencyPresentation`, `renderFrequencyPresentation`](../../src/display_frequency.cpp) resolve and draw its text. |
 
 ## Admission and runtime lifecycle
@@ -121,7 +121,7 @@ Unknown identity in a new session clears the override and text. The frequency
 resolver then selects `LASER` for the synthetic laser band; same-session unknown
 updates may still retain the established gun abbreviation.
 
-For `ALP_PERSISTED`, the pipeline passes retained identity with `active = false`.
+For `ALP_PERSISTED`, the renderer resolves retained identity with `active = false`.
 This preserves gun text while disabling live-only badge/arrow behavior.
 It does **not** imply a grey gun label: the current composer and `renderFrame`
 use the unmuted ALP render path for both ALP owner kinds. Frequency color follows
@@ -155,11 +155,15 @@ the actual muted argument and LID/DLI setting; expiry clears the override.
   phase; this refresh carries both paths through the owner pipeline and flushes
   the canvas only when SCAN content changed. It does not replace a live, held
   or persisted ALP owner.
-- [`syncTopIndicators`](../../src/display_indicators.cpp) refreshes ALP badge
-  status only; it does not overwrite the pipeline-owned laser event or gun text.
-- [`prewarmFrequencyRasterCache`](../../src/display_frequency.cpp) temporarily
-  substitutes sample gun text, then restores the saved override, mode and text.
-  It is not a source of session identity.
+- [`RuntimePresentationSource::capture`](../../src/runtime_presentation_source.cpp)
+  samples ALP badge status without advancing the runtime. Direct status-only
+  painting retains the renderer-owned laser event and gun identity. Frame
+  presentation applies its supplied event; SCAN clears it explicitly.
+- [`prewarmFrequencyRasterCache`](../../src/display_frequency.cpp) uses local
+  resolved sample text without changing the renderer's session identity.
+- Preview supplies an explicit status snapshot and synthetic frame with
+  immediate card expiry. Ending or cancelling preview leaves the normal owner
+  to capture fresh status; it needs no mutable source-override cleanup.
 
 ## Regression evidence and executable controls
 

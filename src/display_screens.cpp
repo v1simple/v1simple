@@ -1,3 +1,4 @@
+#include "settings_types.h"
 
 #include "display.h"
 #include "config.h"
@@ -10,25 +11,24 @@
 #include "display_flush.h"
 #include "display_font_manager.h"
 #include "v1simple_logo.h"
-#include "settings.h"
 #include <esp_heap_caps.h>
 
 using namespace DisplaySegments;
 using DisplayLayout::PRIMARY_ZONE_HEIGHT;
 
-void V1Display::showDisconnected() {
-    drawBaseFrame();
+void V1Display::showDisconnected(const ResolvedPaintStatus& paint) {
+    drawBaseFrame(paint);
     drawStatusText("Disconnected", 0xF800); // Red
-    drawWiFiIndicator();
-    drawBatteryIndicator();
+    drawWiFiIndicator(paint);
+    drawBatteryIndicator(paint);
 }
 
-void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
+void V1Display::showMaintenanceMode(const ResolvedPaintStatus& paint, const char* ipAddress, bool stationMode) {
     dirty_.multiAlert = true;
     persistedMode_ = false;
     drawnRegion_.reset();
 
-    drawBaseFrame();
+    drawBaseFrame(paint);
 
     GFX_setTextDatum(MC_DATUM);
 
@@ -54,8 +54,8 @@ void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
     TFT_CALL(setTextColor)(0x7BEF, PALETTE_BG); // Mid-grey
     GFX_drawString(tft_, "Hold BOOT 4s to exit", SCREEN_WIDTH / 2, 150);
 
-    drawWiFiIndicator();
-    drawBatteryIndicator();
+    drawWiFiIndicator(paint);
+    drawBatteryIndicator(paint);
 
     lastState_ = DisplayState();
     currentScreen_ = ScreenMode::Maintenance;
@@ -64,7 +64,7 @@ void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
     DISPLAY_FLUSH();
 }
 
-void V1Display::showResting(bool forceRedraw) {
+void V1Display::showResting(const ResolvedPaintStatus& paint, bool forceRedraw) {
     dirty_.multiAlert = true;
 
     // Preserve the connected-mode indicator; image2 is the blink off-phase.
@@ -77,34 +77,33 @@ void V1Display::showResting(bool forceRedraw) {
     bool profileChanged = (profileSlot != lastRestingProfileSlot_);
 
     if (forceRedraw || screenChanged || paletteChanged) {
-        drawBaseFrame();
+        drawBaseFrame(paint);
 
         char topChar = '0';
         bool topDot = true;
-        if (bleCtx_.v1Connected && savedBogeyChar != 0) {
+        if (paint.context.status.ble.v1Connected && savedBogeyChar != 0) {
             topChar = savedBogeyChar;
             topDot = savedBogeyDot;
         }
-        drawTopCounterPair(topChar, false, topDot);
+        drawTopCounterPair(paint, topChar, false, topDot);
 
-        drawBandIndicators(0, false);
+        drawBandIndicators(paint, 0, false);
 
-        drawVerticalSignalBars(0, 0, BAND_KA, false);
+        drawVerticalSignalBars(paint, 0, 0, BAND_KA, false);
 
-        drawDirectionArrow(DIR_NONE, false);
+        drawDirectionArrow(paint, DIR_NONE, false);
 
-        drawFrequency(0, BAND_NONE);
+        drawFrequency(paint, 0, BAND_NONE);
 
         drawMuteIcon(false);
-        syncTopIndicators(millis());
-        drawObdIndicator();
-        drawAlpIndicator();
+        drawObdIndicator(paint);
+        drawAlpIndicator(paint);
 
-        drawProfileIndicator(profileSlot);
+        drawProfileIndicator(paint);
 
         // Prevent stale live-alert cards from surviving the resting screen.
         AlertData emptyPriority;
-        drawSecondaryAlertCards(nullptr, 0, emptyPriority, false);
+        drawSecondaryAlertCards(paint, nullptr, 0, emptyPriority, false);
 
         lastRestingPaletteRevision_ = paletteRevision_;
         lastRestingProfileSlot_ = profileSlot;
@@ -113,7 +112,7 @@ void V1Display::showResting(bool forceRedraw) {
 
         DISPLAY_FLUSH();
     } else if (profileChanged) {
-        drawProfileIndicator(profileSlot);
+        drawProfileIndicator(paint);
         lastRestingProfileSlot_ = profileSlot;
         // Leaf-renderer regions include restored battery pixels that a static
         // profile rectangle can miss when geometry moves.
@@ -137,23 +136,22 @@ void V1Display::resetChangeTracking() {
     dirty_.resetTracking = true;
 }
 
-void V1Display::showScanning(bool forceRedraw) {
+void V1Display::showScanning(const ResolvedPaintStatus& paint, bool forceRedraw) {
     dirty_.multiAlert = true;
 
-    const V1Settings& s = settings_.get();
+    const V1Settings& s = paint.context.style.settings;
 
     if (!forceRedraw && currentScreen_ == ScreenMode::Scanning && !dirty_.resetTracking &&
         lastScanningPaletteRevision_ == paletteRevision_) {
         // SCAN keeps the primary area, but its status badges still follow the
         // current sources. Retain pending external draws in the same transfer.
-        syncTopIndicators(millis());
-        drawWiFiIndicator();
-        drawBatteryIndicator();
-        drawBLEProxyIndicator();
-        drawObdIndicator();
-        drawGpsIndicator();
-        drawAlpIndicator();
-        drawProfileIndicator(currentProfileSlot_);
+        drawWiFiIndicator(paint);
+        drawBatteryIndicator(paint);
+        drawBLEProxyIndicator(paint);
+        drawObdIndicator(paint);
+        drawGpsIndicator(paint);
+        drawAlpIndicator(paint);
+        drawProfileIndicator(paint);
         if (!drawnRegion_.empty()) {
             // This panel can leave changed pixels stale after partial transfers.
             // Use the same full-frame delivery as changed live/idle screens.
@@ -163,20 +161,19 @@ void V1Display::showScanning(bool forceRedraw) {
         return;
     }
 
-    drawBaseFrame();
+    drawBaseFrame(paint);
 
-    drawTopCounter('0', false, true);
-    drawBandIndicators(0, false);
-    drawVerticalSignalBars(0, 0, BAND_KA, false);
-    drawDirectionArrow(DIR_NONE, false);
+    drawTopCounter(paint, '0', false, true);
+    drawBandIndicators(paint, 0, false);
+    drawVerticalSignalBars(paint, 0, 0, BAND_KA, false);
+    drawDirectionArrow(paint, DIR_NONE, false);
     drawMuteIcon(false);
-    syncTopIndicators(millis());
-    drawWiFiIndicator();
-    drawBatteryIndicator();
-    drawObdIndicator();
-    drawGpsIndicator();
-    drawAlpIndicator();
-    drawProfileIndicator(currentProfileSlot_);
+    drawWiFiIndicator(paint);
+    drawBatteryIndicator(paint);
+    drawObdIndicator(paint);
+    drawGpsIndicator(paint);
+    drawAlpIndicator(paint);
+    drawProfileIndicator(paint);
 
     const char* text = "SCAN";
     if (fontMgr_.segment7Ready) {
@@ -245,9 +242,9 @@ void V1Display::showScanning(bool forceRedraw) {
     lastRestingProfileSlot_ = -1;
 }
 
-void V1Display::showBootSplash() {
+void V1Display::showBootSplash(const ResolvedPaintStatus& paint) {
     const unsigned long splashStartMs = millis();
-    drawBaseFrame();
+    drawBaseFrame(paint);
 
     // RLE rows decode sequentially; one PSRAM-backed blit avoids 172 fixed-cost
     // draw calls. The buffer is freed before backlight enable.
@@ -287,7 +284,7 @@ void V1Display::showBootSplash() {
     Serial.printf("[BootTiming] splash total=%lu logo=%lu flush=%lu\n", millis() - splashStartMs, logoMs, flushMs);
 }
 
-void V1Display::showShutdown() {
+void V1Display::showShutdown(const ResolvedPaintStatus& paint) {
     TFT_CALL(fillScreen)(PALETTE_BG);
 
     GFX_setTextDatum(MC_DATUM);
@@ -302,7 +299,7 @@ void V1Display::showShutdown() {
     DISPLAY_FLUSH();
 }
 
-void V1Display::showLowBattery() {
+void V1Display::showLowBattery(const ResolvedPaintStatus& paint) {
     TFT_CALL(fillScreen)(PALETTE_BG);
 
     const int battW = 120;
@@ -327,7 +324,7 @@ void V1Display::showLowBattery() {
     DISPLAY_FLUSH();
 }
 
-void V1Display::showStealth(float speedMph, bool speedValid) {
+void V1Display::showStealth(const ResolvedPaintStatus& paint, float speedMph, bool speedValid) {
     dirty_.multiAlert = true;
     persistedMode_ = false;
 
@@ -365,4 +362,46 @@ void V1Display::showStealth(float speedMph, bool speedValid) {
     lastStealthPaletteRevision_ = paletteRevision_;
     lastStealthSpeedValid_ = displaySpeedValid;
     lastStealthRoundedMph_ = roundedSpeedMph;
+}
+
+void V1Display::showDisconnected(const DisplayPaintContext& context) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    showDisconnected(paint);
+}
+
+void V1Display::showMaintenanceMode(const DisplayPaintContext& context, const char* ipAddress, bool stationMode) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    showMaintenanceMode(paint, ipAddress, stationMode);
+}
+
+void V1Display::showResting(const DisplayPaintContext& context, bool forceRedraw) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    showResting(paint, forceRedraw);
+}
+
+void V1Display::showScanning(const DisplayPaintContext& context, bool forceRedraw) {
+    // SCAN is the explicit empty-alert presentation, including after ALP expiry.
+    setAlpLaserEvent(AlpLaserEvent{});
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    showScanning(paint, forceRedraw);
+}
+
+void V1Display::showStealth(const DisplayPaintContext& context, float speedMph, bool speedValid) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    showStealth(paint, speedMph, speedValid);
+}
+
+void V1Display::showBootSplash(const DisplayPaintContext& context) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    showBootSplash(paint);
+}
+
+void V1Display::showShutdown(const DisplayPaintContext& context) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    showShutdown(paint);
+}
+
+void V1Display::showLowBattery(const DisplayPaintContext& context) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    showLowBattery(paint);
 }

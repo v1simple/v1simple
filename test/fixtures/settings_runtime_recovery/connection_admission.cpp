@@ -3,6 +3,7 @@
 #define main original_obd_suite_main
 #include "test/test_obd_runtime/test_obd_runtime.cpp"
 #undef main
+#include "include/display_presentation.h"
 
 class ObdBleClient {};
 void audio_set_volume(uint8_t) {}
@@ -14,6 +15,9 @@ struct RecoverySettings {
     uint32_t recoveryRevision() const { return revision; }
     const V1Settings& get() const { return value; }
 };
+DisplayStyleView makeDisplayStyleView(const RecoverySettings& settings) {
+    return {settings.get(), 0, 0, false};
+}
 struct RecoveryGps {
     void setEnabled(bool) {}
     void begin(bool, uint32_t) {}
@@ -22,7 +26,7 @@ struct RecoverySync { void begin(RecoverySettings*, ObdRuntimeModule*) {} };
 struct RecoverySpeed { void syncEnabledInputs(bool, bool) {} };
 struct RecoveryAlp { void begin(bool) {} };
 struct RecoveryDisplay {
-    void updateColorTheme() {}
+    void updateColorTheme(const DisplayStyleView&) {}
     void forceNextRedraw() {}
     void setBrightness(uint8_t) {}
 };

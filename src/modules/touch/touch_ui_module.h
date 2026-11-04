@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "runtime_presentation_source.h"
+
 #include <Arduino.h>
 #include "display.h"
 #include "modules/obd/obd_runtime_module.h"
@@ -26,7 +28,7 @@ class TouchUiModule {
         void* isObdPairGestureSafeCtx = nullptr;
     };
 
-    void begin(V1Display* disp, TouchHandler* touch, SettingsManager* settings, const Callbacks& cbs);
+    void begin(V1Display* disp, TouchHandler* touch, SettingsManager* settings, const Callbacks& cbs, RuntimePresentationSource& presentation);
 
     // Returns true if UI consumed the loop (brightness/volume adjustment active)
     bool process(unsigned long nowMs, bool bootPressed);
@@ -54,10 +56,11 @@ class TouchUiModule {
     void exitAdjustModeAndSave(bool deferPersistence = false);
     bool handleSliderTouch(unsigned long nowMs);
     bool canArmObdPairGesture(unsigned long nowMs) const;
-    void updateObdIndicatorAttention(bool attention, unsigned long nowMs);
+    void updateObdIndicatorAttention(bool attention);
 
     // State
     V1Display* display_ = nullptr;
+    RuntimePresentationSource* presentation_ = nullptr;
     TouchHandler* touchHandler_ = nullptr;
     SettingsManager* settings_ = nullptr;
     Callbacks callbacks_{};

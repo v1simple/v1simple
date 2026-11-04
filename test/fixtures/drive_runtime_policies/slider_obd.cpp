@@ -12,6 +12,9 @@ class SettingsManager {
   public:
     V1Settings settings;
     const V1Settings& get() const { return settings; }
+    uint32_t displayConfigurationRevision() const { return 0; }
+    uint8_t getSlotAlertPersistSec(int) const { return 0; }
+    bool getSlotPriorityArrowOnly(int) const { return false; }
     SettingsPersistResult setStealthEnabled(bool enabled, SettingsPersistMode) {
         settings.stealthEnabled = enabled;
         SettingsPersistResult result;
@@ -24,6 +27,7 @@ class SettingsManager {
     bool saveDeferredBackup() { return true; }
     bool deferredPersistPending() const { return false; }
 };
+#include "test/mocks/runtime_presentation_source.h"
 #include "test/mocks/display.h"
 #include "src/touch_handler.cpp"
 #include "src/modules/touch/touch_ui_module.cpp"
@@ -37,6 +41,7 @@ void play_test_voice() {}
 // low-speed mute all run their production owners in the real drive-loop order.
 struct ObdSliderRuntime : Fixture {
     SettingsManager settings;
+    RuntimePresentationSource presentation{settings};
     V1Display display;
     TouchHandler touch;
     TouchUiModule ui;
@@ -55,7 +60,7 @@ struct ObdSliderRuntime : Fixture {
     ObdSliderRuntime() {
         bootToPolling();
         touch.begin();
-        ui.begin(&display, &touch, &settings, {});
+        ui.begin(&display, &touch, &settings, {}, presentation);
         selector.begin(&runtime, true, nullptr, false);
         mute.begin(true, 25, 3, 0, true);
     }

@@ -7,6 +7,7 @@
 #include "../mocks/Arduino.h"
 #include "../mocks/display.h"
 #include "../mocks/packet_parser.h"
+#include "../mocks/runtime_presentation_source.h"
 
 #ifndef ARDUINO
 SerialClass Serial;
@@ -27,6 +28,8 @@ constexpr int kArrowFlashStep = 14;   // FLAG_FLASH_ARROW, rear
 constexpr int kCombinedFlashStep = 42; // FLAG_FLASH_ARROW | FLAG_FLASH_BAND, Ka
 
 struct Harness {
+    SettingsManager settings;
+    RuntimePresentationSource presentation{settings};
     V1Display display;
     DisplayPreviewModule preview;
 
@@ -35,7 +38,7 @@ struct Harness {
     void begin(unsigned long startMs, uint32_t durationMs) {
         mockMillis = startMs;
         display.reset();
-        preview.begin(&display);
+        preview.begin(&display, presentation);
         preview.requestHold(durationMs);
     }
 
@@ -244,7 +247,7 @@ void test_a_refresh_has_no_other_side_effect() {
     const int flushes = h.display.flushCalls;
     const int forced = h.display.forceNextRedrawCalls;
     const int maintenance = h.display.showMaintenanceModeCalls;
-    const int overrides = h.display.setPreviewIndicatorOverridesActiveCalls;
+    const auto policy = h.display.lastCardPersistence;
     h.display.lastBlinkToggleMs = stepStart + 1;
     h.loopAt(stepStart + 1 + kBlinkMs);
     TEST_ASSERT_EQUAL_INT_MESSAGE(clears, h.display.clearCalls,
@@ -255,8 +258,8 @@ void test_a_refresh_has_no_other_side_effect() {
                                   "a blink refresh forced a full redraw");
     TEST_ASSERT_EQUAL_INT_MESSAGE(maintenance, h.display.showMaintenanceModeCalls,
                                   "a blink refresh disturbed maintenance presentation");
-    TEST_ASSERT_EQUAL_INT_MESSAGE(overrides, h.display.setPreviewIndicatorOverridesActiveCalls,
-                                  "a blink refresh re-armed preview ownership");
+    TEST_ASSERT_EQUAL_MESSAGE(policy, h.display.lastCardPersistence,
+                              "a blink refresh changed preview card lifetime");
 }
 
 int main(int, char**) {

@@ -21,7 +21,7 @@ struct VolumeZeroWarning {
     /// @param volZero          true when mainVolume == 0 && hasVolumeData
     /// @param proxyConnected   true when BLE proxy client is connected
     /// @param speedVolZeroActive true when speed-mute intentionally set volume to 0
-    bool evaluate(bool volZero, bool proxyConnected, bool speedVolZeroActive = false) {
+    bool evaluate(uint32_t now, bool volZero, bool proxyConnected, bool speedVolZeroActive = false) {
         if (!volZero || proxyConnected || speedVolZeroActive) {
             reset();
             return false;
@@ -30,7 +30,6 @@ struct VolumeZeroWarning {
             return false;
         }
 
-        const unsigned long now = millis();
         if (detectedMs == 0) {
             detectedMs = now;
         }

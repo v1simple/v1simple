@@ -17,7 +17,8 @@
 void DisplayOrchestrationModule::begin(V1Display* displayPtr, V1BLEClient* bleClient,
                                        DisplayPreviewModule* previewModule, DisplayRestoreModule* restoreModule,
                                        PacketParser* parserPtr, VolumeFadeModule* volumeFadeModule,
-                                       SpeedMuteModule* speedMuteModule, QuietCoordinatorModule* quietCoordinator) {
+                                       SpeedMuteModule* speedMuteModule, QuietCoordinatorModule* quietCoordinator, RuntimePresentationSource& presentation) {
+    presentation_ = &presentation;
     display_ = displayPtr;
     ble_ = bleClient;
     preview_ = previewModule;
@@ -27,15 +28,6 @@ void DisplayOrchestrationModule::begin(V1Display* displayPtr, V1BLEClient* bleCl
     speedMute_ = speedMuteModule;
     quiet_ = quietCoordinator;
     lastDisconnectedRefreshMs_ = 0;
-}
-
-void DisplayOrchestrationModule::syncQuietPresentation() {
-    if (!display_ || !quiet_) {
-        return;
-    }
-
-    const QuietPresentationState& presentation = quiet_->getPresentationState();
-    display_->setSpeedVolZeroActive(presentation.speedVolZeroActive);
 }
 
 bool DisplayOrchestrationModule::processSpeedVolume(const uint32_t nowMs) {
@@ -59,9 +51,10 @@ void DisplayOrchestrationModule::processEarly(const DisplayOrchestrationEarlyCon
     const bool previewRunning = preview_->isRunning();
 
     if (!ctx.overloadThisLoop && !ctx.bootSplashHoldActive) {
-        display_->setBleContext(ctx.bleContext);
+        presentation_->noteBleSample(ctx.bleContext, ctx.bleReceiving, static_cast<uint32_t>(millis()));
         if (!previewRunning) {
-            display_->setBLEProxyStatus(ctx.bleContext.v1Connected, ctx.bleContext.proxyConnected, ctx.bleReceiving);
+            const auto inputs = presentation_->captureForPaint();
+            display_->refreshBleIndicator(inputs.context());
         }
     }
 
@@ -84,19 +77,16 @@ bool DisplayOrchestrationModule::processParsedFrame(const DisplayOrchestrationPa
     if (quiet_ && !ctx.bootSplashHoldActive) quiet_->processInTheBox(ctx.nowMs);
 
     if (!ctx.parsedReady) {
-        syncQuietPresentation();
         return false;
     }
 
     if (ctx.bootSplashHoldActive) {
-        syncQuietPresentation();
         return false;
     }
 
     // Speed volume: lower/restore V1 volume based on speed mute state.
     // Gates volume fade.
     const bool speedVolBusy = processSpeedVolume(ctx.nowMs);
-    syncQuietPresentation();
 
     if (preview_->isRunning()) {
         return false;

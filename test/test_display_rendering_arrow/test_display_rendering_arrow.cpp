@@ -27,24 +27,26 @@ SerialClass Serial;
 #undef private
 #include "../../src/packet_parser.h"
 
+#include "../support/presentation_leaf_fixture.h"
+
 V1Display* g_displayInstance = nullptr;
 SettingsManager settings;
 
-V1Display::V1Display(SettingsManager& injectedSettings) : settings_(injectedSettings) {
+V1Display::V1Display() {
     currentPalette_ = ColorThemes::STANDARD();
-    currentPalette_.colorMuted = settings_.get().colorMuted;
-    currentPalette_.colorPersisted = settings_.get().colorPersisted;
+    currentPalette_.colorMuted = settings.get().colorMuted;
+    currentPalette_.colorPersisted = settings.get().colorPersisted;
     g_displayInstance = this;
 }
 V1Display::~V1Display() = default;
 
-void V1Display::drawBatteryIndicator() {}
+void V1Display::drawBatteryIndicator(const ResolvedPaintStatus& paint) {}
 
 #include "../../src/display_arrow.cpp"
 #include "../../src/packet_parser.cpp"
 #include "../../src/packet_parser_alerts.cpp"
 
-V1Display display(settings);
+V1Display display;
 
 namespace {
 
@@ -90,7 +92,7 @@ Direction directionBitmapFromDisplayBits(uint8_t directionBits) {
 }
 
 void drawRadarDirection(const AlertData& alert) {
-    display.drawDirectionArrow(alert.direction, false, 0);
+    display.drawDirectionArrow(display.ut_resolvePaintStatus(testDisplayInputs(settings).context()), alert.direction, false, 0);
 }
 
 void assertTriangle(int index, int16_t x0, int16_t y0, int16_t x1, int16_t y1,
@@ -111,7 +113,7 @@ void assertTriangle(int index, int16_t x0, int16_t y0, int16_t x1, int16_t y1,
 void setUp() {
     settings.mutableSettings() = V1Settings{};
     display.~V1Display();
-    new (&display) V1Display(settings);
+    new (&display) V1Display();
     display.setTestCanvas(new Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr));
     display.elementCaches_ = DisplayElementCaches{};
     display.dirty_.multiAlert = true;
@@ -170,7 +172,7 @@ void test_multiple_spec_direction_bits_activate_every_glyph() {
         static_cast<uint8_t>(kSpecDirectionFront | kSpecDirectionSide | kSpecDirectionRear));
     TEST_ASSERT_EQUAL_INT(DIR_FRONT | DIR_SIDE | DIR_REAR, directions);
 
-    display.drawDirectionArrow(directions, false, 0);
+    display.drawDirectionArrow(display.ut_resolvePaintStatus(testDisplayInputs(settings).context()), directions, false, 0);
 
     TEST_ASSERT_EQUAL_HEX16(settings.get().colorArrowFront, canvas()->fillTriangleCalls[0].color);
     TEST_ASSERT_EQUAL_HEX16(settings.get().colorArrowSide, canvas()->fillTriangleCalls[1].color);

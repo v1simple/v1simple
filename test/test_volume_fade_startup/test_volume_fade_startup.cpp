@@ -9,6 +9,7 @@
 #include "../mocks/Arduino.h"
 #include "../mocks/ble_client.h"
 #include "../mocks/settings.h"
+#include "../mocks/runtime_presentation_source.h"
 
 SerialClass Serial;
 unsigned long mockMillis = 0;
@@ -68,6 +69,7 @@ namespace {
 V1BLEClient ble;
 PacketParser parser;
 SettingsManager settings;
+RuntimePresentationSource presentation{settings};
 VolumeFadeModule fade;
 QuietCoordinatorModule quiet;
 V1Display display;
@@ -168,7 +170,7 @@ void setUp() {
     power.reset();
     queue.reset();
     persistence.reset();
-    connection.begin(&ble, &parser, &display, &power, &queue, &persistence);
+    connection.begin(&ble, &parser, &display, &power, &queue, &persistence, presentation);
     openSession(1, 9000);
 }
 
@@ -333,7 +335,7 @@ struct SpeedFadeRuntime {
 
     SpeedFadeRuntime() {
         speed.begin(true, 25, 3, 0);
-        orchestration.begin(&display, &ble, &preview, &restore, &parser, &fade, &speed, &quiet);
+        orchestration.begin(&display, &ble, &preview, &restore, &parser, &fade, &speed, &quiet, presentation);
     }
 
     void step(uint32_t nowMs, float mph, bool active, bool echo = true) {

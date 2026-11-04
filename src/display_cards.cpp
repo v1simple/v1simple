@@ -1,3 +1,4 @@
+#include "settings_types.h"
 #include "display.h"
 #include "display_visual_contract.h"
 #include "display_layout.h"
@@ -7,7 +8,6 @@
 #include "display_palette.h"
 #include "display_text.h"
 #include "display_font_manager.h"
-#include "settings.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -201,16 +201,16 @@ bool V1Display::secondaryCardRefreshDue(uint32_t nowMs) const {
            static_cast<int32_t>(nowMs - elementCaches_.cards.nextExpiryMs) >= 0;
 }
 
-void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount, const AlertData& priority,
+void V1Display::drawSecondaryAlertCards(const ResolvedPaintStatus& paint, const AlertData* alerts, int alertCount, const AlertData& priority,
                                         bool muted) {
 #if defined(DISPLAY_WAVESHARE_349)
     const DisplayLayout::DisplayRect cardsClearRect = DisplayLayout::cardsClearRect();
 
-    const V1Settings& settings = settings_.get();
-    uint8_t persistSec = settings_.getSlotAlertPersistSec(settings.activeSlot);
+    const V1Settings& settings = paint.context.style.settings;
+    uint8_t persistSec = paint.context.style.alertPersistSec;
     uint32_t gracePeriodMs = persistSec * 1000UL;
 
-    uint32_t now = static_cast<uint32_t>(millis());
+    uint32_t now = paint.context.nowMs;
 
     if (settings.activeSlot != elementCaches_.cards.lastProfileSlot) {
         elementCaches_.cards.lastProfileSlot = settings.activeSlot;
@@ -252,7 +252,7 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
     }
 
     const SecondaryCardFrame frame = evolveSecondaryCardState(elementCaches_.cards, alerts, alertCount, priority, now,
-                                                               gracePeriodMs, previewIndicatorOverridesActive_);
+                                                               gracePeriodMs, (paint.context.cardPersistence == CardPersistencePolicy::PreviewImmediate));
     const SecondaryCardFrameEntry* cardsToDraw = frame.cards;
     const int cardsToDrawCount = frame.count;
 
@@ -329,7 +329,7 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
         uint8_t bars = cardsToDraw[i].bars;
 
         const bool isPhoto = alert.band == BAND_K && alert.photoType != 0;
-        uint16_t bandCol = isPhoto ? settings.colorBandPhoto : getBandColor(alert.band);
+        uint16_t bandCol = isPhoto ? settings.colorBandPhoto : getBandColor(paint, alert.band);
         uint16_t bgCol, borderCol;
 
         if (isGraced) {

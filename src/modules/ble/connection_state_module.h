@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime_presentation_source.h"
+
 #include <Arduino.h>
 
 // Forward declarations
@@ -17,7 +19,7 @@ class ConnectionStateModule {
     using DisplayOwnerRestoreCallback = bool (*)(void* context, uint32_t nowMs);
 
     void begin(V1BLEClient* bleClient, PacketParser* parser, V1Display* display, PowerModule* powerModule,
-               BleQueueModule* bleQueueModule, AlertPersistenceModule* alertPersistence);
+               BleQueueModule* bleQueueModule, AlertPersistenceModule* alertPersistence, RuntimePresentationSource& presentation);
     void setDisplayOwnerRestoreCallback(DisplayOwnerRestoreCallback callback, void* context);
 
     // Call once per loop iteration; returns true if connected
@@ -39,6 +41,7 @@ class ConnectionStateModule {
     V1BLEClient* ble_ = nullptr;
     PacketParser* parser_ = nullptr;
     V1Display* display_ = nullptr;
+    RuntimePresentationSource* presentation_ = nullptr;
     PowerModule* power_ = nullptr;
     BleQueueModule* bleQueue_ = nullptr;
     AlertPersistenceModule* alertPersistence_ = nullptr;

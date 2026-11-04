@@ -7,11 +7,13 @@ class HealthJournal;
 class ProductEventLog;
 class SettingsManager;
 class V1Display;
+class RuntimePresentationSource;
+struct DisplayPaintContext;
 
 // The display is double buffered; painting alone leaves the panel unchanged.
 template <typename DisplayT>
-void presentFatalBootFrame(DisplayT& display) {
-    display.showDisconnected();
+void presentFatalBootFrame(DisplayT& display, const DisplayPaintContext& context) {
+    display.showDisconnected(context);
     display.flush();
 }
 
@@ -43,7 +45,7 @@ bool requestMaintenanceBoot();
 bool readAndClearMaintenanceBootRequest();
 
 /// Show fatal error on display (if available), wait, then restart.
-void fatalBootError(V1Display& display, const char* message, bool displayAvailable);
+void fatalBootError(V1Display& display, RuntimePresentationSource& presentation, const char* message, bool displayAvailable);
 
 /// Stop and flush shared persistence services before a runtime tears down its
 /// own transports. Returns true when final writes and the clean marker remain safe.

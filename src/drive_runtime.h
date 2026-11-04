@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime_presentation_source.h"
+
 #include <Arduino.h>
 #include <esp_system.h>
 
@@ -53,7 +55,7 @@ class V1ProfileManager;
 // start or service the maintenance transport through this composition graph.
 class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycle {
   public:
-    DriveRuntime(SettingsManager& settings, V1ProfileManager& profiles, V1DeviceStore& devices,
+    DriveRuntime(SettingsManager& settings, RuntimePresentationSource& presentation, V1ProfileManager& profiles, V1DeviceStore& devices,
                  StorageManager& storage, BatteryManager& battery, ProductEventLog& events,
                  HealthJournal& health);
 
@@ -82,6 +84,8 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     AlpRuntimeModule& alp() { return alp_; }
     MainRuntimeState& state() { return state_; }
     V1SettingsOperationStore& settingsOperations() { return settingsOperations_; }
+
+    void presentProfileIndicator(int slot);
 
   private:
     friend class DriveLoopCoordinator;
@@ -178,6 +182,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     void logDisplayConfiguration(uint32_t nowMs);
 
     SettingsManager& settings_;
+    RuntimePresentationSource& presentation_;
     V1ProfileManager& profiles_;
     V1DeviceStore& devices_;
     StorageManager& storage_;

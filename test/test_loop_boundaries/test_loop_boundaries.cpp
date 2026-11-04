@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "../../include/main_internals.h"
+#include "../../src/settings_types.h"
+#include "../../include/display_presentation.h"
 #include "../../src/runtime_coordinator.h"
 
 namespace {
@@ -75,7 +77,7 @@ struct FatalDisplayProbe {
     int showDisconnectedSequence = 0;
     int flushSequence = 0;
 
-    void showDisconnected() {
+    void showDisconnected(const DisplayPaintContext&) {
         ++showDisconnectedCalls;
         showDisconnectedSequence = ++sequence;
     }
@@ -507,7 +509,11 @@ void test_drive_runtime_composition_has_no_maintenance_wifi_dependency() {
 
 void test_fatal_boot_error_transfers_frame_before_wait_and_restart() {
     FatalDisplayProbe display;
-    presentFatalBootFrame(display);
+    const V1Settings settings;
+    const DisplayStyleView style{settings, 0, 0, false};
+    const PresentationStatusSnapshot status;
+    const DisplayPaintContext context{123, style, status};
+    presentFatalBootFrame(display, context);
 
     TEST_ASSERT_EQUAL_INT(1, display.showDisconnectedCalls);
     TEST_ASSERT_EQUAL_INT(1, display.flushCalls);
@@ -515,7 +521,7 @@ void test_fatal_boot_error_transfers_frame_before_wait_and_restart() {
 
     const std::string body = functionBody(readFile(projectRoot() + "/src/main_boot.cpp"),
                                           "void fatalBootError(");
-    const size_t present = body.find("presentFatalBootFrame(display)");
+    const size_t present = body.find("presentFatalBootFrame(display, inputs.context())");
     const size_t wait = body.find("for (int i = 10", present);
     const size_t restart = body.find("ESP.restart()", wait);
 

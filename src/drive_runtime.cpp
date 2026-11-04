@@ -41,11 +41,11 @@ ProductAlpState productAlpState(uint8_t heartbeatByte1) {
 
 DriveRuntime* DriveRuntime::callbackOwner_ = nullptr;
 
-DriveRuntime::DriveRuntime(SettingsManager& settings, V1ProfileManager& profiles, V1DeviceStore& devices,
+DriveRuntime::DriveRuntime(SettingsManager& settings, RuntimePresentationSource& presentation, V1ProfileManager& profiles, V1DeviceStore& devices,
                            StorageManager& storage, BatteryManager& battery, ProductEventLog& events,
                            HealthJournal& health)
-    : settings_(settings), profiles_(profiles), devices_(devices), storage_(storage), battery_(battery),
-      events_(events), health_(health), display_(settings),
+    : settings_(settings), presentation_(presentation), profiles_(profiles), devices_(devices), storage_(storage), battery_(battery),
+      events_(events), health_(health),
       settingsOperationCoordinator_(settingsOperations_, autoPush_, ble_, makeSettingsOperationEffects()) {}
 
 void DriveRuntime::logBootStage(const char* stage, uint32_t setupStartMs, uint32_t& stageStartedMs) const {
@@ -81,7 +81,7 @@ SettingsOperationCoordinator::Effects DriveRuntime::makeSettingsOperationEffects
             auto& self = *static_cast<DriveRuntime*>(context);
             self.displayMode_ = DisplayMode::IDLE;
             self.alertPersistence_.clearPersistence();
-            self.display_.drawProfileIndicator(slot);
+            self.presentProfileIndicator(slot);
         },
         [](void* context) { return static_cast<DriveRuntime*>(context)->requestMaintenanceBootRestart(); },
     };
@@ -97,7 +97,7 @@ void DriveRuntime::initializeStorageAndProfiles() {
         },
         [](void* context) {
             auto& self = *static_cast<DriveRuntime*>(context);
-            self.display_.updateColorTheme();
+            self.display_.updateColorTheme(makeDisplayStyleView(self.settings_));
             self.display_.setBrightness(self.settings_.get().brightness);
         },
     };
@@ -118,7 +118,7 @@ void DriveRuntime::initializeBle(uint32_t setupStartMs, uint32_t& stageStartedMs
     const uint32_t preInitStartedMs = millis();
     if (!ble_.initBLE(storage_, preInitSettings.proxyBLE, preInitSettings.proxyName.c_str())) {
         Serial.println("BLE pre-initialization failed!");
-        fatalBootError(display_, "BLE pre-init failed", true);
+        fatalBootError(display_, presentation_, "BLE pre-init failed", true);
     }
     Serial.printf("[BootTiming] ble_preinit_ms=%lu\n", static_cast<unsigned long>(millis() - preInitStartedMs));
     logBootStage("ble_preinit", setupStartMs, stageStartedMs);
@@ -139,7 +139,7 @@ void DriveRuntime::initializeBle(uint32_t setupStartMs, uint32_t& stageStartedMs
     const uint32_t scanStartedMs = millis();
     if (!ble_.begin(storage_, scanSettings.proxyBLE, scanSettings.proxyName.c_str())) {
         Serial.println("BLE scan failed to start!");
-        fatalBootError(display_, "BLE scan failed", true);
+        fatalBootError(display_, presentation_, "BLE scan failed", true);
     }
     Serial.printf("[BootTiming] ble_scan_start_ms=%lu\n", static_cast<unsigned long>(millis() - scanStartedMs));
 }
@@ -208,7 +208,9 @@ void DriveRuntime::requestUsbMaintenanceBoot() {
 }
 
 void DriveRuntime::initializeTouchAndUi() {
-    autoPush_.begin(&settings_, &profiles_, &ble_, &parser_, &display_, &quiet_);
+    autoPush_.begin(&settings_, &profiles_, &ble_, &parser_,
+                    [](int slot, void* context) { static_cast<DriveRuntime*>(context)->presentProfileIndicator(slot); },
+                    this, &quiet_);
 
     TouchUiModule::Callbacks touchCallbacks{};
     touchCallbacks.requestMaintenanceBoot = [](void* context) {
@@ -234,14 +236,18 @@ void DriveRuntime::initializeTouchAndUi() {
         return static_cast<DriveRuntime*>(context)->displayPipeline_.allowsObdPairGesture(nowMs);
     };
     touchCallbacks.isObdPairGestureSafeCtx = this;
-    touchUi_.begin(&display_, &touch_, &settings_, touchCallbacks);
+    touchUi_.begin(&display_, &touch_, &settings_, touchCallbacks, presentation_);
 
     TapGestureModule::Callbacks tapCallbacks{};
     tapCallbacks.beginProfileCycle = [](int newSlot, void* context) {
         return static_cast<DriveRuntime*>(context)->beginTripleTapProfileCycle(newSlot);
     };
     tapCallbacks.beginProfileCycleContext = this;
-    tapGesture_.begin(&touch_, &settings_, &display_, &ble_, &parser_, &autoPush_, &alertPersistence_,
+    tapCallbacks.presentProfile = [](int slot, void* context) {
+        static_cast<DriveRuntime*>(context)->presentProfileIndicator(slot);
+    };
+    tapCallbacks.presentProfileContext = this;
+    tapGesture_.begin(&touch_, &settings_, &ble_, &parser_, &autoPush_, &alertPersistence_,
                       &displayMode_, &quiet_, tapCallbacks);
 }
 
@@ -249,12 +255,14 @@ bool DriveRuntime::restoreConnectionDisplayOwner(void* context, uint32_t nowMs) 
     auto& self = *static_cast<DriveRuntime*>(context);
     const bool v1Connected = self.ble_.isConnected();
     const bool proxyConnected = self.ble_.isProxyClientConnected();
-    self.display_.setBleContext(
-        {v1Connected, proxyConnected, self.ble_.getConnectionRssi(), self.ble_.getProxyClientRssi()});
+    const DisplayBleContext bleContext{v1Connected, proxyConnected, self.ble_.getConnectionRssi(), self.ble_.getProxyClientRssi()};
+    const uint32_t sampledAtMs = static_cast<uint32_t>(millis());
     const uint32_t lastRxMs = self.bleQueue_.getLastRxMillis();
     const bool receiving =
         lastRxMs != 0 && (nowMs - lastRxMs) < ConnectionRuntimeModule::Config{}.receivingHeartbeatMs;
-    self.display_.setBLEProxyStatus(v1Connected, proxyConnected, receiving);
+    self.presentation_.noteBleSample(bleContext, receiving, sampledAtMs);
+    const auto inputs = self.presentation_.captureForPaint();
+    self.display_.refreshBleIndicator(inputs.context());
     return self.displayPipeline_.restoreCurrentOwner(nowMs);
 }
 
@@ -269,6 +277,7 @@ void DriveRuntime::initializeRuntimeModules() {
     DisplayPipelineDependencies pipelineDependencies;
     pipelineDependencies.displayMode = &displayMode_;
     pipelineDependencies.display = &display_;
+    pipelineDependencies.presentation = &presentation_;
     pipelineDependencies.parser = &parser_;
     pipelineDependencies.settings = &settings_;
     pipelineDependencies.ble = &ble_;
@@ -282,16 +291,16 @@ void DriveRuntime::initializeRuntimeModules() {
 
     systemEvents_.reset();
     if (!bleQueue_.begin(&ble_, &parser_, &preview_, &power_)) {
-        fatalBootError(display_, "BLE queue init failed", true);
+        fatalBootError(display_, presentation_, "BLE queue init failed", true);
     }
     connectionRuntime_.begin(ble_, bleQueue_);
-    connectionState_.begin(&ble_, &parser_, &display_, &power_, &bleQueue_, &alertPersistence_);
+    connectionState_.begin(&ble_, &parser_, &display_, &power_, &bleQueue_, &alertPersistence_, presentation_);
     connectionState_.setDisplayOwnerRestoreCallback(restoreConnectionDisplayOwner, this);
     connectionDispatch_.begin(connectionCadence_, connectionState_);
     obdSettingsSync_.begin(&settings_, &obd_);
     displayRestore_.begin(preview_, displayPipeline_);
     displayOrchestration_.begin(&display_, &ble_, &preview_, &displayRestore_, &parser_,
-                                &volumeFade_, &speedMute_, &quiet_);
+                                &volumeFade_, &speedMute_, &quiet_, presentation_);
     connectionCycle_.begin(*this);
 
     speed_.begin(&obd_, settings_.get().obdEnabled, &gps_, settings_.get().gpsEnabled);
@@ -321,7 +330,7 @@ void DriveRuntime::syncRecoveredSettings() {
     speed_.syncEnabledInputs(recovered.obdEnabled, recovered.gpsEnabled);
     alp_.begin(recovered.alpEnabled);
     audio_set_volume(recovered.voiceVolume);
-    display_.updateColorTheme();
+    display_.updateColorTheme(makeDisplayStyleView(settings_));
     display_.forceNextRedraw();
     if (!power_.ownsDisplayPresentation()) display_.setBrightness(recovered.brightness);
     ble_.setProxyRuntimeEnabled(recovered.proxyBLE, recovered.proxyName.c_str());
@@ -394,8 +403,11 @@ void DriveRuntime::showInitialScanningScreen() {
     if (state_.initialScanningScreenShown) {
         return;
     }
-    display_.showScanning();
-    display_.drawProfileIndicator(settings_.get().activeSlot);
+    {
+        const auto inputs = presentation_.captureForPaint();
+        display_.showScanning(inputs.context());
+    }
+    presentProfileIndicator(settings_.get().activeSlot);
     state_.initialScanningScreenShown = true;
     connectionCadence_.onScanningScreenShown(millis());
 }
@@ -472,8 +484,11 @@ void DriveRuntime::servicePowerDisplayOwnership(uint32_t nowMs) {
     (void)preview_.consumeEnded();
     display_.forceNextRedraw();
     if (!touchUi_.restorePresentationIfOwned() && !displayPipeline_.restoreCurrentOwner(nowMs)) {
-        display_.showScanning();
-        display_.drawProfileIndicator(settings_.get().activeSlot);
+        {
+            const auto inputs = presentation_.captureForPaint();
+            display_.showScanning(inputs.context());
+        }
+        presentProfileIndicator(settings_.get().activeSlot);
     }
     if (restoreBrightness) {
         const uint8_t savedBrightness = settings_.get().brightness;
@@ -1052,7 +1067,7 @@ bool DriveRuntime::beginTripleTapProfileCycle(int newSlot) {
                 SettingsPersistMode::ImmediateNvsDeferredBackup).success) return false;
         displayMode_ = DisplayMode::IDLE;
         alertPersistence_.clearPersistence();
-        display_.drawProfileIndicator(newSlot);
+        presentProfileIndicator(newSlot);
         Serial.printf("PROFILE CHANGE: local slot %d (no detector apply)\n", newSlot);
         return true;
     }
@@ -1173,11 +1188,17 @@ void DriveRuntime::onV1Connected() {
     if (!settings.autoPushEnabled) {
         return;
     }
-    self.display_.setProfileIndicatorSlot(selectedSlot);
+    self.display_.setProfileIndicatorSlot(selectedSlot, static_cast<uint32_t>(millis()));
     (void)self.autoPush_.queueSlotPush(selectedSlot, false, false);
 }
 
 void DriveRuntime::observeAlertTable(const AlertData* alerts, size_t count, uint8_t priorityIndex,
                                      uint32_t nowMs, void* context) {
     static_cast<DriveRuntime*>(context)->events_.observeV1Table(alerts, count, priorityIndex, nowMs);
+}
+
+void DriveRuntime::presentProfileIndicator(int slot) {
+    display_.setProfileIndicatorSlot(slot, static_cast<uint32_t>(millis()));
+    const auto inputs = presentation_.captureForPaint();
+    display_.drawProfileIndicator(inputs.context());
 }

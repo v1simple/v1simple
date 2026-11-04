@@ -19,6 +19,7 @@ unsigned long mockMicros = 0;
 #include "../../src/packet_parser.cpp"
 #include "../../src/packet_parser_alerts.cpp"
 #include "../mocks/display.h"
+#include "../mocks/runtime_presentation_source.h"
 #include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
 #include "../../src/modules/alp/alp_event_latch.cpp"
 #include "../../src/modules/display/render_frame_composer.cpp"
@@ -41,6 +42,7 @@ struct DisplayRuntime {
     DisplayPreviewModule preview;
     PowerModule power;
     SettingsManager settings;
+    RuntimePresentationSource presentation{settings};
     V1Display display;
     AlertPersistenceModule persistence;
     DisplayMode mode = DisplayMode::IDLE;
@@ -54,6 +56,7 @@ struct DisplayRuntime {
         dependencies.display = &display;
         dependencies.parser = &parser;
         dependencies.settings = &settings;
+        dependencies.presentation = &presentation;
         dependencies.ble = &ble;
         dependencies.alertPersistence = &persistence;
         pipeline.begin(dependencies);

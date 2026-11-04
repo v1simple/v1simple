@@ -6,13 +6,12 @@
 #include "modules/auto_push/auto_push_module.h"
 #endif
 
-void TapGestureModule::begin(TouchHandler* touchHandler, SettingsManager* settings, V1Display* displayPtr,
+void TapGestureModule::begin(TouchHandler* touchHandler, SettingsManager* settings,
                              V1BLEClient* bleClient, PacketParser* parserPtr, AutoPushModule* autoPushModule,
                              AlertPersistenceModule* alertPersistenceModule, DisplayMode* displayModePtr,
                              QuietCoordinatorModule* quietCoordinator, Callbacks callbacks) {
     touch_ = touchHandler;
     settings_ = settings;
-    display_ = displayPtr;
     ble_ = bleClient;
     parser_ = parserPtr;
     autoPush_ = autoPushModule;
@@ -24,7 +23,7 @@ void TapGestureModule::begin(TouchHandler* touchHandler, SettingsManager* settin
 }
 
 void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
-    if (!touch_ || !settings_ || !display_ || !ble_ || !parser_ || !autoPush_ || !alertPersistence_ || !displayMode_) {
+    if (!touch_ || !settings_ || !callbacks_.presentProfile || !ble_ || !parser_ || !autoPush_ || !alertPersistence_ || !displayMode_) {
         return;
     }
 
@@ -116,7 +115,7 @@ void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
         const char* slotNames[] = {"Default", "Highway", "Comfort"};
         Serial.printf("PROFILE CHANGE: Switched to '%s' (slot %d)\n", slotNames[newSlot], newSlot);
 
-        display_->drawProfileIndicator(newSlot);
+        callbacks_.presentProfile(newSlot, callbacks_.presentProfileContext);
 
     };
 

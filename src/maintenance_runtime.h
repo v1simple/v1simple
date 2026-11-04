@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime_presentation_source.h"
+
 #include <Arduino.h>
 #include <esp_system.h>
 
@@ -33,7 +35,7 @@ class WiFiManager;
 // the normal boot composition graph.
 class MaintenanceRuntime : public PowerLifecycle {
   public:
-    MaintenanceRuntime(WiFiManager& wifi, SettingsManager& settings, V1ProfileManager& profiles,
+    MaintenanceRuntime(WiFiManager& wifi, SettingsManager& settings, RuntimePresentationSource& presentation, V1ProfileManager& profiles,
                        V1DeviceStore& devices, StorageManager& storage, V1Display& display,
                        DisplayPreviewModule& preview, PowerModule& power, BatteryManager& battery, TouchHandler& touch,
                        V1BLEClient& ble, PacketParser& parser, AutoPushModule& autoPush,
@@ -50,6 +52,8 @@ class MaintenanceRuntime : public PowerLifecycle {
     bool usbConfigurationAllowed() const;
     void requestUsbNormalBoot();
     void recordUsbActivity(uint32_t nowMs);
+
+    void presentProfileIndicator(int slot);
 
   private:
     friend class MaintenanceWifiCoordinator;
@@ -80,6 +84,7 @@ class MaintenanceRuntime : public PowerLifecycle {
 
     WiFiManager& wifi_;
     SettingsManager& settings_;
+    RuntimePresentationSource& presentation_;
     V1ProfileManager& profiles_;
     V1DeviceStore& devices_;
     StorageManager& storage_;

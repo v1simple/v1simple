@@ -1,4 +1,5 @@
 #include "display_pipeline_module.h"
+#include "runtime_presentation_source.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -65,6 +66,7 @@ DisplayState sanitizeDisconnectedState(const DisplayState& base) {
 void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencies) {
     displayMode_ = dependencies.displayMode;
     display_ = dependencies.display;
+    presentation_ = dependencies.presentation;
     parser_ = dependencies.parser;
     settings_ = dependencies.settings;
     ble_ = dependencies.ble;
@@ -308,31 +310,13 @@ void DisplayPipelineModule::renderComposedFrame(uint32_t nowMs, const RenderFram
     const bool deferSecondaryCards =
         ble_->isConnectBurstSettling() && isLivePrimaryKind(frame.primaryKind) && frame.cardCount > 0;
 
-    // Copy the frame only when deferring cards. Snapshot counting uses
-    // deferSecondaryCards and v1AlertCount independently of frame.cardCount.
-    RenderFrame deferredFrame;
-    const RenderFrame* renderFramePtr = &frame;
-    if (deferSecondaryCards) {
-        deferredFrame = frame;
-        deferredFrame.cardCount = 0;
-        renderFramePtr = &deferredFrame;
-    }
-
-    AlpLaserEvent displayAlpEvent = sAlpEventEmpty;
-    if (frame.primaryKind == RenderFramePrimaryKind::ALP_LIVE) {
-        displayAlpEvent = frame.alpPrimary;
-    } else if (frame.primaryKind == RenderFramePrimaryKind::ALP_PERSISTED) {
-        displayAlpEvent = frame.alpPrimary;
-        displayAlpEvent.active = false;
-    }
-
-    display_->setAlpLaserEvent(displayAlpEvent);
+    const auto inputs = presentation_->captureForPaint();
 
     // Every presentation entrypoint uses the same disconnected owner. Keep
     // SCAN between ordinary heartbeat/blink ticks; explicit restoration can
     // still repaint after a preview or another temporary screen owner.
     if (!ble_->isConnected() && !isAlpPrimaryKind(frame.primaryKind)) {
-        display_->showScanning(forceRedraw || !scanningPresented_);
+        display_->showScanning(inputs.context(), forceRedraw || !scanningPresented_);
         scanningPresented_ = true;
         *displayMode_ = DisplayMode::IDLE;
         return;
@@ -348,11 +332,11 @@ void DisplayPipelineModule::renderComposedFrame(uint32_t nowMs, const RenderFram
                              frame.primaryKind == RenderFramePrimaryKind::ALP_PERSISTED;
     *displayMode_ = livePrimary ? DisplayMode::LIVE : DisplayMode::IDLE;
 
-    display_->renderFrame(*renderFramePtr);
+    display_->renderFrame(frame, inputs.context(), deferSecondaryCards ? 0 : frame.cardCount);
 }
 
 bool DisplayPipelineModule::prepareParsed(uint32_t nowMs, RenderFrame& frame) {
-    if (!display_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ || !displayMode_) {
+    if (!display_ || !presentation_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ || !displayMode_) {
         return false;
     }
 
@@ -375,7 +359,7 @@ void DisplayPipelineModule::presentPrepared(const RenderFrame& frame, uint32_t p
 // Recompose without voice; persistence follows the same live source and expiry
 // checks. Display caches repaint only elements affected by the new frame.
 void DisplayPipelineModule::refreshBlinkTick(uint32_t nowMs) {
-    if (!display_ || !parser_ || !settings_ || !ble_ || !displayMode_) {
+    if (!display_ || !presentation_ || !parser_ || !settings_ || !ble_ || !displayMode_) {
         return;
     }
     const V1Settings& settingsRef = settings_->get();
@@ -398,7 +382,7 @@ void DisplayPipelineModule::refreshBlinkTick(uint32_t nowMs) {
 }
 
 bool DisplayPipelineModule::restoreCurrentOwner(uint32_t nowMs) {
-    if (!display_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ || !displayMode_) {
+    if (!display_ || !presentation_ || !parser_ || !settings_ || !ble_ || !alertPersistence_ || !displayMode_) {
         return false;
     }
 

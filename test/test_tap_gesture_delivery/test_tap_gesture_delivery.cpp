@@ -6,6 +6,7 @@
 #include "../mocks/ble_client.h"
 #include "../mocks/display.h"
 #include "../mocks/settings.h"
+#include "../mocks/runtime_presentation_source.h"
 #include "../../include/display_mode.h"
 
 #ifndef ARDUINO
@@ -39,6 +40,7 @@ void play_test_voice() {}
 namespace {
 TouchHandler touch;
 SettingsManager settings;
+RuntimePresentationSource presentation{settings};
 V1Display display;
 V1BLEClient ble;
 PacketParser parser;
@@ -53,6 +55,8 @@ bool profileCycleAllowed = true;
 int profileCycleCallbackCalls = 0;
 int profileCycleCallbackSlot = -1;
 bool profileCycleCallbackResult = false;
+unsigned profilePresentationCalls = 0;
+void presentProfile(int, void*) { ++profilePresentationCalls; }
 
 bool beginProfileCycleCallback(int slot, void*) {
     ++profileCycleCallbackCalls;
@@ -128,17 +132,21 @@ void setUp() {
     profileCycleCallbackCalls = 0;
     profileCycleCallbackSlot = -1;
     profileCycleCallbackResult = false;
+    profilePresentationCalls = 0;
     TouchUiModule::Callbacks callbacks{};
     callbacks.requestMaintenanceBoot = requestMaintenanceBoot;
-    touchUi.begin(&display, &touch, &settings, callbacks);
-    tap.begin(&touch, &settings, &display, &ble, &parser, &autoPush, &persistence, &displayMode, &quiet);
+    touchUi.begin(&display, &touch, &settings, callbacks, presentation);
+    TapGestureModule::Callbacks tapCallbacks{};
+    tapCallbacks.presentProfile = presentProfile;
+    tap.begin(&touch, &settings, &ble, &parser, &autoPush, &persistence, &displayMode, &quiet, tapCallbacks);
 }
 
 void installProfileCycleCallback(bool result) {
     profileCycleCallbackResult = result;
     TapGestureModule::Callbacks callbacks{};
     callbacks.beginProfileCycle = beginProfileCycleCallback;
-    tap.begin(&touch, &settings, &display, &ble, &parser, &autoPush, &persistence,
+    callbacks.presentProfile = presentProfile;
+    tap.begin(&touch, &settings, &ble, &parser, &autoPush, &persistence,
               &displayMode, &quiet, callbacks);
 }
 
@@ -238,10 +246,10 @@ void test_three_screen_taps_still_cycle_profile_once() {
     pollTouch(1500, true);
     TEST_ASSERT_EQUAL_UINT8(1, settings.get().activeSlot);
     TEST_ASSERT_EQUAL_INT(1, settings.saveDeferredBackupCalls);
-    TEST_ASSERT_EQUAL_INT(1, display.drawProfileIndicatorCalls);
+    TEST_ASSERT_EQUAL_INT(1, profilePresentationCalls);
     pollTouch(5500, true);
     TEST_ASSERT_EQUAL_UINT8(1, settings.get().activeSlot);
-    TEST_ASSERT_EQUAL_INT(1, display.drawProfileIndicatorCalls);
+    TEST_ASSERT_EQUAL_INT(1, profilePresentationCalls);
     TEST_ASSERT_EQUAL_INT(0, maintenanceBootRequests);
 }
 
@@ -258,7 +266,7 @@ void test_profile_cycle_callback_owns_admission_and_defers_local_presentation() 
         TEST_ASSERT_EQUAL_INT(1, profileCycleCallbackCalls);
         TEST_ASSERT_EQUAL_INT(1, profileCycleCallbackSlot);
         TEST_ASSERT_EQUAL_UINT8(0, settings.get().activeSlot);
-        TEST_ASSERT_EQUAL_INT(0, display.drawProfileIndicatorCalls);
+        TEST_ASSERT_EQUAL_INT(0, profilePresentationCalls);
         TEST_ASSERT_EQUAL_INT(0, settings.saveDeferredBackupCalls);
     }
 }
@@ -425,7 +433,7 @@ void test_settings_exit_rearms_profile_taps_across_signed_uptime_boundary() {
         pollTouch(start + 1950U, false);
         pollTouch(start + 2150U, true);
         TEST_ASSERT_EQUAL_UINT8(1, settings.get().activeSlot);
-        TEST_ASSERT_EQUAL_INT(1, display.drawProfileIndicatorCalls);
+        TEST_ASSERT_EQUAL_INT(1, profilePresentationCalls);
     }
 }
 

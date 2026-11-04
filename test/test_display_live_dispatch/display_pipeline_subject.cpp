@@ -4,6 +4,7 @@
 #include "../mocks/Arduino.h"
 #include "../mocks/ble_client.h"
 #include "../mocks/settings.h"
+#include "../mocks/runtime_presentation_source.h"
 #include "../mocks/display_driver.h"
 #include "../../src/packet_parser.h"
 #include "../../src/display.h"

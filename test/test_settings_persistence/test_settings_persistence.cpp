@@ -6831,7 +6831,8 @@ void observeSettingsDisplay(PacketParser& parser, V1BLEClient& ble, bool on, uin
 struct ProfileTapHarness {
     TouchHandler touch;
     V1BLEClient ble;
-    V1Display display;
+    unsigned profilePresentationCalls = 0;
+    int lastPresentedProfileSlot = -1;
     PacketParser parser;
     QuietCoordinatorModule quiet;
     AutoPushModule push;
@@ -6844,8 +6845,16 @@ struct ProfileTapHarness {
         touch.begin();
         ble.reset();
         quiet.begin(&ble, &parser);
-        push.begin(&manager, &profiles, &ble, &parser, &display, &quiet);
-        tap.begin(&touch, &manager, &display, &ble, &parser, &push, &persistence, &mode, &quiet);
+        const auto presentProfile = [](int slot, void* context) {
+            auto& self = *static_cast<ProfileTapHarness*>(context);
+            ++self.profilePresentationCalls;
+            self.lastPresentedProfileSlot = slot;
+        };
+        push.begin(&manager, &profiles, &ble, &parser, presentProfile, this, &quiet);
+        TapGestureModule::Callbacks callbacks{};
+        callbacks.presentProfile = presentProfile;
+        callbacks.presentProfileContext = this;
+        tap.begin(&touch, &manager, &ble, &parser, &push, &persistence, &mode, &quiet, callbacks);
     }
     void poll(unsigned long now, bool down) {
         mockMillis = now;
@@ -6905,7 +6914,12 @@ AutoPushCommandTrace runAutoPushTrace(SettingsManager& owner, V1ProfileManager& 
     QuietCoordinatorModule quiet;
     quiet.begin(&ble, &parser);
     AutoPushModule push;
-    push.begin(&owner, &catalog, &ble, &parser, &display, &quiet);
+    push.begin(&owner, &catalog, &ble, &parser,
+               [](int slot, void* context) {
+                   auto& display = *static_cast<V1Display*>(context);
+                   display.setProfileIndicatorSlot(slot, static_cast<uint32_t>(millis()));
+               },
+               &display, &quiet);
     AutoPushCommandTrace trace;
     mockMillis = 0;
 
@@ -7088,7 +7102,7 @@ void test_profile_taps_preserve_accepted_state_when_persistence_fails() {
     SettingsManager reloaded(storage, profiles);
     reloaded.load();
     TEST_ASSERT_EQUAL_INT(0, reloaded.get().activeSlot);
-    TEST_ASSERT_EQUAL_INT(0, input.display.drawProfileIndicatorCalls);
+    TEST_ASSERT_EQUAL_INT(0, input.profilePresentationCalls);
     TEST_ASSERT_FALSE(input.push.isActive());
     TEST_ASSERT_TRUE(input.persistence.isPersistenceActive());
     TEST_ASSERT_EQUAL_INT(static_cast<int>(DisplayMode::LIVE), static_cast<int>(input.mode));
@@ -7189,7 +7203,7 @@ void test_callbackless_profile_tap_fallback_stays_local_without_detector_writes(
     ProfileTapHarness input(manager);
     input.triple(1000);
     TEST_ASSERT_EQUAL_INT(1, manager.get().activeSlot);
-    TEST_ASSERT_EQUAL_INT(1, input.display.lastProfileIndicatorSlot);
+    TEST_ASSERT_EQUAL_INT(1, input.lastPresentedProfileSlot);
     input.advancePush(1600);
     input.advancePush(1600);
     input.advancePush(1630);
@@ -7197,7 +7211,7 @@ void test_callbackless_profile_tap_fallback_stays_local_without_detector_writes(
     TEST_ASSERT_EQUAL_INT(0, input.ble.writeUserBytesCalls);
     input.triple(1750);
     TEST_ASSERT_EQUAL_INT(2, manager.get().activeSlot);
-    TEST_ASSERT_EQUAL_INT(2, input.display.lastProfileIndicatorSlot);
+    TEST_ASSERT_EQUAL_INT(2, input.lastPresentedProfileSlot);
     // Production installs the durable operation callback. A callback-less
     // module is deliberately local-only and must never recreate the retired
     // direct-to-AutoPush path with stale detector evidence.
@@ -7222,7 +7236,7 @@ void test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled()
         manager.mutableSettings().autoPushEnabled = offline;
         input.triple(1000);
         TEST_ASSERT_EQUAL_INT(1, manager.get().activeSlot);
-        TEST_ASSERT_EQUAL_INT(1, input.display.lastProfileIndicatorSlot);
+        TEST_ASSERT_EQUAL_INT(1, input.lastPresentedProfileSlot);
         TEST_ASSERT_FALSE(input.push.isActive());
         TEST_ASSERT_EQUAL_INT(0, input.ble.writeUserBytesCalls);
         SettingsManager reloaded(storage, profiles);

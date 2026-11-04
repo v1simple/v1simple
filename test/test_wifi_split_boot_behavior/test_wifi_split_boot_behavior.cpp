@@ -224,9 +224,9 @@ void test_maintenance_runtime_uses_typed_constructor_dependencies_without_provid
 void test_shared_boot_refreshes_saved_palette_before_boot_presentation() {
     const std::string body = extractFunctionBody(readFile(projectRoot() + "/src/main.cpp"),
                                                   "void initializeSharedHardware(");
-    const size_t displayAt = body.find("driveRuntime.display().begin()");
+    const size_t displayAt = body.find("driveRuntime.display().begin(initialPresentation.context())");
     const size_t settingsAt = body.find("settings.begin();");
-    const size_t paletteAt = body.find("driveRuntime.display().updateColorTheme();");
+    const size_t paletteAt = body.find("driveRuntime.display().updateColorTheme(makeDisplayStyleView(settings));");
     const size_t presentationAt = body.find("if (maintenanceBoot)");
 
     TEST_ASSERT_NOT_EQUAL(std::string::npos, displayAt);

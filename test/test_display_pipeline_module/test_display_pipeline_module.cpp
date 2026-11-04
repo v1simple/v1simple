@@ -9,11 +9,13 @@
 #include "../mocks/display.h"
 #include "../mocks/packet_parser.h"
 #include "../mocks/settings.h"
+#include "../mocks/runtime_presentation_source.h"
 #include "../../src/audio_beep.h"
 
 #ifndef ARDUINO
 SerialClass Serial;
 SettingsManager settings;
+static RuntimePresentationSource presentation{settings};
 unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 #endif
@@ -135,6 +137,7 @@ static void beginModule() {
     DisplayPipelineDependencies dependencies;
     dependencies.displayMode = &displayMode;
     dependencies.display = &display;
+    dependencies.presentation = &presentation;
     dependencies.parser = &parser;
     dependencies.settings = &settings;
     dependencies.ble = &ble;
@@ -170,6 +173,8 @@ void setUp() {
     alpLatch = AlpEventLatch{};
     displayMode = DisplayMode::IDLE;
     settings = SettingsManager{};
+    presentation.status = {};
+    presentation.captures = 0;
     g_voicePlaybackResult = AudioPlaybackResult::Accepted;
     g_voicePlaybackAttempts = 0;
     g_escalationPlaybackAttempts = 0;
@@ -329,7 +334,7 @@ void test_restore_current_owner_ble_disconnected_restores_alp_live_when_active()
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(1, display.updateCalls);
     TEST_ASSERT_EQUAL(1, display.forceNextRedrawCalls);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 }
 
 void test_restore_current_owner_restores_live_display_when_alerts_present() {
@@ -527,11 +532,11 @@ void test_handle_parsed_synthesizes_laser_alert_when_alp_active_and_no_v1() {
     TEST_ASSERT_EQUAL(DIR_FRONT, display.lastAlertDisplayState.arrows);
     TEST_ASSERT_EQUAL(DIR_FRONT, display.lastAlertDisplayState.priorityArrow);
     TEST_ASSERT_EQUAL(6, display.lastAlertDisplayState.signalBars);  // laser = full physical meter
-    // The live ALP projection is delivered atomically.
-    TEST_ASSERT_EQUAL(1, display.setAlpLaserEventCalls);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::MARKSMAN_ULTRALYTE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
+    // The frame atomically selects the live ALP owner and event.
+    TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::MARKSMAN_ULTRALYTE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastRenderFrame.alpPrimary.direction);
 }
 
 void test_handle_parsed_keeps_unknown_alp_direction_off_screen() {
@@ -556,9 +561,9 @@ void test_handle_parsed_keeps_unknown_alp_direction_off_screen() {
     TEST_ASSERT_EQUAL(DIR_NONE, display.lastAlertDisplayState.arrows);
     TEST_ASSERT_EQUAL(DIR_NONE, display.lastAlertDisplayState.priorityArrow);
     TEST_ASSERT_EQUAL(6, display.lastAlertDisplayState.signalBars);  // laser = full physical meter
-    TEST_ASSERT_EQUAL(1, display.setAlpLaserEventCalls);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::UNKNOWN, display.lastAlpLaserEvent.direction);
+    TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::UNKNOWN, display.lastRenderFrame.alpPrimary.direction);
 }
 
 void test_handle_parsed_prioritizes_alp_laser_over_v1_radar() {
@@ -767,7 +772,7 @@ static void assertV1AlpOwnershipLifecycle(bool restoreOwner) {
     TEST_ASSERT_EQUAL(BAND_LASER, display.lastRenderFrame.v1Priority.band);
     TEST_ASSERT_EQUAL(1, display.lastRenderFrame.cardCount);
     TEST_ASSERT_EQUAL(24148, display.lastRenderFrame.cards[0].v1Alert.frequency);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 
     alpModule.testOpenSession(AlpGunType::PL3_PROLITE, false, AlpLaserDirection::FRONT, 1200);
     render(1200);
@@ -785,14 +790,14 @@ static void assertV1AlpOwnershipLifecycle(bool restoreOwner) {
     TEST_ASSERT_EQUAL(BAND_LASER, display.lastRenderFrame.v1Priority.band);
     TEST_ASSERT_EQUAL(DIR_REAR, display.lastRenderFrame.v1Priority.direction);
     TEST_ASSERT_EQUAL(1, display.lastRenderFrame.cardCount);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 
     parser.state.activeBands = BAND_NONE;
     parser.setAlerts({});
     render(1400);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastRenderFrame.alpPrimary.gun);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 
     AlertData weak = makeKAlert(24150);
     weak.frontStrength = 1;
@@ -808,7 +813,7 @@ static void assertV1AlpOwnershipLifecycle(bool restoreOwner) {
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
     render(3300);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 }
 
 void test_parsed_owner_preserves_live_v1_across_alp_warmup_and_persistence() {
@@ -837,9 +842,9 @@ void test_handle_parsed_clears_alp_projection_during_teardown_gap() {
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(1, display.updateCalls);
     TEST_ASSERT_EQUAL(0, display.lastAlertUpdateCount);
-    // The inactive ALP projection is delivered atomically.
-    TEST_ASSERT_EQUAL(1, display.setAlpLaserEventCalls);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    // The frame atomically selects the inactive owner.
+    TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 }
 
 void test_handle_parsed_keeps_alp_alert_live_until_normal_listening_heartbeat_returns() {
@@ -851,9 +856,9 @@ void test_handle_parsed_keeps_alp_alert_live_until_normal_listening_heartbeat_re
     mockMicros = 1000 * 1000UL;
     presentParsedFrame(module, 1000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastRenderFrame.alpPrimary.direction);
 
     // Parser/session truth says the event is closed, but the heartbeat has
     // not yet settled back to a normal LISTENING mode. Keep showing the last
@@ -869,9 +874,9 @@ void test_handle_parsed_keeps_alp_alert_live_until_normal_listening_heartbeat_re
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastRenderFrame.alpPrimary.direction);
 
     // Once a normal LISTENING heartbeat returns, the display-side alert latch
     // releases and the screen falls back to idle/persist behavior.
@@ -884,7 +889,7 @@ void test_handle_parsed_keeps_alp_alert_live_until_normal_listening_heartbeat_re
 
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 }
 
 void test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell() {
@@ -896,7 +901,7 @@ void test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell
     mockMicros = 1000 * 1000UL;
     presentParsedFrame(module, 1000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 
     // After the encounter closes, a brief abnormal LISTENING heartbeat may
     // still keep the display context alive, but only for a bounded dwell.
@@ -911,9 +916,9 @@ void test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::MARKSMAN_ULTRALYTE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, display.lastAlpLaserEvent.direction);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::MARKSMAN_ULTRALYTE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, display.lastRenderFrame.alpPrimary.direction);
 
     display.reset();
     mockMillis = 2501;
@@ -922,7 +927,7 @@ void test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell
 
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 }
 
 void test_alp_hold_and_persistence_deadlines_each_request_one_refresh() {
@@ -968,9 +973,9 @@ void test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_upd
     mockMillis = 1000;
     mockMicros = 1000 * 1000UL;
     presentParsedFrame(module, 1000);
-    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
-    const uint32_t sessionGeneration = display.lastAlpLaserEvent.sessionGeneration;
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastRenderFrame.alpPrimary.direction);
+    const uint32_t sessionGeneration = display.lastRenderFrame.alpPrimary.sessionGeneration;
 
     alpModule.testOpenSession(AlpGunType::UNKNOWN, /*isWarmUp=*/false,
                               AlpLaserDirection::UNKNOWN);
@@ -983,9 +988,9 @@ void test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_upd
 
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastRenderFrame.alpPrimary.direction);
 }
 
 void test_new_alp_session_does_not_inherit_identity_even_at_same_millis_tick() {
@@ -995,7 +1000,7 @@ void test_new_alp_session_does_not_inherit_identity_even_at_same_millis_tick() {
     alpModule.testOpenSession(AlpGunType::PL3_PROLITE, false,
                               AlpLaserDirection::REAR, 1200);
     presentParsedFrame(module, 1200);
-    const AlpLaserEvent previous = display.lastAlpLaserEvent;
+    const AlpLaserEvent previous = display.lastRenderFrame.alpPrimary;
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, previous.gun);
     TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, previous.direction);
 
@@ -1011,8 +1016,8 @@ void test_new_alp_session_does_not_inherit_identity_even_at_same_millis_tick() {
     display.reset();
     presentParsedFrame(module, 1200);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::UNKNOWN, display.lastAlpLaserEvent.direction);
+    TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::UNKNOWN, display.lastRenderFrame.alpPrimary.direction);
 }
 
 void test_handle_parsed_clears_prior_alp_context_during_unknown_teardown() {
@@ -1024,9 +1029,9 @@ void test_handle_parsed_clears_prior_alp_context_during_unknown_teardown() {
     mockMicros = 1000 * 1000UL;
     presentParsedFrame(module, 1000);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastRenderFrame.alpPrimary.direction);
 
     // Runtime deliberately suppresses a TEARDOWN session with no gun ID.
     // Prior display context must not resurrect that inactive projection.
@@ -1042,7 +1047,7 @@ void test_handle_parsed_clears_prior_alp_context_during_unknown_teardown() {
 
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 }
 
 void test_restore_current_owner_synthesizes_laser_alert_when_alp_active() {
@@ -1069,11 +1074,11 @@ void test_restore_current_owner_synthesizes_laser_alert_when_alp_active() {
     TEST_ASSERT_EQUAL(DIR_REAR, display.lastAlertDisplayState.arrows);
     TEST_ASSERT_EQUAL(DIR_REAR, display.lastAlertDisplayState.priorityArrow);
     TEST_ASSERT_EQUAL(6, display.lastAlertDisplayState.signalBars);  // laser = full physical meter
-    // The live ALP projection is delivered atomically.
-    TEST_ASSERT_EQUAL(1, display.setAlpLaserEventCalls);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, display.lastAlpLaserEvent.direction);
+    // The frame atomically selects the live ALP owner and event.
+    TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, display.lastRenderFrame.alpPrimary.direction);
 }
 
 void test_restore_current_owner_restores_alp_persisted_owner() {
@@ -1090,9 +1095,9 @@ void test_restore_current_owner_restores_alp_persisted_owner() {
     TEST_ASSERT_EQUAL(DisplayMode::LIVE, displayMode);
     TEST_ASSERT_TRUE(display.hasLastRenderFrame);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, display.lastAlpLaserEvent.direction);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, display.lastRenderFrame.alpPrimary.direction);
 }
 
 void test_restore_current_owner_prioritizes_alp_laser_over_v1_radar() {
@@ -1144,9 +1149,9 @@ void test_handle_parsed_keeps_latched_alp_event_within_persist_window() {
     TEST_ASSERT_TRUE(display.hasLastRenderFrame);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(1, display.updateCalls);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, display.lastAlpLaserEvent.direction);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, display.lastRenderFrame.alpPrimary.direction);
     TEST_ASSERT_EQUAL(BAND_LASER, display.lastPriorityAlert.band);
 }
 
@@ -1176,7 +1181,7 @@ void test_handle_parsed_clears_latched_alp_event_after_persist_window() {
     TEST_ASSERT_TRUE(display.hasLastRenderFrame);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(1, display.updateCalls);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(0, display.lastAlertUpdateCount);
 }
 
@@ -1201,7 +1206,7 @@ void test_handle_parsed_does_not_restart_alp_persistence_window() {
     mockMicros = 3200 * 1000UL;
     presentParsedFrame(module, 3200);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 
     display.reset();
     mockMillis = 3501;
@@ -1209,7 +1214,7 @@ void test_handle_parsed_does_not_restart_alp_persistence_window() {
     presentParsedFrame(module, 3501);
 
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
 }
 
@@ -1239,9 +1244,9 @@ void test_handle_parsed_keeps_latched_alp_event_after_live_ownership_drops() {
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
     TEST_ASSERT_TRUE(display.hasLastRenderFrame);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, display.lastAlpLaserEvent.direction);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, display.lastRenderFrame.alpPrimary.direction);
 }
 
 void test_handle_parsed_swaps_to_new_live_alp_event_when_new_event_arrives_mid_persist() {
@@ -1262,8 +1267,8 @@ void test_handle_parsed_swaps_to_new_live_alp_event_when_new_event_arrives_mid_p
     presentParsedFrame(module, 1500);
 
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastRenderFrame.alpPrimary.gun);
 
     configureAlpActiveWithGun(AlpGunType::MARKSMAN_ULTRALYTE,
                               AlpLaserDirection::FRONT);
@@ -1277,9 +1282,9 @@ void test_handle_parsed_swaps_to_new_live_alp_event_when_new_event_arrives_mid_p
     TEST_ASSERT_EQUAL(1, display.renderFrameCalls);
     TEST_ASSERT_TRUE(display.hasLastRenderFrame);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
-    TEST_ASSERT_EQUAL(AlpGunType::MARKSMAN_ULTRALYTE, display.lastAlpLaserEvent.gun);
-    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::MARKSMAN_ULTRALYTE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastRenderFrame.alpPrimary.direction);
     TEST_ASSERT_EQUAL(BAND_LASER, display.lastPriorityAlert.band);
     TEST_ASSERT_EQUAL(DIR_FRONT, display.lastPriorityAlert.direction);
 }
@@ -1314,7 +1319,7 @@ void test_handle_parsed_drops_alp_immediately_when_persist_disabled() {
     // Must be IDLE immediately — no ALP_PERSISTED tail.
     TEST_ASSERT_EQUAL(DisplayMode::IDLE, displayMode);
     TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
-    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+    TEST_ASSERT_NOT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
 }
 
 int main() {

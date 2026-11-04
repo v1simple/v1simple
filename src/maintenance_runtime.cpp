@@ -34,7 +34,7 @@ namespace {
 constexpr uint32_t kMaintenanceExitLongPressMs = 4000UL;
 }
 
-MaintenanceRuntime::MaintenanceRuntime(WiFiManager& wifi, SettingsManager& settings, V1ProfileManager& profiles,
+MaintenanceRuntime::MaintenanceRuntime(WiFiManager& wifi, SettingsManager& settings, RuntimePresentationSource& presentation, V1ProfileManager& profiles,
                                        V1DeviceStore& devices, StorageManager& storage, V1Display& display,
                                        DisplayPreviewModule& preview, PowerModule& power, BatteryManager& battery,
                                        TouchHandler& touch,
@@ -42,7 +42,7 @@ MaintenanceRuntime::MaintenanceRuntime(WiFiManager& wifi, SettingsManager& setti
                                        ObdRuntimeModule& obd, SpeedSourceSelector& speed, GpsRuntimeModule& gps,
                                        QuietCoordinatorModule& quiet, ProductEventLog& events, HealthJournal& health,
                                        MainRuntimeState& state)
-    : wifi_(wifi), settings_(settings), profiles_(profiles), devices_(devices), storage_(storage), display_(display),
+    : wifi_(wifi), settings_(settings), presentation_(presentation), profiles_(profiles), devices_(devices), storage_(storage), display_(display),
       preview_(preview), power_(power), battery_(battery), touch_(touch), ble_(ble), parser_(parser),
       autoPush_(autoPush), obd_(obd),
       speed_(speed), gps_(gps), quiet_(quiet), events_(events), health_(health), state_(state),
@@ -103,6 +103,8 @@ void MaintenanceRuntime::appendStatus(JsonObject obj, void* context) {
 
 void MaintenanceRuntime::configureWebApi() {
     wifi_.setMaintenanceDependencies(ble_, display_, preview_, battery_, events_, health_);
+    wifi_.setProfilePresentationCallback(
+        [](int slot, void* context) { static_cast<MaintenanceRuntime*>(context)->presentProfileIndicator(slot); }, this);
     wifi_.setObdDependencies(&obd_, &speed_);
     wifi_.setGpsRuntime(&gps_);
     wifiOrchestrator_.ensureCallbacksConfigured();
@@ -141,7 +143,7 @@ void MaintenanceRuntime::initializeStorageAndProfiles() {
         },
         [](void* context) {
             auto& self = *static_cast<MaintenanceRuntime*>(context);
-            self.display_.updateColorTheme();
+            self.display_.updateColorTheme(makeDisplayStyleView(self.settings_));
             self.display_.setBrightness(self.settings_.get().brightness);
         },
     };
@@ -234,7 +236,10 @@ void MaintenanceRuntime::servicePowerDisplayOwnership(uint32_t nowMs) {
 
     const bool stationMode = wifi_.isConnected();
     const String ip = stationMode ? wifi_.getIPAddress() : wifi_.getAPIPAddress();
-    display_.showMaintenanceMode(ip.c_str(), stationMode);
+    {
+        const auto inputs = presentation_.captureForPaint();
+        display_.showMaintenanceMode(inputs.context(), ip.c_str(), stationMode);
+    }
     if (restoreBrightness) {
         const uint8_t savedBrightness = settings_.get().brightness;
         display_.setBrightness(savedBrightness);
@@ -340,7 +345,10 @@ void MaintenanceRuntime::tick(uint32_t nowMs) {
     const String ip = stationConnected ? wifi_.getIPAddress() : wifi_.getAPIPAddress();
     const bool previewRunning = preview_.isRunning();
     if (!powerPresentationOwned && !previewRunning && (ip != shownIp_ || stationConnected != shownStation_)) {
-        display_.showMaintenanceMode(ip.c_str(), stationConnected);
+        {
+            const auto inputs = presentation_.captureForPaint();
+            display_.showMaintenanceMode(inputs.context(), ip.c_str(), stationConnected);
+        }
     }
     shownIp_ = ip;
     shownStation_ = stationConnected;
@@ -349,7 +357,10 @@ void MaintenanceRuntime::tick(uint32_t nowMs) {
         preview_.update();
     }
     if (!powerPresentationOwned && preview_.consumeEnded()) {
-        display_.showMaintenanceMode(ip.c_str(), stationConnected);
+        {
+            const auto inputs = presentation_.captureForPaint();
+            display_.showMaintenanceMode(inputs.context(), ip.c_str(), stationConnected);
+        }
     }
 
     if (!idleHeapLogged_ && state_.maintenanceBootSessionStartedMs != 0 &&
@@ -443,4 +454,10 @@ void MaintenanceRuntime::prepareForShutdown() {
 
 void MaintenanceRuntime::resumeAfterAbortedShutdown() {
     RuntimeServiceLifecycleCoordinator::resumeMaintenance(*this);
+}
+
+void MaintenanceRuntime::presentProfileIndicator(int slot) {
+    display_.setProfileIndicatorSlot(slot, static_cast<uint32_t>(millis()));
+    const auto inputs = presentation_.captureForPaint();
+    display_.drawProfileIndicator(inputs.context());
 }

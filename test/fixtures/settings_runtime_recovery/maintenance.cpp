@@ -1,6 +1,7 @@
 #define main original_settings_suite_main
 #include "test/test_settings_persistence/test_settings_persistence.cpp"
 #undef main
+#include "test/mocks/runtime_presentation_source.h"
 #include "main_runtime_state.h"
 
 // Run the actual maintenance tick and HTTP post-restore callback. Only the
@@ -9,7 +10,7 @@ struct MaintenanceDisplay {
     uint8_t brightness = 0;
     unsigned writes = 0;
     void setBrightness(uint8_t value) { brightness = value; ++writes; }
-    void showMaintenanceMode(const char*, bool) {}
+    void showMaintenanceMode(const DisplayPaintContext&, const char*, bool) {}
 };
 struct MaintenancePreview {
     bool running = false;
@@ -47,6 +48,7 @@ public:
     SettingsManager& settings_;
     V1ProfileManager& profiles_ = profiles;
     StorageManager& storage_ = storage;
+    RuntimePresentationSource presentation_{settings_};
     MaintenanceDisplay display_;
     MaintenancePreview preview_;
     MaintenanceWifi wifi_;

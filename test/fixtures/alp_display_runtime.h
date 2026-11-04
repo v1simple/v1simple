@@ -19,6 +19,7 @@ class WiFiManager {
     bool isReconnectGaveUp() const { return false; }
 };
 #include "../../src/display.h"
+#include "../../src/runtime_presentation_source.h"
 #include "../../src/modules/gps/gps_runtime_module.h"
 #include "../../src/modules/alp/alp_runtime_module.cpp"
 #include "../../src/packet_parser.cpp"
@@ -28,6 +29,8 @@ class WiFiManager {
 #include "../../src/modules/display/render_frame_composer.cpp"
 #include "../../src/modules/display/display_pipeline_module.cpp"
 #include "../support/display_pipeline_fixture.h"
+#include "../../src/runtime_presentation_source.cpp"
+#include "../../src/display_presentation.cpp"
 #include "../../src/display_indicators.cpp"
 #include "../../src/display_top_counter.cpp"
 #include "../../src/display_cards.cpp"
@@ -43,7 +46,7 @@ V1Display* g_displayInstance = nullptr;
 static Band frequencyBand = BAND_NONE;
 static std::vector<DisplayLayout::DisplayRect> regionTransfers;
 
-V1Display::V1Display(SettingsManager& settings) : settings_(settings) {
+V1Display::V1Display() {
     currentPalette_ = ColorThemes::STANDARD();
     g_displayInstance = this;
 }
@@ -51,20 +54,21 @@ V1Display::~V1Display() = default;
 void V1Display::flushRegion(int16_t x, int16_t y, int16_t w, int16_t h) {
     regionTransfers.push_back({x, y, w, h});
 }
-void V1Display::drawFrequency(uint32_t, Band band, bool, uint8_t) { frequencyBand = band; }
-void V1Display::drawVolumeZeroWarning() {}
+void V1Display::drawFrequency(const ResolvedPaintStatus&, uint32_t, Band band, bool, uint8_t) { frequencyBand = band; }
+void V1Display::drawVolumeZeroWarning(const ResolvedPaintStatus&) {}
 #ifndef ALP_DISPLAY_REAL_STATUS
-void V1Display::drawVolumeIndicator(uint8_t, uint8_t) {}
-void V1Display::drawRssiIndicator(int) {}
-void V1Display::drawWiFiIndicator() {}
-void V1Display::drawBatteryIndicator() {}
-void V1Display::drawBLEProxyIndicator() {}
-void V1Display::drawProfileIndicator(int) {}
+void V1Display::drawVolumeIndicator(const ResolvedPaintStatus&, uint8_t, uint8_t) {}
+void V1Display::drawRssiIndicator(const ResolvedPaintStatus&, int) {}
+void V1Display::drawWiFiIndicator(const ResolvedPaintStatus&) {}
+void V1Display::drawBatteryIndicator(const ResolvedPaintStatus&) {}
+void V1Display::drawBLEProxyIndicator(const ResolvedPaintStatus&) {}
+void V1Display::drawProfileIndicator(const ResolvedPaintStatus&) {}
+void V1Display::drawBatteryIndicator(const DisplayPaintContext& context) {
+    const auto paint = resolvePaintStatus(context, nullptr);
+    drawBatteryIndicator(paint);
+}
 #endif
 void V1Display::setBrightness(uint8_t) {}
-#ifndef ALP_DISPLAY_REAL_STATUS
-bool V1Display::hasFreshBleContext(uint32_t) const { return false; }
-#endif
 const char* V1Display::bandToString(Band band) {
     switch (band) {
     case BAND_KA: return "Ka";
@@ -73,7 +77,7 @@ const char* V1Display::bandToString(Band band) {
     default: return "";
     }
 }
-uint16_t V1Display::getBandColor(Band) { return TFT_WHITE; }
+uint16_t V1Display::getBandColor(const ResolvedPaintStatus&, Band) { return TFT_WHITE; }
 bool DisplayFontManager::getTopCounterBounds(char, bool, int& min, int& max) {
     min = 0; max = 20; return true;
 }
@@ -87,7 +91,13 @@ void tearDown() { g_displayInstance = nullptr; }
 namespace {
 struct Runtime {
     SettingsManager settings;
-    V1Display display{settings};
+    V1Display display;
+    RuntimePresentationSource presentation{settings};
+    ObdRuntimeModule obd;
+    BatteryManager battery;
+    WiFiManager wifi;
+    GpsRuntimeModule gps;
+    QuietCoordinatorModule quiet;
     AlpRuntimeModule alp;
     PacketParser parser;
     V1BLEClient ble;
@@ -101,11 +111,12 @@ struct Runtime {
         ble.setConnected(connected);
         settings.alpAlertPersistSec = persistSec;
         display.setTestCanvas(new Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr));
-        display.setAlpRuntimeModule(&alp);
+        presentation.bind(obd, alp, battery, wifi, gps, quiet);
         display.ut_fontMgr().segment7Ready = true;
         DisplayPipelineDependencies deps;
         deps.displayMode = &mode;
         deps.display = &display;
+        deps.presentation = &presentation;
         deps.parser = &parser;
         deps.settings = &settings;
         deps.ble = &ble;

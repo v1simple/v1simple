@@ -22,6 +22,7 @@
 #include "../mocks/battery_manager.h"
 #include "../mocks/display.h"
 #include "../mocks/settings.h"
+#include "../mocks/runtime_presentation_source.h"
 
 #ifndef ARDUINO
 SerialClass Serial;
@@ -39,6 +40,7 @@ namespace {
 BatteryManager battery;
 V1Display display;
 SettingsManager testSettings;
+RuntimePresentationSource presentation{testSettings};
 PowerModule module;
 
 void setTime(unsigned long nowMs) {
@@ -75,7 +77,7 @@ void setUp() {
     testSettings = SettingsManager{};
     testSettings.settings.autoPowerOffMinutes = 10;
     module = PowerModule{};
-    module.begin(&battery, &display, &testSettings);
+    module.begin(&battery, &display, &testSettings, presentation);
 }
 
 void tearDown() {}

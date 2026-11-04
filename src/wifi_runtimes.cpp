@@ -1,3 +1,4 @@
+#include "runtime_presentation_source.h"
 /**
  * WiFi route-handler runtime factories.
  */
@@ -71,7 +72,10 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
         this,
         [](void* ctx) { return static_cast<int>(static_cast<WiFiManager*>(ctx)->settings_.get().activeSlot); },
         this,
-        [](int slot, void* ctx) { static_cast<WiFiManager*>(ctx)->display_->drawProfileIndicator(slot); },
+        [](int slot, void* ctx) {
+            auto& self = *static_cast<WiFiManager*>(ctx);
+            if (self.presentProfile_) self.presentProfile_(slot, self.presentProfileContext_);
+        },
         this,
         [](const WifiAutoPushApiService::ActivationRequest& request, void* ctx) {
             AutoPushStateUpdate update;
@@ -221,7 +225,7 @@ WifiDisplayColorsApiService::Runtime WiFiManager::makeDisplayColorsRuntime() {
         this,
         [](void* ctx) {
             auto* self = static_cast<WiFiManager*>(ctx);
-            self->display_->updateColorTheme();
+            self->display_->updateColorTheme(makeDisplayStyleView(self->settings_));
             self->display_->forceNextRedraw();
         },
         this,

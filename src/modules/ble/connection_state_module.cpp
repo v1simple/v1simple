@@ -18,7 +18,8 @@
 
 void ConnectionStateModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Display* displayPtr,
                                   PowerModule* powerModule, BleQueueModule* bleQueueModule,
-                                  AlertPersistenceModule* alertPersistence) {
+                                  AlertPersistenceModule* alertPersistence, RuntimePresentationSource& presentation) {
+    presentation_ = &presentation;
     ble_ = bleClient;
     parser_ = parserPtr;
     display_ = displayPtr;
@@ -90,12 +91,18 @@ void ConnectionStateModule::handleSessionClosed(unsigned long nowMs, uint32_t se
 }
 
 void ConnectionStateModule::presentConnected() {
-    display_->showResting();
+    {
+        const auto inputs = presentation_->captureForPaint();
+        display_->showResting(inputs.context());
+    }
     CONN_LOG("[BLE] V1 connected");
 }
 
 void ConnectionStateModule::presentDisconnected() {
-    display_->showScanning();
+    {
+        const auto inputs = presentation_->captureForPaint();
+        display_->showScanning(inputs.context());
+    }
     CONN_LOG("[BLE] V1 disconnected - scanning");
 }
 
@@ -198,8 +205,9 @@ bool ConnectionStateModule::process(unsigned long nowMs) {
     // Lifecycle callbacks remain display-free. Apply disconnect-derived
     // context cleanup here immediately before the authoritative owner render.
     if (!isConnected && disconnectDisplayCleanupPending_) {
-        display_->setBleContext(DisplayBleContext{});
-        display_->setBLEProxyStatus(false, false, false);
+        presentation_->noteBleSample(DisplayBleContext{}, false, static_cast<uint32_t>(millis()));
+        const auto inputs = presentation_->captureForPaint();
+        display_->refreshBleIndicator(inputs.context());
         display_->resetChangeTracking();
         disconnectDisplayCleanupPending_ = false;
         disconnectPresentationPending_ = true;
@@ -240,8 +248,8 @@ bool ConnectionStateModule::process(unsigned long nowMs) {
     // Left strip is always flushed; battery (right strip) will flush
     // when the pipeline next updates the right strip.
     if (!isConnected) {
-        display_->drawWiFiIndicator();
-        display_->drawBatteryIndicator();
+        const auto inputs = presentation_->captureForPaint();
+        display_->drawConnectionIndicators(inputs.context());
     }
 
     return isConnected;

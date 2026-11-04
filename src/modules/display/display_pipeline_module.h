@@ -6,6 +6,7 @@
 
 // Forward declarations — full headers included in display_pipeline_module.cpp
 class V1Display;
+class RuntimePresentationSource;
 struct DisplayState;
 struct V1Settings;
 class PacketParser;
@@ -23,6 +24,7 @@ class SpeedSourceSelector;
 struct DisplayPipelineDependencies {
     DisplayMode* displayMode = nullptr;
     V1Display* display = nullptr;
+    RuntimePresentationSource* presentation = nullptr;
     PacketParser* parser = nullptr;
     SettingsManager* settings = nullptr;
     V1BLEClient* ble = nullptr;
@@ -53,6 +55,7 @@ class DisplayPipelineModule {
   private:
     DisplayMode* displayMode_ = nullptr;
     V1Display* display_ = nullptr;
+    RuntimePresentationSource* presentation_ = nullptr;
     PacketParser* parser_ = nullptr;
     SettingsManager* settings_ = nullptr;
     V1BLEClient* ble_ = nullptr;

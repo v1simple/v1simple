@@ -39,7 +39,6 @@ unsigned long mockMicros = 0;
 #endif
 
 #include "../mocks/ble_client.h"
-#include "../mocks/display.h"
 #include "../mocks/settings.h"
 #include "../mocks/v1_profiles.h"
 #include "../mocks/modules/speed_mute/speed_mute_module.h"
@@ -66,7 +65,8 @@ class DisplayPreviewModule {
 #include <vector>
 
 static V1BLEClient ble;
-static V1Display display;
+static unsigned profilePresentationCalls = 0;
+static void presentProfile(int, void*) { ++profilePresentationCalls; }
 static PacketParser parser;
 static SettingsManager settings;
 static V1ProfileManager profiles;
@@ -458,7 +458,7 @@ void setUp() {
     protocolQueue.end();
     replyDuringSend.clear();
     ble.reset();
-    display = V1Display{};
+    profilePresentationCalls = 0;
     parser = PacketParser{};
     settings = SettingsManager{};
     profiles.reset();
@@ -466,7 +466,7 @@ void setUp() {
     mockMicros = 0;
     quiet.begin(&ble, &parser);
     module = AutoPushModule{};
-    module.begin(&settings, &profiles, &ble, &parser, &display, &quiet);
+    module.begin(&settings, &profiles, &ble, &parser, presentProfile, nullptr, &quiet);
     g_autoPushAdmissionFailurePointForTest = AutoPushAdmissionFailurePoint::None;
 }
 
@@ -484,7 +484,7 @@ void test_queue_rejects_failed_active_slot_persistence_before_operation_or_detec
     TEST_ASSERT_FALSE(module.isActive());
     TEST_ASSERT_EQUAL_UINT8(0, settings.settings.activeSlot);
     TEST_ASSERT_EQUAL_INT(1, settings.setActiveSlotCalls);
-    TEST_ASSERT_EQUAL_INT(0, display.drawProfileIndicatorCalls);
+    TEST_ASSERT_EQUAL_INT(0, profilePresentationCalls);
     at(1000);
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
@@ -516,7 +516,7 @@ void test_queue_stages_every_owned_string_and_definition_capacity_before_activat
         TEST_ASSERT_FALSE(module.isActive());
         TEST_ASSERT_EQUAL_UINT8(0, settings.settings.activeSlot);
         TEST_ASSERT_EQUAL_INT(0, settings.setActiveSlotCalls);
-        TEST_ASSERT_EQUAL_INT(0, display.drawProfileIndicatorCalls);
+        TEST_ASSERT_EQUAL_INT(0, profilePresentationCalls);
         at(1000);
         TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
         TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
@@ -552,7 +552,7 @@ void test_queue_secures_maximum_v3_profile_before_activation_and_preserves_legac
     TEST_ASSERT_TRUE(module.isActive());
     TEST_ASSERT_EQUAL_UINT8(1, settings.settings.activeSlot);
     TEST_ASSERT_EQUAL_INT(1, settings.setActiveSlotCalls);
-    TEST_ASSERT_EQUAL_INT(1, display.drawProfileIndicatorCalls);
+    TEST_ASSERT_EQUAL_INT(1, profilePresentationCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
 
     setUp();

@@ -1,10 +1,10 @@
+#include "settings_types.h"
 #include "display.h"
 #include "display_layout.h"
 #include "display_draw.h"
 #include "display_dirty_flags.h"
 #include "display_element_caches.h"
 #include "display_palette.h"
-#include "settings.h"
 #include "packet_parser.h"                  // Direction enum, DIR_FRONT/SIDE/REAR
 #include "modules/alp/alp_runtime_module.h" // AlpLaserDirection enum (for laser-color override)
 
@@ -14,9 +14,9 @@ DisplayLayout::DisplayRect V1Display::arrowBoundingRect(bool raisedLayout) {
 }
 
 // flashBits = image1 & ~image2, using the V1's physical direction bits.
-void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits, uint16_t frontColorOverride) {
+void V1Display::drawDirectionArrow(const ResolvedPaintStatus& paint, Direction dir, bool muted, uint8_t flashBits, uint16_t frontColorOverride) {
     // Arrows and band labels share one blink phase.
-    updateBlinkPhase_();
+    updateBlinkPhase_(paint.context.nowMs);
 
     // Active directions keep their geometry through the blink-off phase.
     const bool showFront = (dir & DIR_FRONT) != 0;
@@ -60,7 +60,7 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     int topArrowCenterY = cy - sideBarH / 2 - gap - topH / 2;
     int bottomArrowCenterY = cy + sideBarH / 2 + gap + bottomH / 2;
 
-    const V1Settings& s = settings_.get();
+    const V1Settings& s = paint.context.style.settings;
     uint16_t frontCol = muted ? PALETTE_MUTED_OR_PERSISTED : s.colorArrowFront;
     if (!muted && frontColorOverride != 0) {
         frontCol = frontColorOverride;
@@ -72,7 +72,7 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     // Match ALP pad colors only on an ALP-owned laser frame; unknown direction
     // keeps the palette. V1 radar arrows retain their own direction and colors
     // (docs/VALENTINE_PHILOSOPHY.md, principle #2).
-    if (!muted && alpHasLaserEvent_) {
+    if (!muted && paint.alpAlertActive) {
         const AlpLaserDirection laserDir = alpLaserEvent_.direction;
         if (laserDir == AlpLaserDirection::FRONT) {
             frontCol = TFT_RED;
@@ -214,6 +214,6 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     // the icon after the arrow clear so the corner is restored in the same frame.
     if (raisedLayout) {
         elementCaches_.battery.iconValid = false;
-        drawBatteryIndicator();
+        drawBatteryIndicator(paint);
     }
 }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime_presentation_source.h"
+
 #include <Arduino.h>
 #include "display_ble_context.h"
 
@@ -38,7 +40,7 @@ class DisplayOrchestrationModule {
     void begin(V1Display* displayPtr, V1BLEClient* bleClient, DisplayPreviewModule* previewModule,
                DisplayRestoreModule* restoreModule, PacketParser* parserPtr,
                VolumeFadeModule* volumeFadeModule, SpeedMuteModule* speedMuteModule,
-               QuietCoordinatorModule* quietCoordinator);
+               QuietCoordinatorModule* quietCoordinator, RuntimePresentationSource& presentation);
 
     void processEarly(const DisplayOrchestrationEarlyContext& ctx);
     bool processParsedFrame(const DisplayOrchestrationParsedContext& ctx);
@@ -46,11 +48,11 @@ class DisplayOrchestrationModule {
     bool processLightweightRefresh(const DisplayOrchestrationRefreshContext& ctx);
 
   private:
-    void syncQuietPresentation();
     void executeVolumeFade(uint32_t nowMs);
     bool processSpeedVolume(uint32_t nowMs);
 
     V1Display* display_ = nullptr;
+    RuntimePresentationSource* presentation_ = nullptr;
     V1BLEClient* ble_ = nullptr;
     DisplayPreviewModule* preview_ = nullptr;
     DisplayRestoreModule* restore_ = nullptr;

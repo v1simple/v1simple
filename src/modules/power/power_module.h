@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime_presentation_source.h"
+
 #include <Arduino.h>
 
 #include "battery_manager.h"
@@ -15,7 +17,7 @@ class PowerLifecycle {
 
 class PowerModule {
   public:
-    void begin(BatteryManager* batteryMgr, V1Display* disp, SettingsManager* settings);
+    void begin(BatteryManager* batteryMgr, V1Display* disp, SettingsManager* settings, RuntimePresentationSource& presentation);
     void setLifecycle(PowerLifecycle& lifecycle) { lifecycle_ = &lifecycle; }
 
     // Perform a graceful shutdown. Ignored before side effects in car builds.
@@ -77,6 +79,7 @@ class PowerModule {
 
     BatteryManager* battery_ = nullptr;
     V1Display* display_ = nullptr;
+    RuntimePresentationSource* presentation_ = nullptr;
     SettingsManager* settings_ = nullptr;
     PowerLifecycle* lifecycle_ = nullptr;
 #ifdef UNIT_TEST

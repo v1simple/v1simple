@@ -52,6 +52,7 @@ SettingsManager settings(storage, profiles);
 #include "../../src/settings_v1_device_delete.cpp"
 #include "../../src/touch_handler.cpp"
 #include "../mocks/display.h"
+#include "../mocks/runtime_presentation_source.h"
 #include "../../src/modules/touch/touch_ui_module.cpp"
 
 // The real touch/settings path runs below; only audio and physical display/I2C
@@ -103,11 +104,11 @@ bool processSliderInput(TouchUiModule& ui, uint32_t nowMs, bool bootPressed) {
 }
 
 void openAndAdjustBrightness(SettingsManager& manager, V1Display& display, TouchHandler& touch,
-                             TouchUiModule& ui) {
+                             TouchUiModule& ui, RuntimePresentationSource& presentation) {
     Wire.resetMock();
     TEST_ASSERT_TRUE(touch.begin());
     display.activeSliderFromTouch = 0; // y=80 is the production brightness hit region.
-    ui.begin(&display, &touch, &manager, {});
+    ui.begin(&display, &touch, &manager, {}, presentation);
     processSliderInput(ui, 1000, true);
     TEST_ASSERT_TRUE(processSliderInput(ui, 1400, false));
 
@@ -153,8 +154,9 @@ void assertSliderExitReloadsSelectedBrightness(bool failWrite, bool preempt) {
     TEST_ASSERT_FALSE(manager.deferredPersistPending());
     V1Display display;
     TouchHandler touch;
+    RuntimePresentationSource presentation(manager);
     TouchUiModule ui;
-    openAndAdjustBrightness(manager, display, touch, ui);
+    openAndAdjustBrightness(manager, display, touch, ui, presentation);
     if (failWrite) mock_preferences::set_fail_writes_for_key(kNvsBrightness);
 
     if (preempt) {
@@ -192,8 +194,9 @@ void test_failed_slider_exit_retries_persistent_failure_with_backoff() {
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
     V1Display display;
     TouchHandler touch;
+    RuntimePresentationSource presentation(manager);
     TouchUiModule ui;
-    openAndAdjustBrightness(manager, display, touch, ui);
+    openAndAdjustBrightness(manager, display, touch, ui, presentation);
     mock_preferences::set_fail_writes_for_key(kNvsBrightness);
     closeBrightnessSliders(ui);
     TEST_ASSERT_TRUE(manager.deferredPersistPending());
@@ -222,8 +225,9 @@ void test_failed_slider_exit_preserves_earlier_deferred_retry_and_values() {
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
     V1Display display;
     TouchHandler touch;
+    RuntimePresentationSource presentation(manager);
     TouchUiModule ui;
-    openAndAdjustBrightness(manager, display, touch, ui);
+    openAndAdjustBrightness(manager, display, touch, ui, presentation);
     ObdSettingsUpdate learned;
     learned.hasSavedAddress = true;
     learned.savedAddress = "AA:BB:CC:DD:EE:FF";

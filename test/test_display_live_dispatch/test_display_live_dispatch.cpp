@@ -11,6 +11,7 @@
 #include "../mocks/display_driver.h"
 #include "../mocks/Arduino.h"
 #include "../mocks/settings.h"
+#include "../mocks/runtime_presentation_source.h"
 #include "../../src/packet_parser.h"
 #include "../../src/modules/display/display_pipeline_module.h"
 #include "../support/display_pipeline_fixture.h"
@@ -82,53 +83,46 @@ class RecordingCanvas : public Arduino_Canvas {
     }
 };
 
-V1Display::V1Display(SettingsManager& injectedSettings) : settings_(injectedSettings) {
+V1Display::V1Display() {
     currentPalette_ = ColorThemes::STANDARD();
-    currentPalette_.colorMuted = settings_.get().colorMuted;
-    currentPalette_.colorPersisted = settings_.get().colorPersisted;
+    currentPalette_.colorMuted = settings.get().colorMuted;
+    currentPalette_.colorPersisted = settings.get().colorPersisted;
     g_displayInstance = this;
 }
 V1Display::~V1Display() = default;
 void V1Display::flushRegion(int16_t x, int16_t y, int16_t w, int16_t h) {
     regionalTransfers.push_back({x, y, w, h});
 }
-void V1Display::drawBaseFrame() {
+void V1Display::drawBaseFrame(const ResolvedPaintStatus& paint) {
     tft_->fillScreen(TFT_BLACK);
     elementCaches_.invalidateAll();
 }
-void V1Display::drawFrequency(uint32_t frequency, Band band, bool, uint8_t photoType) {
+void V1Display::drawFrequency(const ResolvedPaintStatus& paint, uint32_t frequency, Band band, bool, uint8_t photoType) {
     lastFrequencyMHz = frequency;
     lastFrequencyBand = band;
     lastFrequencyPhotoType = photoType;
 }
-void V1Display::drawVolumeZeroWarning() {}
-void V1Display::drawVolumeIndicator(uint8_t, uint8_t) {}
-void V1Display::drawRssiIndicator(int) {}
-void V1Display::drawWiFiIndicator() {}
-void V1Display::drawBatteryIndicator() {}
-void V1Display::drawBLEProxyIndicator() {}
-void V1Display::drawObdIndicator() {}
-void V1Display::drawGpsIndicator() { dirty_.gpsIndicator = false; }
-void V1Display::drawAlpIndicator() {}
-void V1Display::drawProfileIndicator(int) {}
-void V1Display::syncTopIndicators(uint32_t) {}
-bool V1Display::hasFreshBleContext(uint32_t) const { return false; }
+void V1Display::drawVolumeZeroWarning(const ResolvedPaintStatus& paint) {}
+void V1Display::drawVolumeIndicator(const ResolvedPaintStatus& paint, uint8_t, uint8_t) {}
+void V1Display::drawRssiIndicator(const ResolvedPaintStatus& paint, int) {}
+void V1Display::drawWiFiIndicator(const ResolvedPaintStatus& paint) {}
+void V1Display::drawBatteryIndicator(const ResolvedPaintStatus& paint) {}
+void V1Display::drawBLEProxyIndicator(const ResolvedPaintStatus& paint) {}
+void V1Display::drawObdIndicator(const ResolvedPaintStatus& paint) {}
+void V1Display::drawGpsIndicator(const ResolvedPaintStatus& paint) { dirty_.gpsIndicator = false; }
+void V1Display::drawAlpIndicator(const ResolvedPaintStatus& paint) {}
+void V1Display::drawProfileIndicator(const ResolvedPaintStatus&) {}
 static int stealthDrawCalls = 0;
-void V1Display::showStealth(float, bool) {
+void V1Display::showStealth(const ResolvedPaintStatus& paint, float, bool) {
     ++stealthDrawCalls;
     currentScreen_ = ScreenMode::Stealth;
 }
-void V1Display::showScanning(bool) {}
-void V1Display::setBleContext(const DisplayBleContext& context) { bleCtx_ = context; }
-void V1Display::setBLEProxyStatus(bool, bool, bool) {}
-void V1Display::setPreviewIndicatorOverridesActive(bool) {}
-void V1Display::setAlpPreviewState(bool, uint8_t, uint8_t) {}
-void V1Display::setObdPreviewState(bool, bool, bool) {}
-void V1Display::setProfileIndicatorSlot(int) {}
-void V1Display::setAlpFrequencyOverride(const char*, bool) {}
-void V1Display::clearAlpFrequencyOverride() {}
-void V1Display::setSpeedVolZeroActive(bool active) { speedVolZeroActive_ = active; }
-void V1Display::setAlpLaserEvent(const AlpLaserEvent&) {}
+void V1Display::showScanning(const DisplayPaintContext&, bool) {}
+void V1Display::refreshBleIndicator(const DisplayPaintContext&) {}
+void V1Display::setProfileIndicatorSlot(int slot, uint32_t at) {
+    if (slot != lastProfileSlot_) { lastProfileSlot_ = slot; profileChangedTime_ = at; }
+    currentProfileSlot_ = slot;
+}
 void V1Display::forceNextRedraw() { dirty_.resetTracking = true; }
 const char* V1Display::bandToString(Band band) {
     switch (band) {
@@ -139,8 +133,8 @@ const char* V1Display::bandToString(Band band) {
     default: return "";
     }
 }
-uint16_t V1Display::getBandColor(Band band) {
-    const auto& s = settings_.get();
+uint16_t V1Display::getBandColor(const ResolvedPaintStatus& paint, Band band) {
+    const auto& s = settings.get();
     switch (band) {
     case BAND_KA: return s.colorBandKa;
     case BAND_K: return s.colorBandK;
@@ -155,6 +149,9 @@ bool DisplayFontManager::getTopCounterBounds(char, bool, int& xMin, int& xMax) {
     return true;
 }
 
+#include "../support/presentation_inputs_fixture.h"
+#include "../../src/modules/alp/alp_runtime_module.cpp"
+#include "../../src/display_presentation.cpp"
 #include "../../src/display_top_counter.cpp"
 #include "../../src/display_cards.cpp"
 #include "../../src/display_bands.cpp"
@@ -176,7 +173,7 @@ bool DisplayFontManager::getTopCounterBounds(char, bool, int& xMin, int& xMax) {
 #include "../../src/modules/display/display_restore_module.cpp"
 #include "../../src/modules/display/display_orchestration_module.cpp"
 
-V1Display display(settings);
+V1Display display;
 
 namespace {
 RecordingCanvas* canvas() { return static_cast<RecordingCanvas*>(display.testCanvas()); }
@@ -214,7 +211,22 @@ void showLive(const AlertData& primary, const AlertData* secondary, uint8_t main
         frame.cardCount = 1;
         frame.cards[0].v1Alert = *secondary;
     }
-    display.renderFrame(frame);
+    display.renderFrame(frame, testDisplayInputs(settings).context());
+}
+
+void showLiveState(const AlertData& priority, const DisplayState& state) {
+    RenderFrame frame;
+    frame.primaryKind = RenderFramePrimaryKind::V1_LIVE;
+    frame.v1Priority = priority;
+    frame.primaryState = state;
+    display.renderFrame(frame, testDisplayInputs(settings).context());
+}
+void showPersistedState(const AlertData& priority, const DisplayState& state) {
+    RenderFrame frame;
+    frame.primaryKind = RenderFramePrimaryKind::V1_PERSISTED;
+    frame.v1Priority = priority;
+    frame.primaryState = state;
+    display.renderFrame(frame, testDisplayInputs(settings).context());
 }
 
 AlertData radarAlertFromSpecFields(uint8_t directionBits) {
@@ -282,7 +294,7 @@ void assertPriorityArrowPresentation(bool priorityOnly, Direction transmittedArr
     frame.primaryState.priorityArrow = priorityArrow;
     frame.cardCount = 1;
     frame.cards[0].v1Alert = AlertData::create(BAND_X, DIR_REAR, 0, 2, 10525, true, false);
-    display.renderFrame(frame);
+    display.renderFrame(frame, testDisplayInputs(settings).context());
 
     TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
     TEST_ASSERT_TRUE(regionalTransfers.empty());
@@ -317,7 +329,7 @@ void setUp() {
     stealthDrawCalls = 0;
     settings.slotAlertPersistSec[0] = 2;
     display.~V1Display();
-    new (&display) V1Display(settings);
+    new (&display) V1Display();
     display.setTestCanvas(new RecordingCanvas());
     display.ut_fontMgr().segment7Ready = true;
     clearObservations();
@@ -358,25 +370,25 @@ void test_event0010_new_x_with_unchanged_k_primary_paints_and_full_flushes() {
 
 void test_live_counter_only_change_full_flushes_then_cache_hit_skips() {
     const auto ka = AlertData::create(BAND_KA, DIR_SIDE, 6, 0, 34700, true, true);
-    display.update(ka, &ka, 1, stateFor(ka, '1', 6));
+    showLiveState(ka, stateFor(ka, '1', 6));
     clearObservations();
-    display.update(ka, &ka, 1, stateFor(ka, '2', 6));
+    showLiveState(ka, stateFor(ka, '2', 6));
     TEST_ASSERT_EQUAL_STRING("2", display.ut_fontMgr().segment7.lastPrinted);
     TEST_ASSERT_EQUAL_INT(1, canvas()->getFlushCount());
     TEST_ASSERT_TRUE(regionalTransfers.empty());
     clearObservations();
-    display.update(ka, &ka, 1, stateFor(ka, '2', 6));
+    showLiveState(ka, stateFor(ka, '2', 6));
     TEST_ASSERT_EQUAL_INT(0, canvas()->getFlushCount());
     TEST_ASSERT_TRUE(regionalTransfers.empty());
 }
 
 void test_live_pending_draw_full_flushes_even_when_frame_itself_is_unchanged() {
     const auto ka = AlertData::create(BAND_KA, DIR_SIDE, 6, 0, 34700, true, true);
-    display.update(ka, &ka, 1, stateFor(ka, '1', 6));
+    showLiveState(ka, stateFor(ka, '1', 6));
     clearObservations();
-    display.ut_drawTopCounterPair('2', false, false);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '2', false, false);
     TEST_ASSERT_FALSE(display.ut_drawnRegionEmpty());
-    display.update(ka, &ka, 1, stateFor(ka, '2', 6));
+    showLiveState(ka, stateFor(ka, '2', 6));
     TEST_ASSERT_EQUAL_INT(1, canvas()->getFlushCount());
     TEST_ASSERT_TRUE(regionalTransfers.empty());
     TEST_ASSERT_TRUE(display.ut_drawnRegionEmpty());
@@ -405,7 +417,7 @@ void test_live_alp_owns_primary_direction_while_v1_radar_keeps_card_direction_ge
     TEST_ASSERT_EQUAL_INT(1, frame.cardCount);
     TEST_ASSERT_EQUAL_INT(DIR_REAR, frame.cards[0].v1Alert.direction);
 
-    display.renderFrame(frame);
+    display.renderFrame(frame, testDisplayInputs(settings).context());
 
     TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
     const auto& sent = canvas()->flushSnapshots.front();
@@ -528,7 +540,7 @@ void test_k_primary_keeps_k_label_with_ka_and_ku_cards() {
     frame.cards[0].v1Alert = AlertData::create(BAND_KA, DIR_SIDE, 5, 0, 34700, true, false);
     frame.cards[1].v1Alert = AlertData::create(BAND_KU, DIR_REAR, 6, 0, 13450, true, false);
 
-    display.renderFrame(frame);
+    display.renderFrame(frame, testDisplayInputs(settings).context());
 
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(static_cast<uint8_t>(BAND_K | BAND_KA),
                                     display.ut_elementCaches().bands.lastMask,
@@ -548,7 +560,7 @@ void test_ka_primary_keeps_ka_and_k_labels_with_secondary_ku_card() {
     frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 4, 0, 24150, true, false);
     frame.cards[1].v1Alert = AlertData::create(BAND_KU, DIR_REAR, 6, 0, 13450, true, false);
 
-    display.renderFrame(frame);
+    display.renderFrame(frame, testDisplayInputs(settings).context());
 
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(static_cast<uint8_t>(BAND_KA | BAND_K),
                                     display.ut_elementCaches().bands.lastMask,
@@ -569,7 +581,7 @@ void test_ku_primary_relabels_shared_k_cell_with_k_and_ka_cards() {
     frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 4, 0, 24150, true, false);
     frame.cards[1].v1Alert = AlertData::create(BAND_KA, DIR_REAR, 5, 0, 34700, true, false);
 
-    display.renderFrame(frame);
+    display.renderFrame(frame, testDisplayInputs(settings).context());
 
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(static_cast<uint8_t>(BAND_KA | BAND_K | BAND_KU),
                                     display.ut_elementCaches().bands.lastMask,
@@ -589,7 +601,7 @@ void test_secondary_photo_stays_in_its_card_without_recoloring_ka_primary() {
     frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 6, 0, 24125, true, false);
     frame.cards[0].v1Alert.photoType = 1;
 
-    display.renderFrame(frame);
+    display.renderFrame(frame, testDisplayInputs(settings).context());
 
     TEST_ASSERT_EQUAL_UINT32(34700, lastFrequencyMHz);
     TEST_ASSERT_EQUAL_INT(BAND_KA, lastFrequencyBand);
@@ -618,7 +630,7 @@ void test_secondary_photo_does_not_reclassify_ordinary_k_priority_from_shared_p_
     frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 6, 0, 24125, true, false);
     frame.cards[0].v1Alert.photoType = 1;
 
-    display.renderFrame(frame);
+    display.renderFrame(frame, testDisplayInputs(settings).context());
 
     TEST_ASSERT_EQUAL_UINT32(24150, lastFrequencyMHz);
     TEST_ASSERT_EQUAL_INT(BAND_K, lastFrequencyBand);
@@ -648,7 +660,7 @@ void test_photo_priority_owns_primary_color_while_ordinary_alerts_stay_in_cards(
     frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 4, 0, 24150, true, false);
     frame.cards[1].v1Alert = AlertData::create(BAND_KA, DIR_REAR, 5, 0, 34700, true, false);
 
-    display.renderFrame(frame);
+    display.renderFrame(frame, testDisplayInputs(settings).context());
 
     TEST_ASSERT_EQUAL_UINT32(24125, lastFrequencyMHz);
     TEST_ASSERT_EQUAL_INT(BAND_K, lastFrequencyBand);
@@ -666,7 +678,7 @@ void test_persisted_photo_color_follows_the_saved_row_not_the_shared_p_counter()
     state.hasPhotoAlert = true;
 
     clearObservations();
-    display.updatePersisted(ordinaryK, state);
+    showPersistedState(ordinaryK, state);
     TEST_ASSERT_EQUAL_UINT32(24150, lastFrequencyMHz);
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, lastFrequencyPhotoType,
                                     "a P counter from another row must not reclassify saved ordinary K");
@@ -674,7 +686,7 @@ void test_persisted_photo_color_follows_the_saved_row_not_the_shared_p_counter()
     AlertData photo = AlertData::create(BAND_K, DIR_FRONT, 6, 0, 24125, true, true);
     photo.photoType = 1;
     clearObservations();
-    display.updatePersisted(photo, state);
+    showPersistedState(photo, state);
     TEST_ASSERT_EQUAL_UINT32(24125, lastFrequencyMHz);
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, lastFrequencyPhotoType,
                                     "a saved Photo row must retain its Photo presentation");
@@ -702,6 +714,7 @@ void test_priority_arrow_enabled_with_no_priority_direction_keeps_main_arrows_in
 
 namespace {
 struct CounterBlinkRuntime {
+    RuntimePresentationSource presentation{settings};
     PacketParser parser;
     V1BLEClient ble;
     AlertPersistenceModule persistence;
@@ -718,6 +731,7 @@ struct CounterBlinkRuntime {
         DisplayPipelineDependencies dependencies;
         dependencies.displayMode = &mode;
         dependencies.display = &display;
+        dependencies.presentation = &presentation;
         dependencies.parser = &parser;
         dependencies.settings = &settings;
         dependencies.ble = &ble;
@@ -725,9 +739,9 @@ struct CounterBlinkRuntime {
         dependencies.alp = &alp;
         dependencies.speedSelector = &speed;
         pipeline.begin(dependencies);
-        preview.begin(&display);
+        preview.begin(&display, presentation);
         restore.begin(preview, pipeline);
-        orchestration.begin(&display, &ble, &preview, &restore, &parser, nullptr, nullptr, nullptr);
+        orchestration.begin(&display, &ble, &preview, &restore, &parser, nullptr, nullptr, nullptr, presentation);
     }
 
     void feed(uint8_t id, std::initializer_list<uint8_t> payload, uint32_t nowMs = 10000) {
@@ -1313,8 +1327,33 @@ void test_live_alp_counter_blinks_after_taking_stealth_screen() {
     assertCounterBlinkCycle(runtime, "J");
 }
 
+void test_connect_settle_suppression_evolves_actual_cards_then_reveals_and_clears() {
+    CounterBlinkRuntime runtime;
+    runtime.ble.setConnected(true);
+    runtime.ble.setConnectBurstSettling(true);
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x12, 0x87, 0x8C, 0xAC, 0x00, 0x22, 0x80});
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x22, 0x5E, 0x56, 0x00, 0xB8, 0x84, 0x00});
+    RenderFrame prepared;
+    TEST_ASSERT_TRUE(runtime.pipeline.prepareParsed(10000, prepared));
+    TEST_ASSERT_EQUAL_UINT8(1, prepared.cardCount);
+    runtime.pipeline.presentPrepared(prepared, 10000);
+    TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, prepared.cardCount, "painting does not mutate the frame admitted to voice");
+    runtime.ble.setConnectBurstSettling(false);
+    mockMillis = 10100;
+    runtime.pipeline.presentPrepared(prepared, 10100);
+    TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+    TEST_ASSERT_EQUAL_UINT32(24150, display.ut_elementCaches().cards.lastDrawnPositions[0].frequency);
+    clearObservations();
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x11, 0x87, 0x8C, 0xAC, 0x00, 0x22, 0x80}, 10200);
+    presentParsedFrame(runtime.pipeline, 10200);
+    TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
+    TEST_ASSERT_EQUAL_INT(1, canvas()->getFlushCount());
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_connect_settle_suppression_evolves_actual_cards_then_reveals_and_clears);
     RUN_TEST(test_event0007_new_x_with_unchanged_ka_primary_paints_and_full_flushes);
     RUN_TEST(test_event0010_new_x_with_unchanged_k_primary_paints_and_full_flushes);
     RUN_TEST(test_live_counter_only_change_full_flushes_then_cache_hit_skips);

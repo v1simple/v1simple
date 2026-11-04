@@ -1,3 +1,4 @@
+#include "settings_types.h"
 #include "display.h"
 #include "display_layout.h"
 #include "display_draw.h"
@@ -6,7 +7,6 @@
 #include "display_text.h"
 #include "display_segments.h"
 #include "display_font_manager.h"
-#include "settings.h"
 #include <cstring>
 
 using namespace DisplaySegments;
@@ -265,8 +265,8 @@ int V1Display::draw14SegmentText(const char* text, int x, int y, float scale, ui
     return cursor - x - m.spacing;
 }
 
-void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, char secondary, bool secondaryDot) {
-    const V1Settings& s = settings_.get();
+void V1Display::drawTopCounterPair(const ResolvedPaintStatus& paint, char primary, bool muted, bool primaryDot, char secondary, bool secondaryDot) {
+    const V1Settings& s = paint.context.style.settings;
     const bool hasSecondary = hasTrailingTopCounterSymbol(secondary, secondaryDot);
     const bool primaryIsDigit = isTopCounterDigit(primary);
     const bool secondaryIsDigit = !hasSecondary || isTopCounterDigit(secondary);
@@ -395,12 +395,12 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
     }
 }
 
-void V1Display::drawTopCounterSegment7(char symbol, bool muted, bool showDot) {
-    drawTopCounterPair(symbol, muted, showDot);
+void V1Display::drawTopCounterSegment7(const ResolvedPaintStatus& paint, char symbol, bool muted, bool showDot) {
+    drawTopCounterPair(paint, symbol, muted, showDot);
 }
 
-void V1Display::drawTopCounter(char symbol, bool muted, bool showDot) {
-    drawTopCounterSegment7(symbol, muted, showDot);
+void V1Display::drawTopCounter(const ResolvedPaintStatus& paint, char symbol, bool muted, bool showDot) {
+    drawTopCounterSegment7(paint, symbol, muted, showDot);
 }
 
 void V1Display::drawMuteIcon(bool muted) {

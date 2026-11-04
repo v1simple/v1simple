@@ -25,18 +25,20 @@ SerialClass Serial;
 #include "../../include/display_element_caches.h"
 #include "../../include/display_layout.h"
 
+#include "../support/presentation_leaf_fixture.h"
+
 V1Display* g_displayInstance = nullptr;
 SettingsManager settings;
 
-V1Display::V1Display(SettingsManager& injectedSettings) : settings_(injectedSettings) {
+V1Display::V1Display() {
     currentPalette_ = ColorThemes::STANDARD();
-    currentPalette_.colorMuted = settings_.get().colorMuted;
-    currentPalette_.colorPersisted = settings_.get().colorPersisted;
+    currentPalette_.colorMuted = settings.get().colorMuted;
+    currentPalette_.colorPersisted = settings.get().colorPersisted;
     g_displayInstance = this;
 }
 V1Display::~V1Display() = default;
 
-V1Display display(settings);
+V1Display display;
 
 bool DisplayFontManager::getTopCounterBounds(char symbol, bool showDot, int& xMin, int& xMax) {
     // Mirror production semantics: bounds come from a boot-primed cache and
@@ -81,7 +83,7 @@ static int16_t cursorAfterDrawing(char symbol, bool dot = false) {
     resetCanvas();
     resetFontRecorder();
     display.ut_elementCaches().topCounter.counterValid = false;
-    display.ut_drawTopCounterPair(symbol, false, dot);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), symbol, false, dot);
     TEST_ASSERT_EQUAL_INT(1, display.ut_fontMgr().segment7.printfCount);
     TEST_ASSERT_EQUAL_CHAR(symbol, display.ut_fontMgr().segment7.lastPrinted[0]);
     return display.ut_fontMgr().segment7.lastCursorX;
@@ -98,7 +100,7 @@ void setUp() {
 void tearDown() {}
 
 void test_top_counter_uses_ofr_segment7_when_ready() {
-    display.ut_drawTopCounterPair('8', false, false);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '8', false, false);
 
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRoundRectCalls.size());
     TEST_ASSERT_EQUAL_INT(1, display.ut_fontMgr().segment7.printfCount);
@@ -106,11 +108,11 @@ void test_top_counter_uses_ofr_segment7_when_ready() {
 }
 
 void test_top_counter_transition_to_narrow_digit_keeps_same_clear_window() {
-    display.ut_drawTopCounterPair('8', false, false);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '8', false, false);
     resetCanvas();
     resetFontRecorder();
 
-    display.ut_drawTopCounterPair('1', false, false);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '1', false, false);
 
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
     TEST_ASSERT_EQUAL_INT16(DisplayLayout::TOP_COUNTER_FIELD_X - 1,
@@ -152,7 +154,7 @@ void test_top_counter_cursor_ignores_corrupted_live_measure() {
 }
 
 void test_top_counter_fixed_dot_stays_inside_field() {
-    display.ut_drawTopCounterPair('0', false, true);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '0', false, true);
 
     TEST_ASSERT_GREATER_THAN_UINT(0u, canvas()->fillCircleCalls.size());
     const auto& dot = canvas()->fillCircleCalls.back();
@@ -212,19 +214,19 @@ static void assertCounterNoPaint() {
 static void assertSameDigitDotTransition(bool initialDot, bool ofr) {
     display.ut_fontMgr().segment7Ready = ofr;
     resetCounterObservations();
-    display.ut_drawTopCounterPair('3', false, initialDot);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '3', false, initialDot);
     assertCounterRepaint(initialDot, ofr);
 
     resetCounterObservations();
-    display.ut_drawTopCounterPair('3', false, !initialDot);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '3', false, !initialDot);
     assertCounterRepaint(!initialDot, ofr);
 
     resetCounterObservations();
-    display.ut_drawTopCounterPair('3', false, !initialDot);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '3', false, !initialDot);
     assertCounterNoPaint();
 
     display.ut_elementCaches().topCounter.invalidate();
-    display.ut_drawTopCounterPair('3', false, !initialDot);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '3', false, !initialDot);
     assertCounterRepaint(!initialDot, ofr);
 }
 
@@ -242,9 +244,9 @@ void test_same_digit_dot_off_clears_previously_painted_dot_with_fallback() {
 }
 
 void test_fixed_dot_preserves_mute_and_color_cache_keys() {
-    display.ut_drawTopCounterPair('3', false, true);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '3', false, true);
     resetCounterObservations();
-    display.ut_drawTopCounterPair('3', true, true);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '3', true, true);
     assertCounterRepaint(true, true);
     // Numeric glyphs/dots retain the configured bogey color even when muted.
     TEST_ASSERT_EQUAL_UINT16(settings.get().colorBogey, canvas()->fillCircleCalls[0].color);
@@ -252,7 +254,7 @@ void test_fixed_dot_preserves_mute_and_color_cache_keys() {
     const uint16_t originalColor = settings.get().colorBogey;
     settings.mutableSettings().colorBogey ^= 1;
     resetCounterObservations();
-    display.ut_drawTopCounterPair('3', true, true);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '3', true, true);
     assertCounterRepaint(true, true);
     TEST_ASSERT_EQUAL_UINT16(settings.get().colorBogey, canvas()->fillCircleCalls[0].color);
     settings.mutableSettings().colorBogey = originalColor;
@@ -262,14 +264,14 @@ void test_photo_counter_uses_photo_color_and_repaints_when_it_changes() {
     V1Settings& mutableSettings = settings.mutableSettings();
     const uint16_t originalPhotoColor = mutableSettings.colorBandPhoto;
 
-    display.ut_drawTopCounterPair('P', false, false);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), 'P', false, false);
     TEST_ASSERT_EQUAL_STRING("P", display.ut_fontMgr().segment7.lastPrinted);
     TEST_ASSERT_EQUAL_HEX16(mutableSettings.colorBandPhoto,
                             display.ut_elementCaches().topCounter.lastBogeyColor);
 
     mutableSettings.colorBandPhoto ^= 1;
     resetCounterObservations();
-    display.ut_drawTopCounterPair('P', false, false);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), 'P', false, false);
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
     TEST_ASSERT_EQUAL_INT(1, display.ut_fontMgr().segment7.printfCount);
     TEST_ASSERT_EQUAL_STRING("P", display.ut_fontMgr().segment7.lastPrinted);
@@ -280,27 +282,27 @@ void test_photo_counter_uses_photo_color_and_repaints_when_it_changes() {
 }
 
 void test_text_and_paired_dots_keep_their_existing_layout_and_cache_semantics() {
-    display.ut_drawTopCounterPair('P', false, true);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), 'P', false, true);
     TEST_ASSERT_EQUAL_STRING("P.", display.ut_fontMgr().segment7.lastPrinted);
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillCircleCalls.size());
     resetCounterObservations();
-    display.ut_drawTopCounterPair('\0', false, true);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '\0', false, true);
     TEST_ASSERT_EQUAL_STRING(" .", display.ut_fontMgr().segment7.lastPrinted);
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillCircleCalls.size());
     resetCounterObservations();
-    display.ut_drawTopCounterPair(' ', false, true);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), ' ', false, true);
     assertCounterNoPaint(); // Null and space normalize to the same text.
 
-    display.ut_drawTopCounterPair('3', false, true, '4', true);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '3', false, true, '4', true);
     TEST_ASSERT_EQUAL_STRING("3.4.", display.ut_fontMgr().segment7.lastPrinted);
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillCircleCalls.size());
     resetCounterObservations();
-    display.ut_drawTopCounterPair('3', false, true, '4', true);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '3', false, true, '4', true);
     assertCounterNoPaint();
-    display.ut_drawTopCounterPair('3', false, true);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '3', false, true);
     assertCounterRepaint(true, true);
     resetCounterObservations();
-    display.ut_drawTopCounterPair('3', false, true);
+    display.ut_drawTopCounterPair(testDisplayInputs(settings).context(), '3', false, true);
     assertCounterNoPaint();
 }
 

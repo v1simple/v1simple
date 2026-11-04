@@ -1,6 +1,7 @@
 #define main original_settings_suite_main
 #include "test/test_settings_persistence/test_settings_persistence.cpp"
 #undef main
+#include "test/mocks/runtime_presentation_source.h"
 
 #include "test/mocks/battery_manager.h"
 #include "src/modules/power/power_module.cpp"
@@ -54,7 +55,7 @@ struct RecoveryAlp {
 struct RecoveryDisplay {
   uint8_t brightness = 0;
   unsigned themes = 0, redraws = 0;
-  void updateColorTheme() { ++themes; }
+  void updateColorTheme(const DisplayStyleView&) { ++themes; }
   void forceNextRedraw() { ++redraws; }
   void setBrightness(uint8_t value) { brightness = value; }
 };
@@ -89,6 +90,7 @@ public:
     void requestRecoveredSettingsAdmission() {}
   } connectionCycle_;
   ObdSettingsSyncModule obdSettingsSync_;
+  RuntimePresentationSource presentation_{settings_};
   PowerModule power_;
   BatteryManager battery_;
   V1Display powerDisplay_;
@@ -106,7 +108,7 @@ public:
   explicit DriveRuntime(SettingsManager &owner) : settings_(owner) {
     battery_.setOnBattery(true);
     battery_.setBatteryPercent(90);
-    power_.begin(&battery_, &powerDisplay_, &settings_);
+    power_.begin(&battery_, &powerDisplay_, &settings_, presentation_);
     obdSettingsSync_.begin(&settings_, &obd_);
   }
   void syncRecoveredSettings();

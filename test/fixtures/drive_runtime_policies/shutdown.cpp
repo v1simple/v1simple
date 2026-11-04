@@ -3,6 +3,7 @@
 #undef main
 #include "test/mocks/battery_manager.h"
 
+#include "test/mocks/runtime_presentation_source.h"
 #include "src/modules/power/power_module.cpp"
 #include "src/runtime_coordinator.h"
 #include "src/storage_json_rollback.cpp"
@@ -90,7 +91,8 @@ void exercise_shutdown(bool sd, bool released, bool lockAvailable,
     battery.setBatteryPercent(90);
     V1Display display;
     PowerModule power;
-    power.begin(&battery, &display, &owner);
+    RuntimePresentationSource presentation{owner};
+    power.begin(&battery, &display, &owner, presentation);
     power.setLifecycle(runtime);
     power.performShutdown();
     TEST_ASSERT_EQUAL_UINT(1, runtime.events_.stops);

@@ -1,3 +1,4 @@
+#include "settings_types.h"
 #include "display.h"
 #include "display_layout.h"
 #include "display_draw.h"
@@ -6,18 +7,14 @@
 #include "display_text.h"
 #include "display_segments.h"
 #include "display_font_manager.h"
-#include "settings.h"
-#include "battery_manager.h"
-#include "wifi_manager.h"
 #include <cmath>
 #include <cstring>
 
 using namespace DisplaySegments;
 
-static bool s_batteryShowOnUSB = true;
 
-void V1Display::drawVolumeIndicator(uint8_t mainVol, uint8_t muteVol) {
-    const V1Settings& s = settings_.get();
+void V1Display::drawVolumeIndicator(const ResolvedPaintStatus& paint, uint8_t mainVol, uint8_t muteVol) {
+    const V1Settings& s = paint.context.style.settings;
     const DisplayLayout::DisplayRect mainRect = DisplayLayout::volumeMainRect();
     const DisplayLayout::DisplayRect muteRect = DisplayLayout::volumeMuteRect();
     const DisplayLayout::DisplayRect clearRect = DisplayLayout::volumeIndicatorRect();
@@ -51,13 +48,13 @@ void V1Display::drawVolumeIndicator(uint8_t mainVol, uint8_t muteVol) {
     GFX_drawString(tft_, muteBuf, muteRect.x, muteRect.y);
 }
 
-void V1Display::drawRssiIndicator(int rssi) {
+void V1Display::drawRssiIndicator(const ResolvedPaintStatus& paint, int rssi) {
     const DisplayLayout::DisplayRect rssiRect = DisplayLayout::rssiRect();
     const int x = rssiRect.x;
     const int y = rssiRect.y;
     const int lineHeight = rssiRect.h / 2;
 
-    const V1Settings& s = settings_.get();
+    const V1Settings& s = paint.context.style.settings;
     const bool hidden = (s.hideRssiIndicator || s.hideVolumeIndicator);
     if (hidden) {
         // Clear once when entering the hidden state.
@@ -73,22 +70,15 @@ void V1Display::drawRssiIndicator(int rssi) {
         return;
     }
 
-    if (!hasFreshBleContext(millis())) {
+    if (!paint.bleFresh) {
         return; // Stale transport context must not erase the last known value.
     }
 
     const int v1Rssi = rssi;
-    const int appRssi = bleCtx_.proxyRssi;
+    const int appRssi = paint.proxyRssi;
 
-    auto rssiColorFor = [](int r) -> uint16_t {
-        if (r >= -75)
-            return COLOR_GREEN;
-        if (r >= -90)
-            return COLOR_YELLOW;
-        return COLOR_RED;
-    };
-    const uint16_t v1Color = (v1Rssi != 0) ? rssiColorFor(v1Rssi) : 0;
-    const uint16_t appColor = (appRssi != 0) ? rssiColorFor(appRssi) : 0;
+    const uint16_t v1Color = paint.v1RssiColor;
+    const uint16_t appColor = paint.proxyRssiColor;
 
     const bool forceBothLines = !elementCaches_.rssi.valid || elementCaches_.rssi.lastHidden;
     const bool v1Changed = forceBothLines || !elementCaches_.rssi.v1LineValid ||
@@ -151,22 +141,16 @@ void V1Display::drawRssiIndicator(int rssi) {
     }
 }
 
-void V1Display::setProfileIndicatorSlot(int slot) {
+void V1Display::setProfileIndicatorSlot(int slot, uint32_t selectedAtMs) {
     if (slot != lastProfileSlot_) {
         lastProfileSlot_ = slot;
-        profileChangedTime_ = static_cast<uint32_t>(millis());
+        profileChangedTime_ = selectedAtMs;
     }
     currentProfileSlot_ = slot;
 }
 
-void V1Display::drawProfileIndicator(int slot) {
-    const V1Settings& s = settings_.get();
-
-    setProfileIndicatorSlot(slot);
-
-    const uint32_t nowMs = static_cast<uint32_t>(millis());
-    bool inFlashPeriod = (nowMs - profileChangedTime_) < HIDE_TIMEOUT_MS;
-
+void V1Display::drawProfileIndicator(const ResolvedPaintStatus& paint) {
+    const int slot = paint.profileSlot;
 #if defined(DISPLAY_WAVESHARE_349)
     const DisplayLayout::DisplayRect profileRect = DisplayLayout::profileRect();
     const int cx = profileRect.x + profileRect.w / 2;
@@ -175,7 +159,7 @@ void V1Display::drawProfileIndicator(int slot) {
     // redraw the battery after painting here; cache hits must skip both operations.
 
     // A profile change briefly reveals an indicator hidden by user preference.
-    if (s.hideProfileIndicator && !inFlashPeriod) {
+    if (paint.profileHidden) {
         if (elementCaches_.profile.valid && elementCaches_.profile.hiddenRender) {
             return;
         }
@@ -187,26 +171,12 @@ void V1Display::drawProfileIndicator(int slot) {
         elementCaches_.profile.lastSlot = -1;
         // The profile clear overlaps the battery body but not the WiFi icon.
         elementCaches_.battery.iconValid = false;
-        drawBatteryIndicator();
+        drawBatteryIndicator(paint);
         return;
     }
 
-    const char* name;
-    uint16_t color;
-    switch (slot % 3) {
-    case 0:
-        name = s.slot0Name.length() > 0 ? s.slot0Name.c_str() : "DEFAULT";
-        color = s.slot0Color;
-        break;
-    case 1:
-        name = s.slot1Name.length() > 0 ? s.slot1Name.c_str() : "HIGHWAY";
-        color = s.slot1Color;
-        break;
-    default: // case 2
-        name = s.slot2Name.length() > 0 ? s.slot2Name.c_str() : "COMFORT";
-        color = s.slot2Color;
-        break;
-    }
+    const char* name = paint.profileName;
+    const uint16_t color = paint.profileColor;
 
     if (elementCaches_.profile.valid && !elementCaches_.profile.hiddenRender &&
         slot == elementCaches_.profile.lastSlot && color == elementCaches_.profile.lastColor &&
@@ -237,13 +207,13 @@ void V1Display::drawProfileIndicator(int slot) {
 
     // Restore the battery corner clipped by the profile clear.
     elementCaches_.battery.iconValid = false;
-    drawBatteryIndicator();
+    drawBatteryIndicator(paint);
 #endif
 }
 
-void V1Display::drawBatteryIndicator() {
+void V1Display::drawBatteryIndicator(const ResolvedPaintStatus& paint) {
 #if defined(DISPLAY_WAVESHARE_349)
-    const V1Settings& s = settings_.get();
+    const V1Settings& s = paint.context.style.settings;
 
     const int battW = 14;
     const int battH = 28;
@@ -254,30 +224,14 @@ void V1Display::drawBatteryIndicator() {
     const DisplayLayout::DisplayRect percentRect = DisplayLayout::batteryPercentRect();
     const DisplayLayout::DisplayRect iconRect = DisplayLayout::batteryIconRect();
 
-    // Hysteresis keeps the indicator from flickering at the USB/full-charge boundary.
-    const uint16_t voltage = battery_ ? battery_->getVoltageMillivolts() : 0;
-    if (voltage > 4125) {
-        s_batteryShowOnUSB = false;
-    } else if (voltage < 4095) {
-        s_batteryShowOnUSB = true;
-    }
+    // Resolve hysteresis once, but commit only when the battery painter runs.
+    batteryShowOnUsb_ = paint.batteryShowOnUsb;
+    const uint8_t pct = paint.batteryPercent;
 
-    const uint8_t pct = battery_ ? battery_->getPercentage() : 0;
-
-    if (s.showBatteryPercent && !s.hideBatteryIcon && battery_ && battery_->hasBattery()) {
+    if (paint.batteryPercentMode) {
         const unsigned long PCT_FORCE_REDRAW_MS = 60000;
-
-        uint16_t textColor;
-        if (pct <= 20) {
-            textColor = 0xF800;
-        } else if (pct <= 40) {
-            textColor = 0xFD20;
-        } else {
-            textColor = 0x07E0;
-        }
-        textColor = dimColor(textColor);
-
-        const unsigned long nowMs = millis();
+        const uint16_t textColor = paint.batteryTextColor;
+        const uint32_t nowMs = paint.context.nowMs;
         const bool needsRedraw = (!elementCaches_.battery.lastPctVisible) ||
                                  (pct != elementCaches_.battery.lastPctDrawn) ||
                                  (textColor != elementCaches_.battery.lastPctColor) ||
@@ -293,7 +247,7 @@ void V1Display::drawBatteryIndicator() {
             elementCaches_.battery.lastFilledSections = -1;
         }
 
-        if (!s_batteryShowOnUSB) {
+        if (!paint.batteryShowOnUsb) {
             if (elementCaches_.battery.lastPctVisible) {
                 drawnRegion_.add(percentRect.x, percentRect.y, percentRect.w, percentRect.h);
                 FILL_RECT(percentRect.x, percentRect.y, percentRect.w, percentRect.h, PALETTE_BG);
@@ -327,35 +281,19 @@ void V1Display::drawBatteryIndicator() {
         return;
     }
 
-    const bool hasBat = battery_ && battery_->hasBattery();
+    const bool hasBat = paint.context.status.hasBattery;
     const bool hideIcon = s.hideBatteryIcon;
-    const bool shownNow = hasBat && !hideIcon && s_batteryShowOnUSB;
-
-    int filledSections = 0;
-    uint16_t fillColor = 0x07E0;
-    if (shownNow) {
-        const int sections = 5;
-        filledSections = (pct + 10) / 20;
-        if (pct == 0)
-            filledSections = 0;
-        if (filledSections > sections)
-            filledSections = sections;
-
-        if (pct <= 20)
-            fillColor = 0xF800;
-        else if (pct <= 40)
-            fillColor = 0xFD20;
-        else
-            fillColor = 0x07E0;
-    }
-    const uint16_t outlineColor = dimColor(PALETTE_TEXT);
+    const bool shownNow = paint.batteryShown;
+    const int filledSections = paint.batterySections;
+    const uint16_t fillColor = paint.batteryFillColor;
+    const uint16_t outlineColor = paint.batteryOutlineColor;
 
     // Profile clearing and screen invalidation force a repaint through iconValid.
     if (elementCaches_.battery.iconValid && elementCaches_.battery.lastIconShown == shownNow &&
         elementCaches_.battery.lastFilledSections == filledSections &&
         elementCaches_.battery.lastFillColor == fillColor && elementCaches_.battery.lastOutlineColor == outlineColor &&
         elementCaches_.battery.lastHasBattery == hasBat && elementCaches_.battery.lastHideIcon == hideIcon &&
-        elementCaches_.battery.lastOnUSB == s_batteryShowOnUSB &&
+        elementCaches_.battery.lastOnUSB == paint.batteryShowOnUsb &&
         elementCaches_.battery.lastShowPercent == s.showBatteryPercent) {
         return;
     }
@@ -376,7 +314,7 @@ void V1Display::drawBatteryIndicator() {
         elementCaches_.battery.lastOutlineColor = outlineColor;
         elementCaches_.battery.lastHasBattery = hasBat;
         elementCaches_.battery.lastHideIcon = hideIcon;
-        elementCaches_.battery.lastOnUSB = s_batteryShowOnUSB;
+        elementCaches_.battery.lastOnUSB = paint.batteryShowOnUsb;
         elementCaches_.battery.lastShowPercent = s.showBatteryPercent;
         return;
     }
@@ -408,12 +346,12 @@ void V1Display::drawBatteryIndicator() {
     elementCaches_.battery.lastOutlineColor = outlineColor;
     elementCaches_.battery.lastHasBattery = hasBat;
     elementCaches_.battery.lastHideIcon = hideIcon;
-    elementCaches_.battery.lastOnUSB = s_batteryShowOnUSB;
+    elementCaches_.battery.lastOnUSB = paint.batteryShowOnUsb;
     elementCaches_.battery.lastShowPercent = s.showBatteryPercent;
 #endif
 }
 
-void V1Display::drawBLEProxyIndicator() {
+void V1Display::drawBLEProxyIndicator(const ResolvedPaintStatus& paint) {
 #if defined(DISPLAY_WAVESHARE_349)
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::bleBadgeRect();
     const DisplayLayout::DisplayRect iconRect = DisplayLayout::bleIconRect();
@@ -421,46 +359,18 @@ void V1Display::drawBLEProxyIndicator() {
     const int bleX = iconRect.x;
     const int bleY = iconRect.y;
 
-    if (!bleProxyEnabled_) {
+    if (!paint.bleShown) {
         if (bleProxyDrawn_) {
             drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h);
             FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
             bleProxyDrawn_ = false;
         }
-        if (elementCaches_.bleProxy.valid && !elementCaches_.bleProxy.lastDrawn) {
-            return;
-        }
+        if (elementCaches_.bleProxy.valid && !elementCaches_.bleProxy.lastDrawn) return;
         elementCaches_.bleProxy.valid = true;
         elementCaches_.bleProxy.lastDrawn = false;
         return;
     }
-
-    const V1Settings& s = settings_.get();
-    if (s.hideBleIcon) {
-        if (bleProxyDrawn_) {
-            drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h);
-            FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
-            bleProxyDrawn_ = false;
-        }
-        if (elementCaches_.bleProxy.valid && !elementCaches_.bleProxy.lastDrawn) {
-            return;
-        }
-        elementCaches_.bleProxy.valid = true;
-        elementCaches_.bleProxy.lastDrawn = false;
-        return;
-    }
-
-    // Preview steps own BLE freshness; runtime timestamps must not dim a pinned step.
-    const bool bleContextFresh = previewIndicatorOverridesActive_ || hasFreshBleContext(millis());
-
-    uint16_t btColor;
-    if (bleProxyClientConnected_) {
-        const bool receivingData = bleReceivingData_ && bleContextFresh;
-        btColor = receivingData ? dimColor(s.colorBleConnected, 85)
-                                : dimColor(s.colorBleConnected, 40);
-    } else {
-        btColor = dimColor(s.colorBleDisconnected, 85);
-    }
+    const uint16_t btColor = paint.bleColor;
 
     if (elementCaches_.bleProxy.valid && elementCaches_.bleProxy.lastDrawn &&
         elementCaches_.bleProxy.lastColor == btColor && bleProxyDrawn_) {
@@ -520,9 +430,8 @@ void V1Display::drawBLEProxyIndicator() {
 #endif
 }
 
-void V1Display::drawWiFiIndicator() {
+void V1Display::drawWiFiIndicator(const ResolvedPaintStatus& paint) {
 #if defined(DISPLAY_WAVESHARE_349)
-    const V1Settings& s = settings_.get();
 
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::wifiBadgeRect();
     const DisplayLayout::DisplayRect iconRect = DisplayLayout::wifiIconRect();
@@ -530,40 +439,15 @@ void V1Display::drawWiFiIndicator() {
     const int wifiY = iconRect.y;
     const int wifiSize = iconRect.w;
 
-    if (s.hideWifiIcon) {
-        if (elementCaches_.wifi.valid && !elementCaches_.wifi.lastVisible) {
-            return;
-        }
+    if (!paint.wifiShown) {
+        if (elementCaches_.wifi.valid && !elementCaches_.wifi.lastVisible) return;
         drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h);
         FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
         elementCaches_.wifi.valid = true;
         elementCaches_.wifi.lastVisible = false;
         return;
     }
-
-    const bool wifiServiceActive = wifi_ && wifi_->isWifiServiceActive();
-    const bool staConnected = wifi_ && wifi_->isConnected();
-    const bool showWifiIcon = wifiServiceActive || staConnected;
-
-    if (!showWifiIcon) {
-        if (elementCaches_.wifi.valid && !elementCaches_.wifi.lastVisible) {
-            return;
-        }
-        drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h);
-        FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
-        elementCaches_.wifi.valid = true;
-        elementCaches_.wifi.lastVisible = false;
-        return;
-    }
-
-    // Red only after STA retries are exhausted; otherwise use the configured color.
-    const bool gaveUp = wifi_ && wifi_->isReconnectGaveUp();
-    uint16_t wifiColor;
-    if (gaveUp && !staConnected) {
-        wifiColor = 0xF800; // Bright red — STA gave up after max reconnect failures
-    } else {
-        wifiColor = dimColor(s.colorWiFiConnected, 85);
-    }
+    const uint16_t wifiColor = paint.wifiColor;
 
     if (elementCaches_.wifi.valid && elementCaches_.wifi.lastVisible && elementCaches_.wifi.lastColor == wifiColor) {
         return;
@@ -626,4 +510,32 @@ void V1Display::drawWiFiIndicator() {
         FILL_RECT(cx + p.dx, cy + p.dy, 2, 2, wifiColor);
     }
 #endif
+}
+
+void V1Display::drawProfileIndicator(const DisplayPaintContext& context) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    drawProfileIndicator(paint);
+}
+
+void V1Display::drawBatteryIndicator(const DisplayPaintContext& context) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    drawBatteryIndicator(paint);
+}
+
+void V1Display::drawWiFiIndicator(const DisplayPaintContext& context) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    drawWiFiIndicator(paint);
+}
+
+void V1Display::refreshBleIndicator(const DisplayPaintContext& context) {
+    const bool proxyChanged = lastProxyClientConnected_ != context.status.bleProxyClientConnected;
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    drawBLEProxyIndicator(paint);
+    if (proxyChanged) drawRssiIndicator(paint, paint.v1Rssi);
+}
+
+void V1Display::drawConnectionIndicators(const DisplayPaintContext& context) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    drawWiFiIndicator(paint);
+    drawBatteryIndicator(paint);
 }

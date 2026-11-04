@@ -81,6 +81,7 @@ void tearDown() {}
 #include "../../src/packet_parser_alerts.cpp"
 #include "../mocks/display.h"
 #include "../mocks/settings.h"
+#include "../mocks/runtime_presentation_source.h"
 #include "../mocks/modules/power/power_module.h"
 #include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
 #include "../../src/modules/alp/alp_event_latch.cpp"
@@ -114,6 +115,7 @@ struct StreamFixture {
   V1Display display;
   AlertPersistenceModule persistence;
   SettingsManager settings;
+  RuntimePresentationSource presentation{settings};
   DisplayMode mode = DisplayMode::IDLE;
   DisplayPipelineModule pipeline;
   ConnectionStateModule connection;
@@ -137,10 +139,11 @@ struct StreamFixture {
     client.connectedFollowupStep_ = V1BLEClient::ConnectedFollowupStep::NONE;
     TEST_ASSERT_TRUE(
         queue.begin(&client, &parser, &preview, &power));
-    connection.begin(&client, &parser, &display, &power, &queue, &persistence);
+    connection.begin(&client, &parser, &display, &power, &queue, &persistence, presentation);
     DisplayPipelineDependencies dependencies;
     dependencies.displayMode = &mode;
     dependencies.display = &display;
+    dependencies.presentation = &presentation;
     dependencies.parser = &parser;
     dependencies.settings = &settings;
     dependencies.ble = &client;

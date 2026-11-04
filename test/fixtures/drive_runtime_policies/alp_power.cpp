@@ -3,6 +3,7 @@
 #include "test/mocks/battery_manager.h"
 #include "test/mocks/display.h"
 #include "test/mocks/settings.h"
+#include "test/mocks/runtime_presentation_source.h"
 #include <cstdio>
 #include <initializer_list>
 #include <unity.h>
@@ -36,6 +37,7 @@ class DriveRuntime {
     BatteryManager battery_;
     V1Display display_;
     SettingsManager settings_;
+    RuntimePresentationSource presentation_{settings_};
     PowerModule power_;
     AlpRuntimeModule alp_;
     MainRuntimeState state_;
@@ -48,10 +50,10 @@ class DriveRuntime {
         battery_.setOnBattery(true);
         battery_.setBatteryPercent(90);
         settings_.settings.autoPowerOffMinutes = 1;
-        power_.begin(&battery_, &display_, &settings_);
+        power_.begin(&battery_, &display_, &settings_, presentation_);
         alp_.begin(true);
         touch_.begin();
-        touchUi_.begin(&display_, &touch_, &settings_, {});
+        touchUi_.begin(&display_, &touch_, &settings_, {}, presentation_);
     }
     bool active() { return true; }
     DriveLoopTiming beginDriveLoop() {

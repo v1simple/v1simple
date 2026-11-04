@@ -12,7 +12,7 @@ static constexpr uint16_t SLIDER_BRIGHTNESS_FG = 0x07E0;
 static constexpr uint16_t SLIDER_VOLUME_FG = 0x001F;
 static constexpr uint16_t SLIDER_HINT_TEXT = 0x8410;
 
-void V1Display::showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel) {
+void V1Display::showSettingsSliders(const ResolvedPaintStatus& paint, uint8_t brightnessLevel, uint8_t volumeLevel) {
     tft_->fillScreen(PALETTE_BG);
 
     const int sliderMargin = 40;
@@ -81,10 +81,10 @@ void V1Display::showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel
     DISPLAY_FLUSH();
 }
 
-void V1Display::updateSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel, int activeSlider) {
+void V1Display::updateSettingsSliders(const ResolvedPaintStatus& paint, uint8_t brightnessLevel, uint8_t volumeLevel, int activeSlider) {
     (void)activeSlider;
     setBrightness(brightnessLevel);
-    showSettingsSliders(brightnessLevel, volumeLevel);
+    showSettingsSliders(paint, brightnessLevel, volumeLevel);
 }
 
 // Touch Y is inverted: low is volume (1), high is brightness (0), gap is -1.
@@ -96,7 +96,17 @@ int V1Display::getActiveSliderFromTouch(int16_t touchY) {
     return -1;
 }
 
-void V1Display::hideBrightnessSlider() {
+void V1Display::hideBrightnessSlider(const DisplayPaintContext& context) {
     // The caller restores the normal display after clearing the slider.
-    clear();
+    clear(context);
+}
+
+void V1Display::showSettingsSliders(const DisplayPaintContext& context, uint8_t brightnessLevel, uint8_t volumeLevel) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    showSettingsSliders(paint, brightnessLevel, volumeLevel);
+}
+
+void V1Display::updateSettingsSliders(const DisplayPaintContext& context, uint8_t brightnessLevel, uint8_t volumeLevel, int activeSlider) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
+    updateSettingsSliders(paint, brightnessLevel, volumeLevel, activeSlider);
 }

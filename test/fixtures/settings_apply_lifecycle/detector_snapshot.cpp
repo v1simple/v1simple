@@ -141,7 +141,7 @@ class DriveRuntime {
     } autoPush_;
     struct Display {
         int selected = -1;
-        void setProfileIndicatorSlot(int slot) { events.push_back("display"); selected = slot; }
+        void setProfileIndicatorSlot(int slot, uint32_t) { events.push_back("display"); selected = slot; }
     } display_;
 #include "snapshot_declarations.inc"
     V1DetectorSnapshot operationSnapshot(uint32_t boundary) const {

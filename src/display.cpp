@@ -1,3 +1,4 @@
+#include "settings_types.h"
 #include "display.h"
 #include "config.h"
 #include "display_layout.h"
@@ -5,8 +6,6 @@
 #include "band_utils.h"
 #include "display_segments.h" // 7/14-segment data tables
 #include "display_ble_freshness.h"
-#include "settings.h"
-#include "battery_manager.h"
 #include "storage_manager.h"
 #include "waveshare_349_hardware.h"
 #include <esp_heap_caps.h>
@@ -88,7 +87,7 @@ using DisplayLayout::TOP_COUNTER_FONT_SIZE;
 using DisplayLayout::TOP_COUNTER_PAD_RIGHT;
 using DisplayLayout::TOP_COUNTER_TEXT_Y;
 
-V1Display::V1Display(SettingsManager& settings) : settings_(settings) {
+V1Display::V1Display() {
     currentPalette_ = ColorThemes::STANDARD();
     g_displayInstance = this;
 
@@ -100,7 +99,7 @@ V1Display::V1Display(SettingsManager& settings) : settings_(settings) {
 
 V1Display::~V1Display() = default;
 
-bool V1Display::begin() {
+bool V1Display::begin(const DisplayPaintContext& context) {
     Serial.printf("[Display] Init %s...\n", DISPLAY_NAME);
     const unsigned long beginStartMs = millis();
     unsigned long stageStartMs = beginStartMs;
@@ -238,9 +237,10 @@ bool V1Display::begin() {
     Serial.printf("[Display] OK %dx%d, font(seg7)=%d\n", SCREEN_WIDTH, SCREEN_HEIGHT, fontMgr_.segment7Ready);
 
     // Load color theme from settings
-    updateColorTheme();
+    updateColorTheme(context.style);
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, nullptr);
     prewarmFrequencyDigitAtlas();
-    prewarmFrequencyRasterCache();
+    prewarmFrequencyRasterCache(paint);
     logDisplayStage("freq_cache_prewarm");
     logDisplayStage("ready");
 
@@ -251,50 +251,11 @@ void V1Display::setBrightness(uint8_t level) {
     waveshare_349::hardware().setBrightness(level);
 }
 
-void V1Display::clear() {
+void V1Display::clear(const DisplayPaintContext& context) {
+    (void)context;
     tft_->fillScreen(PALETTE_BG);
     DISPLAY_FLUSH();
     bleProxyDrawn_ = false;
-}
-
-void V1Display::setBleContext(const DisplayBleContext& ctx) {
-    bleCtx_ = ctx;
-    bleCtxUpdatedAtMs_ = millis();
-}
-
-bool V1Display::hasFreshBleContext(uint32_t nowMs) const {
-    return DisplayBleFreshness::isFresh(bleCtxUpdatedAtMs_, nowMs);
-}
-
-void V1Display::setBLEProxyStatus(bool proxyEnabled, bool clientConnected, bool receivingData) {
-#if defined(DISPLAY_WAVESHARE_349)
-    // A new standalone session may need to show the VOL 0 warning again.
-    if (bleProxyClientConnected_ && !clientConnected) {
-        volZeroWarn_.reset();
-    }
-
-    bool proxyChanged = (clientConnected != bleProxyClientConnected_);
-
-    bool receivingChanged = (receivingData != bleReceivingData_);
-
-    if (bleProxyDrawn_ && proxyEnabled == bleProxyEnabled_ && clientConnected == bleProxyClientConnected_ &&
-        !receivingChanged) {
-        return;
-    }
-
-    bleProxyEnabled_ = proxyEnabled;
-    bleProxyClientConnected_ = clientConnected;
-    bleReceivingData_ = receivingData;
-    drawBLEProxyIndicator();
-
-    if (proxyChanged) {
-        drawRssiIndicator(bleCtx_.v1Rssi);
-    }
-
-    // No flush here — the display pipeline owns strip flushing.
-    // Drawing to the canvas is safe; the next pipeline iteration
-    // will include the left strip in its flush.
-#endif
 }
 
 void V1Display::flush() {
@@ -370,8 +331,8 @@ const char* V1Display::bandToString(Band band) {
     return bandName(band);
 }
 
-uint16_t V1Display::getBandColor(Band band) {
-    const V1Settings& s = settings_.get();
+uint16_t V1Display::getBandColor(const ResolvedPaintStatus& paint, Band band) {
+    const V1Settings& s = paint.context.style.settings;
     switch (band) {
     case BAND_LASER:
         return s.colorBandL;
@@ -388,10 +349,10 @@ uint16_t V1Display::getBandColor(Band band) {
     }
 }
 
-void V1Display::updateColorTheme() {
+void V1Display::updateColorTheme(const DisplayStyleView& style) {
     // The base palette is fixed; settings provide per-element overrides.
     currentPalette_ = ColorThemes::STANDARD();
-    const V1Settings& s = settings_.get();
+    const V1Settings& s = style.settings;
     currentPalette_.colorMuted = s.colorMuted;
     currentPalette_.colorPersisted = s.colorPersisted;
     ++paletteRevision_;

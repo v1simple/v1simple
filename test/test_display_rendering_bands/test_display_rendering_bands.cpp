@@ -19,19 +19,21 @@ SerialClass Serial;
 #include "../../include/display_dirty_flags.h"
 #include "../../include/display_element_caches.h"
 
+#include "../support/presentation_leaf_fixture.h"
+
 V1Display* g_displayInstance = nullptr;  // Set by V1Display constructor
 SettingsManager settings;
 
 // Avoid pulling hardware-dependent display.cpp into this native suite.
-V1Display::V1Display(SettingsManager& injectedSettings) : settings_(injectedSettings) {
+V1Display::V1Display() {
     currentPalette_ = ColorThemes::STANDARD();
-    currentPalette_.colorMuted = settings_.get().colorMuted;
-    currentPalette_.colorPersisted = settings_.get().colorPersisted;
+    currentPalette_.colorMuted = settings.get().colorMuted;
+    currentPalette_.colorPersisted = settings.get().colorPersisted;
     g_displayInstance = this;
 }
 V1Display::~V1Display() = default;
 
-V1Display display(settings);
+V1Display display;
 
 #include "../../src/display_bands.cpp"
 
@@ -111,7 +113,7 @@ void tearDown() {}
 
 void test_drawBandIndicators_produces_background_clear_on_first_draw() {
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(BAND_KA, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, false, 0);
 
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
     TEST_ASSERT_EQUAL_UINT16(ColorThemes::STANDARD().bg, canvas()->fillRectCalls[0].color);
@@ -145,39 +147,39 @@ void test_band_label_dirty_window_covers_ka_and_compact_ku_without_touching_neig
 
 void test_drawBandIndicators_cache_hit_skips_redraw() {
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(BAND_KA, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, false, 0);
     resetCanvas();
 
-    display.ut_drawBandIndicators(BAND_KA, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, false, 0);
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRectCalls.size());
 }
 
 void test_drawBandIndicators_dirty_flag_forces_redraw() {
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(BAND_KA, false, 0);   // first draw (primes cache)
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, false, 0);   // first draw (primes cache)
     resetCanvas();
 
     display.ut_elementCaches().bands.valid = false;   // invalidate cache
-    display.ut_drawBandIndicators(BAND_KA, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, false, 0);
 
     TEST_ASSERT_GREATER_OR_EQUAL(1u, canvas()->fillRectCalls.size());
 }
 
 void test_drawBandIndicators_different_mask_invalidates_cache() {
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(BAND_KA, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, false, 0);
     resetCanvas();
 
-    display.ut_drawBandIndicators(BAND_KA | BAND_K, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA | BAND_K, false, 0);
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
 }
 
 void test_drawBandIndicators_muted_change_invalidates_cache() {
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(BAND_KA, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, false, 0);
     resetCanvas();
 
-    display.ut_drawBandIndicators(BAND_KA, true, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, true, 0);
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
 }
 
@@ -187,10 +189,10 @@ void test_drawBandIndicators_muted_change_invalidates_cache() {
 // trigger a fresh paint (where the K cell is relabelled "Ku").
 void test_drawBandIndicators_ku_bit_invalidates_cache_vs_plain_k() {
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(BAND_K, false, 0);  // primes cache for plain K
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_K, false, 0);  // primes cache for plain K
     resetCanvas();
 
-    display.ut_drawBandIndicators(static_cast<uint8_t>(BAND_K | BAND_KU), false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), static_cast<uint8_t>(BAND_K | BAND_KU), false, 0);
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
     TEST_ASSERT_EQUAL_INT16(kBandLabelClearW, canvas()->fillRectCalls[0].w);
     TEST_ASSERT_EQUAL_INT16(kBandLabelClearH, canvas()->fillRectCalls[0].h);
@@ -198,10 +200,10 @@ void test_drawBandIndicators_ku_bit_invalidates_cache_vs_plain_k() {
 
 void test_drawBandIndicators_clearing_ku_bit_invalidates_cache() {
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(static_cast<uint8_t>(BAND_K | BAND_KU), false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), static_cast<uint8_t>(BAND_K | BAND_KU), false, 0);
     resetCanvas();
 
-    display.ut_drawBandIndicators(BAND_K, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_K, false, 0);
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
 }
 
@@ -248,7 +250,7 @@ void test_drawBandIndicators_ku_obeys_the_shared_k_flash_bit() {
             text->calls.clear();
             text->bitmapCalls.clear();
             display.ut_setBlinkState(phase, mockMillis);
-            display.ut_drawBandIndicators(bandMask, false, BAND_K);
+            display.ut_drawBandIndicators(testDisplayInputs(settings).context(), bandMask, false, BAND_K);
 
             // ID31 has a K LED and flash bit, but no separate Ku LED. The
             // synthetic Ku bit must not keep that shared cell illuminated.
@@ -277,10 +279,10 @@ void test_drawBandIndicators_ku_obeys_the_shared_k_flash_bit() {
 
 void test_drawBandIndicators_band_move_clears_only_changed_cells() {
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(BAND_LASER, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_LASER, false, 0);
     resetCanvas();
 
-    display.ut_drawBandIndicators(BAND_K, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_K, false, 0);
 
     TEST_ASSERT_EQUAL_UINT(2u, canvas()->fillRectCalls.size());
     for (const auto& call : canvas()->fillRectCalls) {
@@ -292,12 +294,12 @@ void test_drawBandIndicators_band_move_clears_only_changed_cells() {
 
 void test_drawBandIndicators_band_move_preserves_drawn_card0() {
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(BAND_K, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_K, false, 0);
     display.ut_elementCaches().cards.lastDrawnPositions[0].band = BAND_K;
     display.ut_elementCaches().cards.forceRedraw = false;
     resetCanvas();
 
-    display.ut_drawBandIndicators(BAND_KA, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, false, 0);
 
     assertBandClearsDoNotTouchDrawnCard0();
     TEST_ASSERT_FALSE_MESSAGE(display.ut_elementCaches().cards.forceRedraw,
@@ -310,7 +312,7 @@ void test_drawBandIndicators_full_stack_clear_preserves_drawn_card0() {
     display.ut_elementCaches().bands.valid = false;
     resetCanvas();
 
-    display.ut_drawBandIndicators(BAND_KA, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, false, 0);
 
     assertBandClearsDoNotTouchDrawnCard0();
 
@@ -334,12 +336,12 @@ void test_drawBandIndicators_full_stack_clear_preserves_drawn_card0() {
 
 void test_drawBandIndicators_ku_foreground_stays_clear_of_drawn_card0() {
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(BAND_K, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_K, false, 0);
     display.ut_elementCaches().cards.lastDrawnPositions[0].band = BAND_K;
     display.ut_elementCaches().cards.forceRedraw = false;
     resetCanvas();
 
-    display.ut_drawBandIndicators(static_cast<uint8_t>(BAND_K | BAND_KU), false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), static_cast<uint8_t>(BAND_K | BAND_KU), false, 0);
 
     TEST_ASSERT_FALSE_MESSAGE(display.ut_elementCaches().cards.forceRedraw,
         "the shifted Ku glyph must not require a redundant card 0 repaint");
@@ -349,12 +351,12 @@ void test_drawBandIndicators_ka_flash_redraws_full_stack_to_preserve_k() {
     const uint8_t kAndKa = static_cast<uint8_t>(BAND_KA | BAND_K);
     display.ut_setBlinkState(true, mockMillis);
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(kAndKa, false, BAND_KA);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), kAndKa, false, BAND_KA);
     display.ut_resetDrawnRegion();
     resetCanvas();
 
     mockMillis += V1Display::getBlinkIntervalMs();
-    display.ut_drawBandIndicators(kAndKa, false, BAND_KA);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), kAndKa, false, BAND_KA);
 
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
     TEST_ASSERT_EQUAL_INT16(kBandLabelClearW, canvas()->fillRectCalls[0].w);
@@ -366,10 +368,10 @@ void test_drawBandIndicators_ka_flash_redraws_full_stack_to_preserve_k() {
 
 void test_drawBandIndicators_inactive_muted_toggle_skips_visual_redraw() {
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(0, false, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), 0, false, 0);
     resetCanvas();
 
-    display.ut_drawBandIndicators(0, true, 0);
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), 0, true, 0);
 
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRectCalls.size());
 }
@@ -377,7 +379,7 @@ void test_drawBandIndicators_inactive_muted_toggle_skips_visual_redraw() {
 static size_t signalBarsRedrawCount(uint8_t front, uint8_t rear, bool muted) {
     display.ut_elementCaches().bars.valid = false;
     resetCanvas();
-    display.ut_drawVerticalSignalBars(front, rear, BAND_KA, muted);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), front, rear, BAND_KA, muted);
     return canvas()->fillRoundRectCalls.size();
 }
 
@@ -398,7 +400,7 @@ void test_drawSignalBars_strength_0_draws_6_unlit_bars() {
 void test_drawSignalBars_lit_bars_use_per_segment_colors() {
     display.ut_elementCaches().bars.valid = false;
     resetCanvas();
-    display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 4, 0, BAND_KA, false);
 
     const auto& calls = canvas()->fillRoundRectCalls;
     TEST_ASSERT_EQUAL_UINT(6u, calls.size());
@@ -414,7 +416,7 @@ void test_drawSignalBars_lit_bars_use_per_segment_colors() {
 void test_drawSignalBars_unlit_bars_use_dark_gray() {
     display.ut_elementCaches().bars.valid = false;
     resetCanvas();
-    display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 4, 0, BAND_KA, false);
 
     const auto& calls = canvas()->fillRoundRectCalls;
     for (int i = 4; i < 6; ++i) {
@@ -425,7 +427,7 @@ void test_drawSignalBars_unlit_bars_use_dark_gray() {
 void test_drawSignalBars_muted_uses_muted_color() {
     display.ut_elementCaches().bars.valid = false;
     resetCanvas();
-    display.ut_drawVerticalSignalBars(4, 0, BAND_KA, /*muted=*/true);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 4, 0, BAND_KA, /*muted=*/true);
 
     const auto& calls = canvas()->fillRoundRectCalls;
     TEST_ASSERT_EQUAL_UINT(6u, calls.size());
@@ -441,20 +443,20 @@ void test_drawSignalBars_muted_uses_muted_color() {
 
 void test_drawSignalBars_cache_hit_no_redraw() {
     display.ut_elementCaches().bars.valid = false;
-    display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);   // primes cache
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 4, 0, BAND_KA, false);   // primes cache
     resetCanvas();
 
-    display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 4, 0, BAND_KA, false);
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRoundRectCalls.size());
 }
 
 void test_drawSignalBars_dirty_flag_forces_redraw() {
     display.ut_elementCaches().bars.valid = false;
-    display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);   // first draw
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 4, 0, BAND_KA, false);   // first draw
     resetCanvas();
 
     display.ut_elementCaches().bars.valid = false;     // invalidate
-    display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 4, 0, BAND_KA, false);
 
     TEST_ASSERT_EQUAL_UINT(6u, canvas()->fillRoundRectCalls.size());
 }
@@ -462,7 +464,7 @@ void test_drawSignalBars_dirty_flag_forces_redraw() {
 void test_drawSignalBars_max_of_front_rear_used() {
     display.ut_elementCaches().bars.valid = false;
     resetCanvas();
-    display.ut_drawVerticalSignalBars(2, 5, BAND_KA, false);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 2, 5, BAND_KA, false);
 
     const auto& calls = canvas()->fillRoundRectCalls;
     TEST_ASSERT_EQUAL_UINT(6u, calls.size());
@@ -473,7 +475,7 @@ void test_drawSignalBars_max_of_front_rear_used() {
 void test_drawSignalBars_strength_6_lights_all_6_bars() {
     display.ut_elementCaches().bars.valid = false;
     resetCanvas();
-    display.ut_drawVerticalSignalBars(6, 0, BAND_KA, false);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 6, 0, BAND_KA, false);
 
     const auto& calls = canvas()->fillRoundRectCalls;
     TEST_ASSERT_EQUAL_UINT(6u, calls.size());
@@ -488,7 +490,7 @@ void test_drawSignalBars_strength_6_lights_all_6_bars() {
 void test_drawSignalBars_strength_above_6_clamps_to_all_6_bars() {
     display.ut_elementCaches().bars.valid = false;
     resetCanvas();
-    display.ut_drawVerticalSignalBars(8, 0, BAND_KA, false);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 8, 0, BAND_KA, false);
 
     const auto& calls = canvas()->fillRoundRectCalls;
     TEST_ASSERT_EQUAL_UINT(6u, calls.size());
@@ -499,7 +501,7 @@ void test_drawSignalBars_marks_full_stack_dirty_region() {
     display.ut_elementCaches().bars.valid = false;
     display.ut_resetDrawnRegion();
     resetCanvas();
-    display.ut_drawVerticalSignalBars(6, 0, BAND_KA, false);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 6, 0, BAND_KA, false);
 
     TEST_ASSERT_FALSE(display.ut_drawnRegionEmpty());
     TEST_ASSERT_EQUAL_INT(SCREEN_WIDTH - 200, display.ut_drawnRegionX());
@@ -510,11 +512,11 @@ void test_drawSignalBars_marks_full_stack_dirty_region() {
 
 void test_drawSignalBars_strength_increment_marks_only_changed_bar_region() {
     display.ut_elementCaches().bars.valid = false;
-    display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 4, 0, BAND_KA, false);
     display.ut_resetDrawnRegion();
     resetCanvas();
 
-    display.ut_drawVerticalSignalBars(5, 0, BAND_KA, false);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 5, 0, BAND_KA, false);
 
     // Bar i=4 changed; visual row = 6-1-4 = 1.
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRoundRectCalls.size());
@@ -527,11 +529,11 @@ void test_drawSignalBars_strength_increment_marks_only_changed_bar_region() {
 
 void test_drawSignalBars_strength_jump_marks_one_compact_run_region() {
     display.ut_elementCaches().bars.valid = false;
-    display.ut_drawVerticalSignalBars(2, 0, BAND_KA, false);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 2, 0, BAND_KA, false);
     display.ut_resetDrawnRegion();
     resetCanvas();
 
-    display.ut_drawVerticalSignalBars(6, 0, BAND_KA, false);
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 6, 0, BAND_KA, false);
 
     // Bars i=2..5 changed; visual rows 3..0 span four bars from the top.
     TEST_ASSERT_EQUAL_UINT(4u, canvas()->fillRoundRectCalls.size());
@@ -546,26 +548,26 @@ void test_drawSignalBars_strength_jump_marks_one_compact_run_region() {
 // even when signal state is unchanged.
 void test_drawSignalBars_palette_revision_change_forces_repaint() {
     display.ut_elementCaches().bars.valid = false;
-    display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);   // prime cache
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 4, 0, BAND_KA, false);   // prime cache
     resetCanvas();
 
-    display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);   // cache hit
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 4, 0, BAND_KA, false);   // cache hit
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRoundRectCalls.size());
 
     display.ut_bumpPaletteRevision();                          // theme change signal
-    display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);   // must repaint
+    display.ut_drawVerticalSignalBars(testDisplayInputs(settings).context(), 4, 0, BAND_KA, false);   // must repaint
     TEST_ASSERT_EQUAL_UINT(6u, canvas()->fillRoundRectCalls.size());
 }
 
 void test_drawBandIndicators_palette_revision_change_forces_repaint() {
     display.ut_elementCaches().bands.valid = false;
-    display.ut_drawBandIndicators(BAND_KA, false, 0);          // prime cache
+    display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, false, 0);          // prime cache
     resetCanvas();
 
-    TEST_ASSERT_FALSE(display.ut_drawBandIndicators(BAND_KA, false, 0));  // cache hit
+    TEST_ASSERT_FALSE(display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, false, 0));  // cache hit
 
     display.ut_bumpPaletteRevision();                          // theme change signal
-    TEST_ASSERT_TRUE(display.ut_drawBandIndicators(BAND_KA, false, 0));   // must repaint
+    TEST_ASSERT_TRUE(display.ut_drawBandIndicators(testDisplayInputs(settings).context(), BAND_KA, false, 0));   // must repaint
 }
 
 int main() {

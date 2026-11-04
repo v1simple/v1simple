@@ -8,7 +8,6 @@
 
 #include "ble_client.h"
 #include "detector_operation_contract.h"
-#include "display.h"
 #include "packet_parser.h"
 #include "settings.h"
 #include "v1_devices.h"
@@ -19,6 +18,7 @@ class QuietCoordinatorModule;
 
 class AutoPushModule {
   public:
+    using ProfilePresentation = void (*)(int slot, void* context);
     enum class QueueResult : uint8_t {
         QUEUED = 0,
         V1_NOT_CONNECTED,
@@ -52,7 +52,7 @@ class AutoPushModule {
     };
 
     void begin(SettingsManager* settings, V1ProfileManager* profileMgr, V1BLEClient* ble, PacketParser* parser,
-               V1Display* disp, QuietCoordinatorModule* quietCoordinator);
+               ProfilePresentation presentProfile, void* presentationContext, QuietCoordinatorModule* quietCoordinator);
     using InTheBoxApplyCallback = bool (*)(const V1InTheBoxSettings&, void*);
     void setInTheBoxApplyCallback(InTheBoxApplyCallback callback, void* context) {
         inTheBoxApply_ = callback;
@@ -263,7 +263,8 @@ class AutoPushModule {
     V1ProfileManager* profiles_ = nullptr;
     V1BLEClient* bleClient_ = nullptr;
     PacketParser* parser_ = nullptr;
-    V1Display* display_ = nullptr;
+    ProfilePresentation presentProfile_ = nullptr;
+    void* presentationContext_ = nullptr;
     QuietCoordinatorModule* quiet_ = nullptr;
     InTheBoxApplyCallback inTheBoxApply_ = nullptr;
     void* inTheBoxApplyContext_ = nullptr;

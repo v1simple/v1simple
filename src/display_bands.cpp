@@ -1,3 +1,4 @@
+#include "settings_types.h"
 #include "display.h"
 #include "display_layout.h"
 #include "display_draw.h"
@@ -6,7 +7,6 @@
 #include "display_text.h"
 #include "display_visual_contract.h"
 #include "FreeSansBold24pt7b.h"
-#include "settings.h"
 #include "packet_parser.h"
 #include <algorithm> // std::max
 #include <cstring>
@@ -44,9 +44,9 @@ constexpr int kBandLabelClearH = 42;
 
 } // namespace
 
-bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFlashBits) {
+bool V1Display::drawBandIndicators(const ResolvedPaintStatus& paint, uint8_t bandMask, bool muted, uint8_t bandFlashBits) {
     // Arrows and bands share one blink phase.
-    updateBlinkPhase_();
+    updateBlinkPhase_(paint.context.nowMs);
 
     // Dim the physical cell at blink-off, retaining Ku identity instead of relabeling K.
     uint8_t effectiveBandMask = bandMask;
@@ -67,7 +67,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
     const int spacing = kBandLabelSpacing;
     const int startY = kBandLabelStartY;
 
-    const V1Settings& s = settings_.get();
+    const V1Settings& s = paint.context.style.settings;
     struct BandCell {
         const char* label;
         uint8_t mask;
@@ -186,7 +186,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
 
     // The K/X clear windows reach into the top-left of card position 0.  When
     // that card is already on the framebuffer, subtract its rectangle from
-    // band background clears; drawSecondaryAlertCards() may legitimately hit
+    // band background clears; drawSecondaryAlertCards(paint) may legitimately hit
     // its cache and skip repainting later in this frame.  With no drawn card,
     // retain the original full clear so L/Ka/K/Ku/X cleanup is unchanged.
     const DisplayLayout::DisplayRect card0Rect = DisplayLayout::cardRect(0);
@@ -275,7 +275,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
 // DisplayState::signalBars is the 0-8 LED count from ESP Spec 3.015 Table 9.1.
 // This six-cell meter passes 0-6 through and saturates higher counts.
 
-void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStrength, Band band, bool muted) {
+void V1Display::drawVerticalSignalBars(const ResolvedPaintStatus& paint, uint8_t frontStrength, uint8_t rearStrength, Band band, bool muted) {
     constexpr int barCount = DisplayLayout::MAIN_SIGNAL_BAR_COUNT;
 
     uint8_t strength = std::max(frontStrength, rearStrength);
@@ -289,7 +289,7 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
 
     bool hasSignal = (strength > 0);
 
-    const V1Settings& s = settings_.get();
+    const V1Settings& s = paint.context.style.settings;
     // Paint each stored segment color without interpolation.
     const uint16_t* barColors = s.colorBars;
 

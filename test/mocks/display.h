@@ -19,6 +19,7 @@
 #include "../../src/modules/alp/alp_runtime_module.h"
 #include "../../include/display_ble_context.h"
 #include "../../include/render_frame.h"
+#include "../../include/display_presentation.h"
 
 struct DisplayState;
 
@@ -44,8 +45,6 @@ enum class DisplayMockOperation : uint8_t {
     UPDATE_CONTENT,
     SHOW_LOW_BATTERY,
     SHOW_SHUTDOWN,
-    SET_BLE_CONTEXT,
-    SET_BLE_PROXY_STATUS,
     RESET_CHANGE_TRACKING,
     CLEAR,
     FLUSH,
@@ -63,9 +62,8 @@ struct DisplayMockLifecycleState {
     uint8_t brightness = 0;
     uint32_t sequence = 0;
     uint32_t presentationSequence = 0;
-    uint32_t bleContextSequence = 0;
-    uint32_t bleProxyStatusSequence = 0;
     uint32_t resetChangeTrackingSequence = 0;
+    uint32_t bleRefreshSequence = 0;
     uint32_t clearSequence = 0;
     uint32_t flushSequence = 0;
     uint32_t brightnessSequence = 0;
@@ -93,6 +91,25 @@ public:
     bool isStealthScreen() const { return lifecycleState_.presentation == DisplayMockPresentation::STEALTH; }
     uint32_t renderSeq = 0;
 
+    PresentationStatusSnapshot lastPresentationStatus{};
+    CardPersistencePolicy lastCardPersistence = CardPersistencePolicy::LiveGrace;
+    uint32_t lastPaintNowMs = 0;
+    uint32_t lastProfileSelectedAtMs = 0;
+    unsigned refreshBleIndicatorCalls = 0;
+    unsigned refreshObdIndicatorCalls = 0;
+    void refreshBleIndicator(const DisplayPaintContext& context) {
+        ++refreshBleIndicatorCalls;
+        lifecycleState_.bleRefreshSequence = ++lifecycleState_.sequence;
+        recordContext(context);
+    }
+    void refreshObdIndicator(const DisplayPaintContext& context) {
+        ++refreshObdIndicatorCalls;
+        drawObdIndicator(context);
+    }
+    void drawConnectionIndicators(const DisplayPaintContext& context) {
+        drawWiFiIndicator(context);
+        drawBatteryIndicator(context);
+    }
     // Call tracking
     int showScanningCalls = 0;
     int showRestingCalls = 0;
@@ -118,34 +135,8 @@ public:
     int lastProfileIndicatorSlot = -1;
     int showLowBatteryCalls = 0;
     int showShutdownCalls = 0;
-    int setSpeedVolZeroActiveCalls = 0;
-    bool lastSpeedVolZeroActiveValue = false;
-    int setBleContextCalls = 0;
-    DisplayBleContext lastBleContext{};
-    int setBLEProxyStatusCalls = 0;
-    bool lastBleProxyEnabled = false;
-    bool lastBleProxyConnected = false;
-    bool lastBleReceiving = true;
-    int setPreviewIndicatorOverridesActiveCalls = 0;
-    bool lastPreviewIndicatorOverridesActive = false;
-    int setAlpPreviewStateCalls = 0;
-    bool lastAlpPreviewEnabled = false;
-    uint8_t lastAlpPreviewState = 0;
-    uint8_t lastAlpPreviewHbByte1 = 0;
-    int setObdPreviewStateCalls = 0;
-    bool lastObdPreviewEnabled = false;
-    bool lastObdPreviewConnected = false;
-    bool lastObdPreviewScanAttention = false;
     int setProfileIndicatorSlotCalls = 0;
     int lastProfileIndicatorSlotValue = -1;
-    int setObdStatusCalls = 0;
-    bool lastObdEnabled = false;
-    bool lastObdConnected = false;
-    bool lastObdScanAttention = false;
-    int setObdAttentionCalls = 0;
-    bool lastObdAttention = false;
-    int syncTopIndicatorsCalls = 0;
-    uint32_t lastSyncTopIndicatorsNowMs = 0;
     int flushRegionCalls = 0;
     int16_t lastFlushX = 0;
     int16_t lastFlushY = 0;
@@ -170,6 +161,10 @@ public:
     int resetChangeTrackingCalls = 0;
 
     void reset() {
+        lastPresentationStatus = {};
+        lastCardPersistence = CardPersistencePolicy::LiveGrace;
+        lastPaintNowMs = lastProfileSelectedAtMs = 0;
+        refreshBleIndicatorCalls = refreshObdIndicatorCalls = 0;
         showScanningCalls = 0;
         showRestingCalls = 0;
         showDisconnectedCalls = 0;
@@ -194,34 +189,8 @@ public:
         lastProfileIndicatorSlot = -1;
         showLowBatteryCalls = 0;
         showShutdownCalls = 0;
-        setSpeedVolZeroActiveCalls = 0;
-        lastSpeedVolZeroActiveValue = false;
-        setBleContextCalls = 0;
-        lastBleContext = DisplayBleContext{};
-        setBLEProxyStatusCalls = 0;
-        lastBleProxyEnabled = false;
-        lastBleProxyConnected = false;
-        lastBleReceiving = true;
-        setPreviewIndicatorOverridesActiveCalls = 0;
-        lastPreviewIndicatorOverridesActive = false;
-        setAlpPreviewStateCalls = 0;
-        lastAlpPreviewEnabled = false;
-        lastAlpPreviewState = 0;
-        lastAlpPreviewHbByte1 = 0;
-        setObdPreviewStateCalls = 0;
-        lastObdPreviewEnabled = false;
-        lastObdPreviewConnected = false;
-        lastObdPreviewScanAttention = false;
         setProfileIndicatorSlotCalls = 0;
         lastProfileIndicatorSlotValue = -1;
-        setObdStatusCalls = 0;
-        lastObdEnabled = false;
-        lastObdConnected = false;
-        lastObdScanAttention = false;
-        setObdAttentionCalls = 0;
-        lastObdAttention = false;
-        syncTopIndicatorsCalls = 0;
-        lastSyncTopIndicatorsNowMs = 0;
         flushRegionCalls = 0;
         lastFlushX = 0;
         lastFlushY = 0;
@@ -243,29 +212,29 @@ public:
         lifecycleState_ = DisplayMockLifecycleState{};
         lastPriorityAlert = AlertData{};
         hasLastPriorityAlert = false;
-        setAlpFrequencyOverrideCalls = 0;
-        clearAlpFrequencyOverrideCalls = 0;
-        lastAlpFreqOverride[0] = '\0';
-        setAlpLaserEventCalls = 0;
         resetChangeTrackingCalls = 0;
         renderSeq = 0;
     }
 
     // Display methods
-    void showScanning(bool = true) {
+    void showScanning(const DisplayPaintContext& context, bool = true) {
+        recordContext(context);
         showScanningCalls++;
         recordPresentation(DisplayMockPresentation::SCANNING, DisplayMockOperation::SHOW_SCANNING);
     }
-    void showResting() {
+    void showResting(const DisplayPaintContext& context) {
+        recordContext(context);
         showRestingCalls++;
         recordPresentation(DisplayMockPresentation::RESTING, DisplayMockOperation::SHOW_RESTING);
     }
-    void showDisconnected() {
+    void showDisconnected(const DisplayPaintContext& context) {
+        recordContext(context);
         showDisconnectedCalls++;
         showDisconnectedSequence = ++displayRecoverySequence;
         recordPresentation(DisplayMockPresentation::DISCONNECTED, DisplayMockOperation::SHOW_DISCONNECTED);
     }
-    void showMaintenanceMode(const char* ip = nullptr, bool stationMode = false) {
+    void showMaintenanceMode(const DisplayPaintContext& context, const char* ip = nullptr, bool stationMode = false) {
+        recordContext(context);
         showMaintenanceModeCalls++;
         if (ip != nullptr) {
             std::strncpy(lastMaintenanceIp, ip, sizeof(lastMaintenanceIp) - 1);
@@ -302,9 +271,12 @@ public:
         recordPresentation(DisplayMockPresentation::CONTENT, DisplayMockOperation::UPDATE_CONTENT);
     }
 
-    void renderFrame(const RenderFrame& frame) {
+    void renderFrame(const RenderFrame& frame, const DisplayPaintContext& context, int visibleCardCount = -1) {
+        recordContext(context);
+        const int cardCount = visibleCardCount < 0 || visibleCardCount > frame.cardCount ? frame.cardCount : visibleCardCount;
         renderFrameCalls++;
         lastRenderFrame = frame;
+        lastRenderFrame.cardCount = cardCount;
         hasLastRenderFrame = true;
 
         switch (frame.primaryKind) {
@@ -320,7 +292,7 @@ public:
                 return;
 
             case RenderFramePrimaryKind::V1_LIVE:
-                update(frame.v1Priority, nullptr, frame.cardCount, frame.primaryState);
+                update(frame.v1Priority, nullptr, cardCount, frame.primaryState);
                 return;
 
             case RenderFramePrimaryKind::V1_PERSISTED:
@@ -348,13 +320,14 @@ public:
                         break;
                 }
                 syntheticAlert.frontStrength = 6;
-                update(syntheticAlert, nullptr, frame.cardCount, frame.primaryState);
+                update(syntheticAlert, nullptr, cardCount, frame.primaryState);
                 return;
             }
         }
     }
     
-    void clear() {
+    void clear(const DisplayPaintContext& context) {
+        recordContext(context);
         clearCalls++;
         renderSeq++;
         recordOperation(DisplayMockOperation::CLEAR);
@@ -372,91 +345,33 @@ public:
     }
     void forceNextRedraw() { forceNextRedrawCalls++; }
     
-    void drawWiFiIndicator() { drawWiFiIndicatorCalls++; }
-    void drawObdIndicator() { drawObdIndicatorCalls++; }
-    void drawBatteryIndicator() { drawBatteryIndicatorCalls++; }
-    void showLowBattery() {
+    void drawWiFiIndicator(const DisplayPaintContext& context) {
+        recordContext(context); drawWiFiIndicatorCalls++; }
+    void drawObdIndicator(const DisplayPaintContext& context) {
+        recordContext(context); drawObdIndicatorCalls++; }
+    void drawBatteryIndicator(const DisplayPaintContext& context) {
+        recordContext(context); drawBatteryIndicatorCalls++; }
+    void showLowBattery(const DisplayPaintContext& context) {
+        recordContext(context);
         showLowBatteryCalls++;
         recordPresentation(DisplayMockPresentation::LOW_BATTERY, DisplayMockOperation::SHOW_LOW_BATTERY);
     }
-    void showShutdown() {
+    void showShutdown(const DisplayPaintContext& context) {
+        recordContext(context);
         showShutdownCalls++;
         recordPresentation(DisplayMockPresentation::SHUTDOWN, DisplayMockOperation::SHOW_SHUTDOWN);
     }
-    void drawProfileIndicator(int slot) {
+    void drawProfileIndicator(const DisplayPaintContext& context) {
+        recordContext(context);
+        const int slot = lastProfileIndicatorSlotValue;
         drawProfileIndicatorCalls++;
         lastProfileIndicatorSlot = slot;
     }
-    
-    void setSpeedVolZeroActive(bool active) {
-        setSpeedVolZeroActiveCalls++;
-        lastSpeedVolZeroActiveValue = active;
-    }
-    
-    void setBleContext(const DisplayBleContext& ctx) {
-        setBleContextCalls++;
-        lastBleContext = ctx;
-        recordOperation(DisplayMockOperation::SET_BLE_CONTEXT);
-        lifecycleState_.bleContext = ctx;
-        lifecycleState_.bleContextSequence = lifecycleState_.sequence;
-    }
 
-    void setBLEProxyStatus(bool proxyEnabled, bool proxyConnected, bool receiving = true) {
-        setBLEProxyStatusCalls++;
-        lastBleProxyEnabled = proxyEnabled;
-        lastBleProxyConnected = proxyConnected;
-        lastBleReceiving = receiving;
-        recordOperation(DisplayMockOperation::SET_BLE_PROXY_STATUS);
-        lifecycleState_.bleProxyEnabled = proxyEnabled;
-        lifecycleState_.bleProxyConnected = proxyConnected;
-        lifecycleState_.bleReceiving = receiving;
-        lifecycleState_.bleProxyStatusSequence = lifecycleState_.sequence;
-    }
-
-    void setPreviewIndicatorOverridesActive(bool active) {
-        setPreviewIndicatorOverridesActiveCalls++;
-        lastPreviewIndicatorOverridesActive = active;
-    }
-
-    void setAlpPreviewState(bool enabled, uint8_t state, uint8_t hbByte1) {
-        setAlpPreviewStateCalls++;
-        lastAlpPreviewEnabled = enabled;
-        lastAlpPreviewState = state;
-        lastAlpPreviewHbByte1 = hbByte1;
-    }
-
-    void setObdPreviewState(bool enabled, bool connected, bool scanAttention) {
-        setObdPreviewStateCalls++;
-        lastObdPreviewEnabled = enabled;
-        lastObdPreviewConnected = connected;
-        lastObdPreviewScanAttention = scanAttention;
-    }
-
-    void setProfileIndicatorSlot(int slot) {
+    void setProfileIndicatorSlot(int slot, uint32_t selectedAtMs) {
+        lastProfileSelectedAtMs = selectedAtMs;
         setProfileIndicatorSlotCalls++;
         lastProfileIndicatorSlotValue = slot;
-    }
-
-    void setObdStatus(bool enabled, bool connected, bool scanAttention = false) {
-        setObdStatusCalls++;
-        lastObdEnabled = enabled;
-        lastObdConnected = connected;
-        lastObdScanAttention = scanAttention;
-    }
-
-    void setObdAttention(bool attention) {
-        setObdAttentionCalls++;
-        lastObdAttention = attention;
-    }
-
-    void refreshObdIndicator(uint32_t nowMs) {
-        syncTopIndicators(nowMs);
-        drawObdIndicator();
-    }
-
-    void syncTopIndicators(uint32_t nowMs) {
-        syncTopIndicatorsCalls++;
-        lastSyncTopIndicatorsNowMs = nowMs;
     }
 
     void flushRegion(int16_t x, int16_t y, int16_t w, int16_t h) {
@@ -468,25 +383,6 @@ public:
         lastFlushH = h;
     }
 
-    // ALP frequency override
-    int setAlpFrequencyOverrideCalls = 0;
-    int clearAlpFrequencyOverrideCalls = 0;
-    char lastAlpFreqOverride[16] = "";
-    void setAlpFrequencyOverride(const char* text, bool /*defenseMode*/ = true) {
-        setAlpFrequencyOverrideCalls++;
-        strncpy(lastAlpFreqOverride, text, sizeof(lastAlpFreqOverride));
-        lastAlpFreqOverride[sizeof(lastAlpFreqOverride) - 1] = '\0';
-    }
-    void clearAlpFrequencyOverride() { clearAlpFrequencyOverrideCalls++; }
-
-    // Atomic ALP laser-event projection
-    int setAlpLaserEventCalls = 0;
-    AlpLaserEvent lastAlpLaserEvent{};
-    void setAlpLaserEvent(const AlpLaserEvent& ev) {
-        ++setAlpLaserEventCalls;
-        lastAlpLaserEvent = ev;
-    }
-
     void setBrightness(uint8_t level) {
         setBrightnessCalls++;
         lastBrightness = level;
@@ -495,18 +391,21 @@ public:
         lifecycleState_.brightness = level;
         lifecycleState_.brightnessSequence = lifecycleState_.sequence;
     }
-    void showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel) {
+    void showSettingsSliders(const DisplayPaintContext& context, uint8_t brightnessLevel, uint8_t volumeLevel) {
+        recordContext(context);
         showSettingsSlidersCalls++;
         lastSettingsBrightness = brightnessLevel;
         lastSettingsVolume = volumeLevel;
     }
-    void updateSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel, int activeSlider) {
+    void updateSettingsSliders(const DisplayPaintContext& context, uint8_t brightnessLevel, uint8_t volumeLevel, int activeSlider) {
+        recordContext(context);
         updateSettingsSlidersCalls++;
         lastSettingsBrightness = brightnessLevel;
         lastSettingsVolume = volumeLevel;
         lastSettingsActiveSlider = activeSlider;
     }
-    void hideBrightnessSlider() { hideBrightnessSliderCalls++; }
+    void hideBrightnessSlider(const DisplayPaintContext& context) {
+        recordContext(context); hideBrightnessSliderCalls++; }
     int getActiveSliderFromTouch(int16_t /*touchY*/) { return activeSliderFromTouch; }
     
     void resetChangeTracking() {
@@ -516,6 +415,15 @@ public:
     }
     const DisplayMockLifecycleState& lifecycleState() const { return lifecycleState_; }
   private:
+    void recordContext(const DisplayPaintContext& context) {
+        lastPresentationStatus = context.status;
+        lastCardPersistence = context.cardPersistence;
+        lastPaintNowMs = context.nowMs;
+        lifecycleState_.bleContext = context.status.ble;
+        lifecycleState_.bleProxyEnabled = context.status.bleProxyEnabled;
+        lifecycleState_.bleProxyConnected = context.status.bleProxyClientConnected;
+        lifecycleState_.bleReceiving = context.status.bleReceiving;
+    }
     void recordOperation(DisplayMockOperation operation) {
         lifecycleState_.lastOperation = operation;
         ++lifecycleState_.sequence;

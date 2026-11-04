@@ -8,7 +8,8 @@ constexpr int kObdBadgeFlushW = 72;
 constexpr int kObdBadgeFlushH = 36;
 } // namespace
 
-void TouchUiModule::begin(V1Display* disp, TouchHandler* touch, SettingsManager* settings, const Callbacks& cbs) {
+void TouchUiModule::begin(V1Display* disp, TouchHandler* touch, SettingsManager* settings, const Callbacks& cbs, RuntimePresentationSource& presentation) {
+    presentation_ = &presentation;
     display_ = disp;
     touchHandler_ = touch;
     settings_ = settings;
@@ -42,7 +43,7 @@ bool TouchUiModule::process(unsigned long nowMs, bool bootPressed) {
             !brightnessAdjustMode_ && held >= OBD_PAIR_LONG_PRESS_MS && canArmObdPairGesture(nowMs);
         if (shouldArmObdPair != obdPairGestureArmed_) {
             obdPairGestureArmed_ = shouldArmObdPair;
-            updateObdIndicatorAttention(obdPairGestureArmed_, nowMs);
+            updateObdIndicatorAttention(obdPairGestureArmed_);
         }
     }
 
@@ -54,14 +55,17 @@ bool TouchUiModule::process(unsigned long nowMs, bool bootPressed) {
 
         if (obdPairGestureArmed_) {
             obdPairGestureArmed_ = false;
-            updateObdIndicatorAttention(false, nowMs);
+            updateObdIndicatorAttention(false);
         }
 
         if (triggerObdPair) {
             if (callbacks_.requestObdManualPairScan) {
                 (void)callbacks_.requestObdManualPairScan(nowMs, callbacks_.requestObdManualPairScanCtx);
             }
-            display_->refreshObdIndicator(nowMs);
+            {
+                const auto inputs = presentation_->captureForPaint();
+                display_->refreshObdIndicator(inputs.context());
+            }
             display_->flushRegion(kObdBadgeFlushX, kObdBadgeFlushY, kObdBadgeFlushW, kObdBadgeFlushH);
         } else if (pressDuration >= MAINTENANCE_BOOT_LONG_PRESS_MS) {
             if (callbacks_.requestMaintenanceBoot) {
@@ -123,7 +127,7 @@ void TouchUiModule::suspendForPresentationOwner() {
     if (display_) {
         // State-only setter; the warning owner remains the sole flusher. The
         // authoritative redraw after release will paint the cleared attention.
-        display_->setObdAttention(false);
+        presentation_->setObdAttention(false);
     }
 }
 
@@ -140,7 +144,10 @@ bool TouchUiModule::restorePresentationIfOwned() {
     if (!brightnessAdjustMode_ || !display_) {
         return false;
     }
-    display_->showSettingsSliders(brightnessAdjustValue_, volumeAdjustValue_);
+    {
+        const auto inputs = presentation_->captureForPaint();
+        display_->showSettingsSliders(inputs.context(), brightnessAdjustValue_, volumeAdjustValue_);
+    }
     return true;
 }
 
@@ -154,9 +161,12 @@ bool TouchUiModule::canArmObdPairGesture(unsigned long nowMs) const {
            callbacks_.isObdPairGestureSafe(nowMs, callbacks_.isObdPairGestureSafeCtx);
 }
 
-void TouchUiModule::updateObdIndicatorAttention(bool attention, unsigned long nowMs) {
-    display_->setObdAttention(attention);
-    display_->refreshObdIndicator(nowMs);
+void TouchUiModule::updateObdIndicatorAttention(bool attention) {
+    presentation_->setObdAttention(attention);
+    {
+        const auto inputs = presentation_->captureForPaint();
+        display_->refreshObdIndicator(inputs.context());
+    }
     display_->flushRegion(kObdBadgeFlushX, kObdBadgeFlushY, kObdBadgeFlushW, kObdBadgeFlushH);
 }
 
@@ -168,7 +178,10 @@ void TouchUiModule::enterAdjustMode() {
     volumeAdjustValue_ = s.voiceVolume;
     activeSlider_ = 0;
     lastVolumeChangeMs_ = 0;
-    display_->showSettingsSliders(brightnessAdjustValue_, volumeAdjustValue_);
+    {
+        const auto inputs = presentation_->captureForPaint();
+        display_->showSettingsSliders(inputs.context(), brightnessAdjustValue_, volumeAdjustValue_);
+    }
     Serial.printf("[Settings] Entering adjustment mode (brightness: %d, volume: %d)\n", brightnessAdjustValue_,
                volumeAdjustValue_);
 }
@@ -190,7 +203,10 @@ void TouchUiModule::exitAdjustModeAndSave(bool deferPersistence) {
         }
     }
     audio_set_volume(volumeAdjustValue_);
-    display_->hideBrightnessSlider();
+    {
+        const auto inputs = presentation_->captureForPaint();
+        display_->hideBrightnessSlider(inputs.context());
+    }
     if (callbacks_.restoreDisplay)
         callbacks_.restoreDisplay(callbacks_.restoreDisplayCtx);
     Serial.printf("[Settings] %s brightness: %d, volume: %d\n", persisted ? "Saved" : "Pending save for",
@@ -223,7 +239,10 @@ bool TouchUiModule::handleSliderTouch(unsigned long nowMs) {
         if (newLevel != brightnessAdjustValue_) {
             brightnessAdjustValue_ = newLevel;
             if ((nowMs - lastSliderRedrawMs_) >= SLIDER_REDRAW_MIN_MS) {
-                display_->updateSettingsSliders(brightnessAdjustValue_, volumeAdjustValue_, activeSlider_);
+                {
+                    const auto inputs = presentation_->captureForPaint();
+                    display_->updateSettingsSliders(inputs.context(), brightnessAdjustValue_, volumeAdjustValue_, activeSlider_);
+                }
                 lastSliderRedrawMs_ = nowMs;
             }
         }
@@ -237,7 +256,10 @@ bool TouchUiModule::handleSliderTouch(unsigned long nowMs) {
             volumeAdjustValue_ = static_cast<uint8_t>(newVolume);
             audio_set_volume(volumeAdjustValue_);
             if ((nowMs - lastSliderRedrawMs_) >= SLIDER_REDRAW_MIN_MS) {
-                display_->updateSettingsSliders(brightnessAdjustValue_, volumeAdjustValue_, activeSlider_);
+                {
+                    const auto inputs = presentation_->captureForPaint();
+                    display_->updateSettingsSliders(inputs.context(), brightnessAdjustValue_, volumeAdjustValue_, activeSlider_);
+                }
                 lastSliderRedrawMs_ = nowMs;
             }
             lastVolumeChangeMs_ = nowMs;

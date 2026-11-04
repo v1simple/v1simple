@@ -102,12 +102,13 @@ uint8_t customBandForDefinition(const V1CustomFrequencyDefinition& definition,
 } // namespace
 
 void AutoPushModule::begin(SettingsManager* settings, V1ProfileManager* profileMgr, V1BLEClient* ble,
-                           PacketParser* parser, V1Display* disp, QuietCoordinatorModule* quietCoordinator) {
+                           PacketParser* parser, ProfilePresentation presentProfile, void* presentationContext, QuietCoordinatorModule* quietCoordinator) {
     settings_ = settings;
     profiles_ = profileMgr;
     bleClient_ = ble;
     parser_ = parser;
-    display_ = disp;
+    presentProfile_ = presentProfile;
+    presentationContext_ = presentationContext;
     quiet_ = quietCoordinator;
 }
 
@@ -182,8 +183,8 @@ void AutoPushModule::commitPreparedState(State&& preparedState,
     state_ = std::move(preparedState);
     status_ = std::move(preparedStatus);
     preApplySnapshot_ = V1DetectorSnapshot{};
-    if (display_ && state_.updateProfileIndicator) {
-        display_->drawProfileIndicator(state_.slotIndex);
+    if (presentProfile_ && state_.updateProfileIndicator) {
+        presentProfile_(state_.slotIndex, presentationContext_);
     }
 }
 
@@ -193,7 +194,7 @@ AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, con
                                                               bool updateProfileIndicator,
                                                               bool retainLoadStep,
                                                               bool applySlotModifiers) {
-    if (!settings_ || !profiles_ || !bleClient_ || !parser_ || !display_ || !quiet_) {
+    if (!settings_ || !profiles_ || !bleClient_ || !parser_ || !presentProfile_ || !quiet_) {
         return QueueResult::PROFILE_LOAD_FAILED;
     }
     if (!bleClient_->isConnected()) return QueueResult::V1_NOT_CONNECTED;
@@ -239,7 +240,7 @@ AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, con
 
 AutoPushModule::QueueResult AutoPushModule::queueSlotPush(int slotIndex, bool activateSlot,
                                                           bool updateProfileIndicator) {
-    if (!settings_ || !profiles_ || !bleClient_ || !parser_ || !display_ || !quiet_) {
+    if (!settings_ || !profiles_ || !bleClient_ || !parser_ || !presentProfile_ || !quiet_) {
         return QueueResult::PROFILE_LOAD_FAILED;
     }
     if (!bleClient_->isConnected()) return QueueResult::V1_NOT_CONNECTED;
@@ -259,7 +260,7 @@ AutoPushModule::QueueResult AutoPushModule::queueSlotPush(int slotIndex, bool ac
 }
 
 AutoPushModule::QueueResult AutoPushModule::queuePushNow(const PushNowRequest& request) {
-    if (!settings_ || !profiles_ || !bleClient_ || !parser_ || !display_ || !quiet_) {
+    if (!settings_ || !profiles_ || !bleClient_ || !parser_ || !presentProfile_ || !quiet_) {
         return QueueResult::PROFILE_LOAD_FAILED;
     }
     if (!bleClient_->isConnected()) return QueueResult::V1_NOT_CONNECTED;

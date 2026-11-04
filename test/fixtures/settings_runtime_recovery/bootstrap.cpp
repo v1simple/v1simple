@@ -1,6 +1,7 @@
 #define main original_deferred_persist_suite_main
 #include "test/test_settings_deferred_persist/test_settings_deferred_persist.cpp"
 #undef main
+#include "test/mocks/runtime_presentation_source.h"
 
 #include "src/persistent_bootstrap.cpp"
 
@@ -25,7 +26,7 @@ void audio_init_sd(StorageManager& owner) {
 }
 
 struct BootstrapDisplay {
-    void updateColorTheme() { bootEffects.emplace_back("theme"); }
+    void updateColorTheme(const DisplayStyleView&) { bootEffects.emplace_back("theme"); }
     void setBrightness(uint8_t value) {
         paintedBrightness = value;
         bootEffects.emplace_back("brightness");

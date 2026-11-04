@@ -14,13 +14,19 @@ void PowerModule::performShutdown() {
     }
 
     if (display_) {
-        display_->showShutdown();
+        {
+            const auto inputs = presentation_->captureForPaint();
+            display_->showShutdown(inputs.context());
+        }
         delay(1000);
         // Leave panel GRAM black before the battery manager drops the latch or
         // enters deep sleep. The LCD controller can otherwise retain the
         // GOODBYE frame while its backlight is off and briefly reveal it when
         // a wake press restores power/backlight.
-        display_->clear();
+        {
+            const auto inputs = presentation_->captureForPaint();
+            display_->clear(inputs.context());
+        }
     }
 
     if (battery_) {
@@ -42,7 +48,10 @@ void PowerModule::performShutdown() {
                 // dark. The main loop restores the authoritative owner before
                 // it consumes the pending brightness restore, so retained
                 // GOODBYE pixels can never be exposed.
-                display_->showDisconnected();
+                {
+                    const auto inputs = presentation_->captureForPaint();
+                    display_->showDisconnected(inputs.context());
+                }
                 display_->flush();
                 if (settings_) {
                     displayBrightnessRestorePending_ = true;
@@ -68,7 +77,8 @@ void PowerModule::performShutdown() {
 #endif
 }
 
-void PowerModule::begin(BatteryManager* batteryMgr, V1Display* disp, SettingsManager* settings) {
+void PowerModule::begin(BatteryManager* batteryMgr, V1Display* disp, SettingsManager* settings, RuntimePresentationSource& presentation) {
+    presentation_ = &presentation;
     battery_ = batteryMgr;
     display_ = disp;
     settings_ = settings;
@@ -118,7 +128,10 @@ void PowerModule::restoreCriticalBatteryWarning() {
     if (!criticalBatteryPresentationActive_ || criticalBatteryWarningVisible_ || !display_) {
         return;
     }
-    display_->showLowBattery();
+    {
+        const auto inputs = presentation_->captureForPaint();
+        display_->showLowBattery(inputs.context());
+    }
     criticalBatteryWarningVisible_ = true;
     criticalBatteryWarningPreempted_ = false;
 }

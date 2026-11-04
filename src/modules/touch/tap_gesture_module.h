@@ -3,7 +3,6 @@
 #include <Arduino.h>
 
 #include "touch_handler.h"
-#include "display.h"
 #include "display_mode.h"
 #include "settings.h"
 #include "ble_client.h"
@@ -18,15 +17,11 @@ class TapGestureModule {
     struct Callbacks {
         bool (*beginProfileCycle)(int newSlot, void* context);
         void* beginProfileCycleContext;
+        void (*presentProfile)(int slot, void* context);
+        void* presentProfileContext;
     };
 
-    void begin(TouchHandler* touchHandler, SettingsManager* settings, V1Display* display, V1BLEClient* bleClient,
-               PacketParser* parser, AutoPushModule* autoPushModule, AlertPersistenceModule* alertPersistenceModule,
-               DisplayMode* displayModePtr, QuietCoordinatorModule* quietCoordinator) {
-        begin(touchHandler, settings, display, bleClient, parser, autoPushModule,
-              alertPersistenceModule, displayModePtr, quietCoordinator, Callbacks{});
-    }
-    void begin(TouchHandler* touchHandler, SettingsManager* settings, V1Display* display, V1BLEClient* bleClient,
+    void begin(TouchHandler* touchHandler, SettingsManager* settings, V1BLEClient* bleClient,
                PacketParser* parser, AutoPushModule* autoPushModule, AlertPersistenceModule* alertPersistenceModule,
                DisplayMode* displayModePtr, QuietCoordinatorModule* quietCoordinator, Callbacks callbacks);
 
@@ -39,7 +34,6 @@ class TapGestureModule {
   private:
     TouchHandler* touch_ = nullptr;
     SettingsManager* settings_ = nullptr;
-    V1Display* display_ = nullptr;
     V1BLEClient* ble_ = nullptr;
     PacketParser* parser_ = nullptr;
     AutoPushModule* autoPush_ = nullptr;

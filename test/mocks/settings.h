@@ -236,6 +236,8 @@ struct AutoPushStateUpdate {
 // Settings manager stub
 class SettingsManager {
 public:
+    uint32_t displayConfigurationRevision() const { return 0; }
+
     struct NvsDiagnostic {
         String activeNamespace;
         uint8_t nvsValidMarker = 0;

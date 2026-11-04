@@ -96,6 +96,7 @@ void tearDown() { queue.end(); }
 
 #include "test/mocks/display.h"
 #include "test/mocks/settings.h"
+#include "test/mocks/runtime_presentation_source.h"
 #include "src/modules/alert_persistence/alert_persistence_module.cpp"
 #include "src/modules/alp/alp_event_latch.cpp"
 #include "src/modules/quiet/quiet_coordinator_module.cpp"
@@ -134,6 +135,7 @@ AudioPlaybackResult try_play_threat_escalation(AlertBand, uint16_t, AlertDirecti
 struct Runtime {
     V1Display display_;
     SettingsManager settings_;
+    RuntimePresentationSource presentation_{settings_};
     TouchHandler touch_;
     TouchUiModule touchUi_;
     PacketParser &parser_ = parser;
@@ -165,6 +167,7 @@ struct Runtime {
         DisplayPipelineDependencies dependencies;
         dependencies.displayMode = &displayMode_;
         dependencies.display = &display_;
+        dependencies.presentation = &presentation_;
         dependencies.parser = &parser;
         dependencies.settings = &settings_;
         dependencies.ble = &client;
@@ -173,7 +176,7 @@ struct Runtime {
         displayPipeline_.begin(dependencies);
         touch_.begin();
         TouchUiModule::Callbacks callbacks{};
-        touchUi_.begin(&display_, &touch_, &settings_, callbacks);
+        touchUi_.begin(&display_, &touch_, &settings_, callbacks, presentation_);
     }
     void admit(uint32_t now) {
         RenderFrame frame;

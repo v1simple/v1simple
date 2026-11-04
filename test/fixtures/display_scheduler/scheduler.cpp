@@ -17,7 +17,6 @@ AudioPlaybackResult try_play_threat_escalation(AlertBand, uint16_t, AlertDirecti
 }
 #include "src/display_status_bar.cpp"
 #include "include/display_ble_freshness.h"
-#include "display_context.inc"
 #include "src/runtime_coordinator.h"
 #include "src/modules/ble/connection_runtime_module.h"
 #include "src/modules/display/display_orchestration_module.h"
@@ -36,7 +35,6 @@ class DisplayPreviewModule {
     void update() {}
 };
 class DisplayRestoreModule { public: bool process() { return false; } };
-void DisplayOrchestrationModule::syncQuietPresentation() {}
 bool DisplayOrchestrationModule::processSpeedVolume(uint32_t) { return false; }
 void DisplayOrchestrationModule::executeVolumeFade(uint32_t) {}
 void QuietCoordinatorModule::processInTheBox(uint32_t) { TEST_FAIL_MESSAGE("unexpected quiet owner"); }
@@ -71,9 +69,6 @@ class DriveRuntime : public Runtime {
     ConnectionStateModule connection_;
     ConnectionStateCadenceModule cadence_;
     ConnectionStateDispatchModule connectionDispatch_;
-    BatteryManager battery;
-    WiFiManager wifi;
-    GpsRuntimeModule gps;
     // References let the extracted production methods use their real names.
     V1BLEClient& ble_ = ble;
     PacketParser& parser_ = parser;
@@ -87,6 +82,8 @@ class DriveRuntime : public Runtime {
     SettingsOperationAdmission settingsOperationCoordinator_;
     SettingsManager& settings_ = settings;
     V1Display& display_ = display;
+    RuntimePresentationSource& presentation_ = presentation;
+    void presentProfileIndicator(int slot);
     AlertPersistenceModule& alertPersistence_ = persistence;
     DisplayMode& displayMode_ = mode;
     AlpRuntimeModule& alp_ = alp;
@@ -104,18 +101,17 @@ class DriveRuntime : public Runtime {
         voice_.begin(&settings);
         voicePlayback_.begin(parser.alertLifetime());
         alp.setEventBus(&systemEvents_);
-        displayOrchestration_.begin(&display, &ble, &preview_, &restore_, &parser, nullptr, nullptr, nullptr);
-        connection_.begin(&ble, &parser, &display, nullptr, &bleQueue_, &persistence);
+        displayOrchestration_.begin(&display, &ble, &preview_, &restore_, &parser, nullptr, nullptr, nullptr, presentation);
+        connection_.begin(&ble, &parser, &display, nullptr, &bleQueue_, &persistence, presentation);
         connection_.setDisplayOwnerRestoreCallback([](void* context, uint32_t now) {
             return static_cast<DriveRuntime*>(context)->pipeline.restoreCurrentOwner(now);
         }, this);
         connectionDispatch_.begin(cadence_, connection_);
-        display.setSystemStatusSources(battery, wifi, gps);
         settings.mutableSettings().showBatteryPercent = true;
         battery.setHasBattery(true);
         battery.setVoltage(3.9f);
         battery.setBatteryPercent(80);
-        display.showScanning();
+        display.showScanning(presentation.captureForPaint().context());
         Wire.resetMock();
         TEST_ASSERT_TRUE(touch_.begin());
         TapGestureModule::Callbacks callbacks{};
@@ -123,7 +119,11 @@ class DriveRuntime : public Runtime {
             return static_cast<DriveRuntime*>(context)->beginTripleTapProfileCycle(slot);
         };
         callbacks.beginProfileCycleContext = this;
-        tapGesture_.begin(&touch_, &settings, &display, &ble, &parser, &autoPush_,
+        callbacks.presentProfile = [](int slot, void* context) {
+            static_cast<DriveRuntime*>(context)->presentProfileIndicator(slot);
+        };
+        callbacks.presentProfileContext = this;
+        tapGesture_.begin(&touch_, &settings, &ble, &parser, &autoPush_,
                           &persistence, &mode, nullptr, callbacks);
     }
 
@@ -145,7 +145,7 @@ class DriveRuntime : public Runtime {
     }
     void acceptConnectionSnapshot(const ConnectionRuntimeSnapshot&) {}
     void markInitialScanningScreenHandled() {}
-    void showInitialScanningScreen() { display.showScanning(); }
+    void showInitialScanningScreen() { display.showScanning(presentation.captureForPaint().context()); }
     bool powerOwnsPresentation() const { return false; }
     void processPower(uint32_t) {}
     bool processTouch(uint32_t) { return inSettings; }
@@ -209,6 +209,7 @@ class DriveRuntime : public Runtime {
 };
 #include "drive_display.inc"
 #include "profile_cycle.inc"
+#include "profile_presentation.inc"
 
 void test_disconnected_dli_mode_reaches_panel_without_an_event_or_v1_packet() {
     DriveRuntime r;

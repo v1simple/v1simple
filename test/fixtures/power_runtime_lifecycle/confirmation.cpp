@@ -1,6 +1,7 @@
 #include "test/fixtures/battery_input_lifecycle/battery_io.h"
 #include "test/mocks/display.h"
 #include "test/mocks/settings.h"
+#include "test/mocks/runtime_presentation_source.h"
 #include "src/modules/power/power_module.cpp"
 #include "main_runtime_state.h"
 #include <unity.h>
@@ -43,12 +44,13 @@ constexpr uint32_t kMaintenanceExitLongPressMs = 4000;
 struct RuntimePower {
     BatteryManager battery_;
     RuntimeSettings settings_;
+    RuntimePresentationSource presentation_{settings_};
     V1Display display_;
     PowerModule power_;
     RuntimePower() {
         assert(battery_.begin());
         settings_.settings.autoPowerOffMinutes = 0;
-        power_.begin(&battery_, &display_, &settings_);
+        power_.begin(&battery_, &display_, &settings_, presentation_);
     }
 };
 struct DriveRuntime : RuntimePower {

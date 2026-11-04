@@ -23,6 +23,7 @@ struct RecoveryRuntime {
     StreamFixture& fixture;
     V1BLEClient& ble_;
     SettingsManager& settings_;
+    RuntimePresentationSource presentation_{settings_};
     ConnectionStateModule& connectionState_;
     TouchHandler touch_;
     TouchUiModule touchUi_;
@@ -38,7 +39,7 @@ struct RecoveryRuntime {
     explicit RecoveryRuntime(StreamFixture& f)
         : fixture(f), ble_(f.client), settings_(f.settings), connectionState_(f.connection) {
         touch_.begin();
-        touchUi_.begin(&f.display, &touch_, &settings_, {});
+        touchUi_.begin(&f.display, &touch_, &settings_, {}, presentation_);
         connectionDispatch_.begin(cadence_, connectionState_);
     }
     void selectPresentation(Presentation mode) {

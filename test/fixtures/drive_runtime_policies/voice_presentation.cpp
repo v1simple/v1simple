@@ -6,6 +6,7 @@
 #include "test/mocks/ble_client.h"
 #include "test/mocks/packet_parser.h"
 #include "test/mocks/settings.h"
+#include "test/mocks/runtime_presentation_source.h"
 #include "test/mocks/display.h"
 SerialClass Serial;
 unsigned long mockMillis = 0;
@@ -82,6 +83,7 @@ struct Runtime {
     PacketParser& parser_ = parser;
     V1BLEClient& ble_ = ble;
     SettingsManager settings_;
+    RuntimePresentationSource presentation_{settings_};
     VoiceModule voice_;
     QuietCoordinatorModule quiet_;
     VoicePlaybackCoordinator voicePlayback_{voice_, parser_, ble_, &quiet_};
@@ -110,6 +112,7 @@ struct Runtime {
         DisplayPipelineDependencies dependencies;
         dependencies.displayMode = &mode_;
         dependencies.display = &display;
+        dependencies.presentation = &presentation_;
         dependencies.parser = &parser;
         dependencies.settings = &settings_;
         dependencies.ble = &ble;

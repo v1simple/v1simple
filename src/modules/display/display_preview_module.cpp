@@ -320,7 +320,8 @@ DisplayPreviewModule::DisplayPreviewModule() {
     // display set in begin()
 }
 
-void DisplayPreviewModule::begin(V1Display* disp) {
+void DisplayPreviewModule::begin(V1Display* disp, RuntimePresentationSource& presentation) {
+    presentation_ = &presentation;
     display_ = disp;
 }
 
@@ -336,16 +337,12 @@ void DisplayPreviewModule::requestHold(uint32_t durationMs) {
     previewEnded_ = false;
     hasLastResolved_ = false;
     resetCarryState();
-    if (display_) {
-        display_->setPreviewIndicatorOverridesActive(true);
-    }
 }
 
 void DisplayPreviewModule::cancel() {
     if (previewActive_) {
         previewActive_ = false;
         previewEnded_ = true;
-        cleanupPreviewOverrides();
     }
 }
 
@@ -400,17 +397,6 @@ void DisplayPreviewModule::applyCarryState(PreviewCarryState& state, const Previ
         state.muteVolume = step.muteVolume;
 }
 
-void DisplayPreviewModule::cleanupPreviewOverrides() {
-    if (!display_) {
-        return;
-    }
-    display_->clearAlpFrequencyOverride();
-    display_->setAlpPreviewState(false, 0, 0);
-    display_->setObdPreviewState(false, false, false);
-    display_->setBLEProxyStatus(false, false);
-    display_->setPreviewIndicatorOverridesActive(false);
-}
-
 void DisplayPreviewModule::update() {
     if (!previewActive_ || !display_)
         return;
@@ -421,7 +407,6 @@ void DisplayPreviewModule::update() {
     if (elapsed >= previewDurationMs_) {
         previewActive_ = false;
         previewEnded_ = true;
-        cleanupPreviewOverrides();
         return;
     }
 
@@ -523,29 +508,26 @@ void DisplayPreviewModule::renderResolvedStep(const ResolvedStep& resolved, bool
 
     // ── Build alert array ───────────────────────────────────────────
 
-    AlertData allAlerts[3];
-    int alertCount = 1;
-    AlertData primary = buildAlertData(resolved.primary, true);
+    RenderFrame frame;
+    frame.primaryKind = RenderFramePrimaryKind::V1_LIVE;
+    AlertData& primary = frame.v1Priority;
+    primary = buildAlertData(resolved.primary, true);
 
     if (resolved.photo && primary.band == BAND_K) {
         primary.photoType = 1; // Generic photo type
     }
 
-    allAlerts[0] = primary;
-
     if (resolved.secondary.present) {
-        allAlerts[alertCount] = buildAlertData(resolved.secondary, false);
-        alertCount++;
+        frame.cards[frame.cardCount++].v1Alert = buildAlertData(resolved.secondary, false);
     }
 
     if (resolved.third.present) {
-        allAlerts[alertCount] = buildAlertData(resolved.third, false);
-        alertCount++;
+        frame.cards[frame.cardCount++].v1Alert = buildAlertData(resolved.third, false);
     }
 
     // ── Build display state ─────────────────────────────────────────
 
-    DisplayState state{};
+    DisplayState& state = frame.primaryState;
     state.activeBands = resolved.activeBandMask;
     state.arrows = resolved.primary.dir;
     state.priorityArrow = resolved.primary.dir;
@@ -572,51 +554,33 @@ void DisplayPreviewModule::renderResolvedStep(const ResolvedStep& resolved, bool
         state.hasPhotoAlert = true;
     }
 
-    // ── Set indicator overrides ─────────────────────────────────────
+    frame.context = state;
+    const AlpState alpState = static_cast<AlpState>(resolved.status.alpState);
+    frame.alpPrimary.active = alpState == AlpState::ALERT_ACTIVE || alpState == AlpState::NOISE_WINDOW ||
+                              alpState == AlpState::TEARDOWN;
 
-    // ALP badge
-    bool alpOn = (resolved.status.alpState != static_cast<int8_t>(AlpState::OFF));
-    display_->setAlpPreviewState(alpOn, static_cast<uint8_t>(resolved.status.alpState), resolved.status.alpHbByte1);
-
-    // ALP gun frequency override
-    if (resolved.raw.alpGunAbbrev) {
-        display_->setAlpFrequencyOverride(resolved.raw.alpGunAbbrev);
-    } else {
-        display_->clearAlpFrequencyOverride();
-    }
-
-    // OBD badge
-    switch (resolved.status.obdState) {
-    case 1:
-        display_->setObdPreviewState(true, true, false);
-        break; // Connected
-    case 2:
-        display_->setObdPreviewState(true, false, true);
-        break; // Scanning
-    default:
-        display_->setObdPreviewState(false, false, false);
-        break; // Off
-    }
-
-    // BLE proxy indicator
-    switch (resolved.status.bleState) {
-    case 1:
-        display_->setBLEProxyStatus(true, false);
-        break; // Advertising (blue)
-    case 2:
-        display_->setBLEProxyStatus(true, true);
-        break; // Client connected (green)
-    default:
-        display_->setBLEProxyStatus(false, false);
-        break; // Off
-    }
-
-    // Profile
-    display_->setProfileIndicatorSlot(resolved.status.profileSlot);
-
-    // ── Render ──────────────────────────────────────────────────────
-
-    display_->update(primary, allAlerts, alertCount, state);
+    // Selection is an event, including same-slot blink paints; the renderer
+    // changes its reveal timestamp only when the selected slot changes.
+    display_->setProfileIndicatorSlot(resolved.status.profileSlot, static_cast<uint32_t>(millis()));
+    auto inputs = presentation_->captureForPaint();
+    inputs.status.alpEnabled = alpState != AlpState::OFF;
+    inputs.status.alpState = static_cast<uint8_t>(alpState);
+    inputs.status.alpHeartbeat = resolved.status.alpHbByte1;
+    inputs.status.obdEnabled = resolved.status.obdState == 1 || resolved.status.obdState == 2;
+    inputs.status.obdConnected = resolved.status.obdState == 1;
+    inputs.status.obdScanInProgress = resolved.status.obdState == 2;
+    inputs.status.obdManualScanPending = false;
+    inputs.status.bleProxyEnabled = resolved.status.bleState == 1 || resolved.status.bleState == 2;
+    inputs.status.bleProxyClientConnected = resolved.status.bleState == 2;
+    inputs.status.bleReceiving = true;
+    // This synthetic badge observation is fresh; preserve the original real
+    // transport sample/RSSI timestamp and its zero-is-invalid rule separately.
+    inputs.status.bleBadgeSampledAtMs = inputs.nowMs != 0 ? inputs.nowMs : UINT32_MAX;
+    inputs.status.hasGunLabel = resolved.raw.alpGunAbbrev != nullptr;
+    inputs.status.gunLabelLidActive = true;
+    snprintf(inputs.status.gunLabel, sizeof(inputs.status.gunLabel), "%s",
+             resolved.raw.alpGunAbbrev ? resolved.raw.alpGunAbbrev : "");
+    display_->renderFrame(frame, inputs.context(CardPersistencePolicy::PreviewImmediate));
 }
 
 #endif // !UNIT_TEST || V1_INCLUDE_DISPLAY_PREVIEW_MODULE_IMPL

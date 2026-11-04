@@ -1,5 +1,6 @@
 
 #include "main_internals.h"
+#include "runtime_presentation_source.h"
 #include "display.h"
 #include "settings_keys.h"
 #include "littlefs_mount.h"
@@ -219,11 +220,12 @@ bool readAndClearMaintenanceBootRequest() {
 }
 
 
-void fatalBootError(V1Display& display, const char* message, bool displayAvailable) {
+void fatalBootError(V1Display& display, RuntimePresentationSource& presentation, const char* message, bool displayAvailable) {
     Serial.printf("FATAL: %s\n", message);
 
     if (displayAvailable) {
-        presentFatalBootFrame(display);
+        const auto inputs = presentation.captureForPaint();
+        presentFatalBootFrame(display, inputs.context());
         Serial.println("Showing error on display, will restart in 10 seconds...");
 
         for (int i = 10; i > 0; i--) {

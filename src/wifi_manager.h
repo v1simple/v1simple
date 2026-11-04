@@ -182,6 +182,11 @@ class WiFiManager {
         health_ = &health;
     }
 
+    void setProfilePresentationCallback(void (*present)(int, void*), void* context) {
+        presentProfile_ = present;
+        presentProfileContext_ = context;
+    }
+
     // Maintenance boot intentionally skips BLE/V1 scan. Routes that would
     // mutate BLE runtime state must become no-ops while this is true.
     void setMaintenanceBootMode(bool enabled) {
@@ -302,6 +307,8 @@ class WiFiManager {
     GpsRuntimeModule* gpsRuntime_ = nullptr;
     V1BLEClient* bleRuntime_ = nullptr;
     V1Display* display_ = nullptr;
+    void (*presentProfile_)(int, void*) = nullptr;
+    void* presentProfileContext_ = nullptr;
     DisplayPreviewModule* displayPreview_ = nullptr;
     BatteryManager* battery_ = nullptr;
     ProductEventLog* productEvents_ = nullptr;

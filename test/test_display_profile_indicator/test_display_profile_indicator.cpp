@@ -26,11 +26,11 @@ SerialClass Serial;
 unsigned long mockMillis = 1000;
 unsigned long mockMicros = 0;
 V1Display* g_displayInstance = nullptr;
-V1Display::V1Display(SettingsManager& settings) : settings_(settings) {
+V1Display::V1Display() {
     currentPalette_ = ColorThemes::STANDARD();
 }
 V1Display::~V1Display() = default;
-bool V1Display::hasFreshBleContext(uint32_t) const { return false; }
+#include "../support/presentation_leaf_fixture.h"
 #include "../../src/display_status_bar.cpp"
 
 class ProfileCanvas : public Arduino_Canvas {
@@ -109,10 +109,11 @@ static void configure(SettingsManager& settings) {
 void test_long_profile_fits_and_short_change_leaves_no_old_pixels() {
     SettingsManager settings;
     configure(settings);
-    V1Display display(settings);
+    V1Display display;
     auto* canvas = new ProfileCanvas;
     display.setTestCanvas(canvas);
-    display.drawProfileIndicator(0);
+    display.setProfileIndicatorSlot(0, static_cast<uint32_t>(mockMillis));
+    display.drawProfileIndicator(testDisplayInputs(settings).context());
     const auto region = DisplayLayout::profileRect();
     TEST_ASSERT_EQUAL_STRING("WWWWWWWWWWWWWWWWWWWW", canvas->lastText.c_str());
     TEST_ASSERT_EQUAL_INT(120, canvas->lastTextWidth);
@@ -120,22 +121,25 @@ void test_long_profile_fits_and_short_change_leaves_no_old_pixels() {
     TEST_ASSERT_LESS_OR_EQUAL_INT(region.x + region.w, canvas->lastTextX + canvas->lastTextWidth);
     TEST_ASSERT_EQUAL_INT(0, canvas->foregroundOutsideProfile());
 
-    display.drawProfileIndicator(1);
+    display.setProfileIndicatorSlot(1, static_cast<uint32_t>(mockMillis));
+    display.drawProfileIndicator(testDisplayInputs(settings).context());
     TEST_ASSERT_EQUAL_STRING("A", canvas->lastText.c_str());
     TEST_ASSERT_EQUAL_INT(2, canvas->textSize);
     TEST_ASSERT_EQUAL_INT(0, canvas->foregroundOutsideProfile());
     const auto afterShort = canvas->pixels;
     const int prints = canvas->prints;
-    display.drawProfileIndicator(1);
+    display.setProfileIndicatorSlot(1, static_cast<uint32_t>(mockMillis));
+    display.drawProfileIndicator(testDisplayInputs(settings).context());
     TEST_ASSERT_EQUAL_INT(prints, canvas->prints);
     TEST_ASSERT_TRUE(afterShort == canvas->pixels);
 
     // A changed frame must equal a fresh short-name draw, including old ink
     // inside the indicator rectangle; a mere transfer of stale pixels fails.
-    V1Display fresh(settings);
+    V1Display fresh;
     auto* expected = new ProfileCanvas;
     fresh.setTestCanvas(expected);
-    fresh.drawProfileIndicator(1);
+    fresh.setProfileIndicatorSlot(1, static_cast<uint32_t>(mockMillis));
+    fresh.drawProfileIndicator(testDisplayInputs(settings).context());
     TEST_ASSERT_TRUE(expected->pixels == canvas->pixels);
 }
 
@@ -143,12 +147,14 @@ void test_hiding_long_profile_clears_all_of_its_ink() {
     SettingsManager settings;
     configure(settings);
     settings.settings.hideProfileIndicator = true;
-    V1Display display(settings);
+    V1Display display;
     auto* canvas = new ProfileCanvas;
     display.setTestCanvas(canvas);
-    display.drawProfileIndicator(0);
+    display.setProfileIndicatorSlot(0, static_cast<uint32_t>(mockMillis));
+    display.drawProfileIndicator(testDisplayInputs(settings).context());
     mockMillis += 10000;
-    display.drawProfileIndicator(0);
+    display.setProfileIndicatorSlot(0, static_cast<uint32_t>(mockMillis));
+    display.drawProfileIndicator(testDisplayInputs(settings).context());
     TEST_ASSERT_EQUAL_INT(0, canvas->foregroundOutsideProfile());
     const auto region = DisplayLayout::profileRect();
     for (int y = region.y; y < region.y + region.h; ++y) {
@@ -157,7 +163,8 @@ void test_hiding_long_profile_clears_all_of_its_ink() {
         }
     }
     const auto hidden = canvas->pixels;
-    display.drawProfileIndicator(0);
+    display.setProfileIndicatorSlot(0, static_cast<uint32_t>(mockMillis));
+    display.drawProfileIndicator(testDisplayInputs(settings).context());
     TEST_ASSERT_TRUE(hidden == canvas->pixels);
 }
 

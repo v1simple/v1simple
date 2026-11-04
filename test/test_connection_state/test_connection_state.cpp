@@ -16,6 +16,7 @@ static unsigned long mockMillis = 0;
 #include "../mocks/ble_client.h"
 #include "../mocks/display.h"
 #include "../mocks/packet_parser.h"
+#include "../mocks/runtime_presentation_source.h"
 #include "../mocks/modules/power/power_module.h"
 #include "../mocks/modules/ble/ble_queue_module.h"
 #include "../mocks/modules/alert_persistence/alert_persistence_module.h"
@@ -26,6 +27,8 @@ SerialClass Serial;
 
 static V1BLEClient bleClient;
 static V1Display display;
+static SettingsManager settings;
+static RuntimePresentationSource presentation{settings};
 static PacketParser parser;
 static PowerModule powerModule;
 static BleQueueModule bleQueueModule;
@@ -52,10 +55,13 @@ static bool restoreAuthoritativeOwner(void* context, uint32_t nowMs) {
     harness->lastConnected = harness->ble->isConnected();
     harness->lastSessionGeneration = harness->ble->sessionGeneration();
     const bool proxyConnected = harness->ble->isProxyClientConnected();
-    harness->display->setBleContext({harness->lastConnected, proxyConnected, harness->ble->getConnectionRssi(),
-                                     harness->ble->getProxyClientRssi()});
-    harness->display->setBLEProxyStatus(harness->lastConnected, proxyConnected, false);
-    harness->display->update(harness->parser->getDisplayState());
+    presentation.noteBleSample({harness->lastConnected, proxyConnected, harness->ble->getConnectionRssi(),
+                                harness->ble->getProxyClientRssi()}, false, nowMs);
+    const auto inputs = presentation.captureForPaint();
+    RenderFrame frame;
+    frame.primaryKind = RenderFramePrimaryKind::IDLE;
+    frame.primaryState = harness->parser->getDisplayState();
+    harness->display->renderFrame(frame, inputs.context());
     if (harness->mutateAfterRender) {
         harness->mutateAfterRender = false;
         harness->ble->setConnected(harness->mutationConnected);
@@ -123,10 +129,12 @@ struct ConnectionStateLogic {
                 if (bleQueue) {
                     bleQueue->openSession(ble->sessionGeneration());
                 }
-                displayPtr->showResting();
+                const auto inputs = presentation.captureForPaint();
+                displayPtr->showResting(inputs.context());
             } else {
-                displayPtr->setBleContext(DisplayBleContext{});
-                displayPtr->setBLEProxyStatus(false, false, false);
+                presentation.noteBleSample(DisplayBleContext{}, false, nowMs);
+                const auto inputs = presentation.captureForPaint();
+                displayPtr->refreshBleIndicator(inputs.context());
                 if (bleQueue) {
                     bleQueue->closeSession();
                 }
@@ -135,7 +143,7 @@ struct ConnectionStateLogic {
                     alertPersistence->clearPersistence();
                 }
                 displayPtr->resetChangeTracking();
-                displayPtr->showScanning();
+                displayPtr->showScanning(inputs.context());
             }
             wasConnected = isConnected;
         }
@@ -152,8 +160,8 @@ struct ConnectionStateLogic {
         }
         
         if (!isConnected) {
-            displayPtr->drawWiFiIndicator();
-            displayPtr->drawBatteryIndicator();
+            const auto inputs = presentation.captureForPaint();
+            displayPtr->drawConnectionIndicators(inputs.context());
             displayPtr->flush();
         }
         
@@ -169,6 +177,7 @@ void test_connect_transition_shows_resting() {
     connectionState.process(0, &bleClient, &parser, &display, &powerModule, &bleQueueModule);
     
     display.reset();
+    presentation.bleSamples = 0;
     powerModule.reset();
     
     bleClient.setConnected(true);
@@ -188,6 +197,7 @@ void test_disconnect_transition_shows_scanning() {
     connectionState.process(0, &bleClient, &parser, &display, &powerModule, &bleQueueModule);
     
     display.reset();
+    presentation.bleSamples = 0;
     powerModule.reset();
     parser.reset();
     display.resetChangeTrackingCalls = 0;
@@ -205,13 +215,12 @@ void test_disconnect_transition_shows_scanning() {
     TEST_ASSERT_EQUAL(1, bleQueueModule.closeSessionCalls);
     TEST_ASSERT_EQUAL(1, alertPersistenceModule.clearPersistenceCalls);
     TEST_ASSERT_EQUAL(1, display.resetChangeTrackingCalls);
-    TEST_ASSERT_EQUAL(1, display.setBleContextCalls);
-    TEST_ASSERT_FALSE(display.lastBleContext.v1Connected);
-    TEST_ASSERT_FALSE(display.lastBleContext.proxyConnected);
-    TEST_ASSERT_EQUAL(1, display.setBLEProxyStatusCalls);
-    TEST_ASSERT_FALSE(display.lastBleProxyEnabled);
-    TEST_ASSERT_FALSE(display.lastBleProxyConnected);
-    TEST_ASSERT_FALSE(display.lastBleReceiving);
+    TEST_ASSERT_EQUAL(1, presentation.bleSamples);
+    TEST_ASSERT_FALSE(display.lastPresentationStatus.ble.v1Connected);
+    TEST_ASSERT_FALSE(display.lastPresentationStatus.ble.proxyConnected);
+    TEST_ASSERT_FALSE(display.lastPresentationStatus.bleProxyEnabled);
+    TEST_ASSERT_FALSE(display.lastPresentationStatus.bleProxyClientConnected);
+    TEST_ASSERT_FALSE(display.lastPresentationStatus.bleReceiving);
 }
 
 void test_no_transition_when_state_unchanged() {
@@ -220,6 +229,7 @@ void test_no_transition_when_state_unchanged() {
     connectionState.process(0, &bleClient, &parser, &display, &powerModule, &bleQueueModule);
     
     display.reset();
+    presentation.bleSamples = 0;
     powerModule.reset();
     
     mockMillis = 500;
@@ -236,6 +246,7 @@ void test_boot_hold_no_spurious_transition() {
     bleClient.setConnected(false);
     connectionState.reset();
     display.reset();
+    presentation.bleSamples = 0;
     powerModule.reset();
 
     mockMillis = 1000;
@@ -307,6 +318,7 @@ void test_disconnected_refreshes_indicators() {
     connectionState.process(0, &bleClient, &parser, &display, &powerModule, &bleQueueModule);
     
     display.reset();
+    presentation.bleSamples = 0;
     
     mockMillis = 1000;
     connectionState.process(mockMillis, &bleClient, &parser, &display, &powerModule, &bleQueueModule);
@@ -323,6 +335,7 @@ void test_connected_skips_indicator_refresh() {
     connectionState.process(0, &bleClient, &parser, &display, &powerModule, &bleQueueModule);
     
     display.reset();
+    presentation.bleSamples = 0;
     
     mockMillis = 500;
     bleQueueModule.setLastRxMillis(mockMillis);
@@ -340,7 +353,7 @@ void test_connected_skips_indicator_refresh() {
 // module source.
 void test_real_module_data_stale_boundary_is_exclusive() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
 
     bleClient.setConnected(true);
     bleClient.setSessionGeneration(7);
@@ -358,7 +371,7 @@ void test_real_module_data_stale_boundary_is_exclusive() {
 
 void test_real_module_recovers_failed_alert_start_with_fresh_display_traffic() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
     real.handleConnected(10000, bleClient.sessionGeneration());
     bleClient.alertDataRequestSent = false;
     bleClient.requestAlertDataResult = false;
@@ -406,7 +419,7 @@ void test_real_module_recovers_failed_alert_start_with_fresh_display_traffic() {
 
 void test_real_module_session_open_invalidates_detector_version() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
 
     parser.state.v1FirmwareVersion = 41039;
     parser.state.hasV1Version = true;
@@ -436,14 +449,15 @@ void test_real_module_session_open_invalidates_detector_version() {
 
 void test_real_module_disconnect_clears_ble_display_state() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
 
     bleClient.setConnected(true);
     real.process(1000);
 
     display.reset();
-    display.setBleContext({true, true, -70, -55});
-    display.setBLEProxyStatus(true, true, true);
+    presentation.bleSamples = 0;
+    presentation.noteBleSample({true, true, -70, -55}, true, static_cast<uint32_t>(millis()));
+    { const auto inputs = presentation.captureForPaint(); display.refreshBleIndicator(inputs.context()); }
     parser.reset();
     powerModule.reset();
     AlertData persisted;
@@ -462,19 +476,17 @@ void test_real_module_disconnect_clears_ble_display_state() {
     TEST_ASSERT_FALSE(lifecycle.bleProxyEnabled);
     TEST_ASSERT_FALSE(lifecycle.bleProxyConnected);
     TEST_ASSERT_FALSE(lifecycle.bleReceiving);
-    TEST_ASSERT_TRUE(lifecycle.bleContextSequence < lifecycle.bleProxyStatusSequence);
-    TEST_ASSERT_TRUE(lifecycle.bleProxyStatusSequence < lifecycle.resetChangeTrackingSequence);
+    TEST_ASSERT_TRUE(lifecycle.bleRefreshSequence < lifecycle.resetChangeTrackingSequence);
     TEST_ASSERT_TRUE(lifecycle.resetChangeTrackingSequence < lifecycle.presentationSequence);
 
-    TEST_ASSERT_EQUAL(2, display.setBleContextCalls);
-    TEST_ASSERT_FALSE(display.lastBleContext.v1Connected);
-    TEST_ASSERT_FALSE(display.lastBleContext.proxyConnected);
-    TEST_ASSERT_EQUAL(0, display.lastBleContext.v1Rssi);
-    TEST_ASSERT_EQUAL(0, display.lastBleContext.proxyRssi);
-    TEST_ASSERT_EQUAL(2, display.setBLEProxyStatusCalls);
-    TEST_ASSERT_FALSE(display.lastBleProxyEnabled);
-    TEST_ASSERT_FALSE(display.lastBleProxyConnected);
-    TEST_ASSERT_FALSE(display.lastBleReceiving);
+    TEST_ASSERT_EQUAL(2, presentation.bleSamples);
+    TEST_ASSERT_FALSE(display.lastPresentationStatus.ble.v1Connected);
+    TEST_ASSERT_FALSE(display.lastPresentationStatus.ble.proxyConnected);
+    TEST_ASSERT_EQUAL(0, display.lastPresentationStatus.ble.v1Rssi);
+    TEST_ASSERT_EQUAL(0, display.lastPresentationStatus.ble.proxyRssi);
+    TEST_ASSERT_FALSE(display.lastPresentationStatus.bleProxyEnabled);
+    TEST_ASSERT_FALSE(display.lastPresentationStatus.bleProxyClientConnected);
+    TEST_ASSERT_FALSE(display.lastPresentationStatus.bleReceiving);
     TEST_ASSERT_EQUAL(1, display.showScanningCalls);
     TEST_ASSERT_EQUAL(1, parser.resetAlertStateCalls);
     TEST_ASSERT_EQUAL(1, bleQueueModule.closeSessionCalls);
@@ -495,7 +507,7 @@ void test_real_module_disconnect_clears_ble_display_state() {
 
 void test_real_module_immediate_connect_defers_display_but_commits_state() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
 
     bleClient.setConnected(true);
     bleClient.setSessionGeneration(7);
@@ -523,7 +535,7 @@ void test_real_module_immediate_connect_defers_display_but_commits_state() {
 
 void test_real_module_disconnect_discards_pending_connected_presentation() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
 
     bleClient.setConnected(true);
     bleClient.setSessionGeneration(7);
@@ -545,7 +557,7 @@ void test_real_module_disconnect_discards_pending_connected_presentation() {
 
 void test_pending_connect_uses_authoritative_owner_presenter_not_show_resting() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
     OwnerPresenterHarness presenter{&display, &parser, &bleClient};
     real.setDisplayOwnerRestoreCallback(restoreAuthoritativeOwner, &presenter);
 
@@ -560,10 +572,9 @@ void test_pending_connect_uses_authoritative_owner_presenter_not_show_resting() 
     TEST_ASSERT_EQUAL(1, presenter.calls);
     TEST_ASSERT_TRUE(presenter.lastConnected);
     TEST_ASSERT_EQUAL_UINT32(7, presenter.lastSessionGeneration);
-    TEST_ASSERT_EQUAL(1, display.setBleContextCalls);
-    TEST_ASSERT_TRUE(display.lastBleContext.v1Connected);
-    TEST_ASSERT_EQUAL(-70, display.lastBleContext.v1Rssi);
-    TEST_ASSERT_EQUAL(1, display.setBLEProxyStatusCalls);
+    TEST_ASSERT_EQUAL(1, presentation.bleSamples);
+    TEST_ASSERT_TRUE(display.lastPresentationStatus.ble.v1Connected);
+    TEST_ASSERT_EQUAL(-70, display.lastPresentationStatus.ble.v1Rssi);
     TEST_ASSERT_EQUAL(1, display.updateCalls);
     TEST_ASSERT_EQUAL(0, display.showRestingCalls);
 
@@ -573,12 +584,13 @@ void test_pending_connect_uses_authoritative_owner_presenter_not_show_resting() 
 
 void test_pending_disconnect_uses_authoritative_owner_presenter_not_show_scanning() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
 
     bleClient.setConnected(true);
     bleClient.setSessionGeneration(7);
     real.process(1000);
     display.reset();
+    presentation.bleSamples = 0;
 
     OwnerPresenterHarness presenter{&display, &parser, &bleClient};
     real.setDisplayOwnerRestoreCallback(restoreAuthoritativeOwner, &presenter);
@@ -586,8 +598,7 @@ void test_pending_disconnect_uses_authoritative_owner_presenter_not_show_scannin
     bleClient.setSessionGeneration(8);
     real.handleSessionClosed(1050, 8);
 
-    TEST_ASSERT_EQUAL(0, display.setBleContextCalls);
-    TEST_ASSERT_EQUAL(0, display.setBLEProxyStatusCalls);
+    TEST_ASSERT_EQUAL(0, presentation.bleSamples);
     TEST_ASSERT_EQUAL(0, display.resetChangeTrackingCalls);
 
     TEST_ASSERT_FALSE(real.process(1100));
@@ -595,9 +606,8 @@ void test_pending_disconnect_uses_authoritative_owner_presenter_not_show_scannin
     TEST_ASSERT_FALSE(presenter.lastConnected);
     TEST_ASSERT_EQUAL_UINT32(8, presenter.lastSessionGeneration);
     TEST_ASSERT_EQUAL(0, display.showScanningCalls);
-    TEST_ASSERT_EQUAL(2, display.setBleContextCalls);
-    TEST_ASSERT_FALSE(display.lastBleContext.v1Connected);
-    TEST_ASSERT_EQUAL(2, display.setBLEProxyStatusCalls);
+    TEST_ASSERT_EQUAL(2, presentation.bleSamples);
+    TEST_ASSERT_FALSE(display.lastPresentationStatus.ble.v1Connected);
     TEST_ASSERT_EQUAL(1, display.resetChangeTrackingCalls);
 
     const auto& lifecycle = display.lifecycleState();
@@ -623,7 +633,7 @@ void test_pending_disconnect_uses_authoritative_owner_presenter_not_show_scannin
 
 void test_stale_disconnect_owner_render_emits_no_cleanup_marker() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
 
     bleClient.setConnected(true);
     bleClient.setSessionGeneration(7);
@@ -649,7 +659,7 @@ void test_stale_disconnect_owner_render_emits_no_cleanup_marker() {
 
 void test_owner_presenter_state_change_does_not_clear_new_pending() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
     OwnerPresenterHarness presenter{&display, &parser, &bleClient};
     presenter.mutateAfterRender = true;
     presenter.mutationConnected = false;
@@ -673,7 +683,7 @@ void test_owner_presenter_state_change_does_not_clear_new_pending() {
 
 void test_declined_owner_presenter_state_change_skips_obsolete_fallback() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
     OwnerPresenterHarness presenter{&display, &parser, &bleClient};
     presenter.restored = false;
     presenter.mutateAfterRender = true;
@@ -693,7 +703,7 @@ void test_declined_owner_presenter_state_change_skips_obsolete_fallback() {
 
 void test_real_module_generation_change_forces_session_reset() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
 
     bleClient.setConnected(true);
     bleClient.setSessionGeneration(7);
@@ -728,9 +738,12 @@ void test_real_module_generation_change_forces_session_reset() {
 
 void setUp() {
     mockMillis = 0;
+    presentation.status = {};
+    presentation.captures = 0;
     connectionStateSerialCapture.reset();
     bleClient.reset();
     display.reset();
+    presentation.bleSamples = 0;
     parser.reset();
     powerModule.reset();
     bleQueueModule.reset();
@@ -740,7 +753,7 @@ void setUp() {
 
 void test_recovery_polls_inflight_start_even_after_display_traffic_recovers() {
     ConnectionStateModule real;
-    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule, presentation);
     real.handleConnected(10000, bleClient.sessionGeneration());
     bleClient.alertDataRequestSent = false;
     bleClient.nextAlertDataSendResult = SendResult::IN_FLIGHT;

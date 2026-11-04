@@ -4,6 +4,7 @@
 #include "../mocks/display_driver.h"
 #include "../mocks/Arduino.h"
 #include "../mocks/settings.h"
+#include "../mocks/runtime_presentation_source.h"
 #include "../../src/display.h"
 #include "../../src/modules/alp/alp_runtime_module.cpp"
 
@@ -11,13 +12,13 @@ SerialClass Serial;
 unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 V1Display* g_displayInstance = nullptr;
-V1Display::V1Display(SettingsManager& settings) : settings_(settings) { g_displayInstance = this; }
+V1Display::V1Display() { g_displayInstance = this; }
 V1Display::~V1Display() = default;
 
 #include "../mocks/ble_client.h"
 #include "../../src/packet_parser.cpp"
 #include "../../src/packet_parser_alerts.cpp"
-#include "../../src/display_indicators.cpp"
+#include "../../src/display_presentation.cpp"
 #include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
 #include "../../src/modules/alp/alp_event_latch.cpp"
 #include "../../src/modules/display/render_frame_composer.cpp"
@@ -27,11 +28,17 @@ V1Display::~V1Display() = default;
 void QuietCoordinatorModule::syncCommittedState() { TEST_FAIL_MESSAGE("unexpected quiet owner"); }
 
 static RenderFrame renderedFrame;
-void V1Display::renderFrame(const RenderFrame& frame) { renderedFrame = frame; }
+void V1Display::renderFrame(const RenderFrame& frame, const DisplayPaintContext& context, int) {
+    resolvePaintStatus(context, &frame);
+    renderedFrame = frame;
+}
 void V1Display::forceNextRedraw() {}
-void V1Display::showScanning(bool) {}
-void V1Display::drawBLEProxyIndicator() {}
-ObdRuntimeStatus ObdRuntimeModule::snapshot(uint32_t) const { return {}; }
+void V1Display::showScanning(const DisplayPaintContext& context, bool) {
+    setAlpLaserEvent(AlpLaserEvent{});
+    resolvePaintStatus(context, nullptr);
+}
+
+
 
 void setUp() {
     mockMillis = 0;
@@ -43,7 +50,8 @@ void tearDown() { g_displayInstance = nullptr; }
 namespace {
 struct AlpDisplayRuntime {
     SettingsManager settings;
-    V1Display display{settings};
+    V1Display display;
+    RuntimePresentationSource presentation{settings};
     AlpRuntimeModule alp;
     PacketParser parser;
     V1BLEClient ble;
@@ -56,6 +64,7 @@ struct AlpDisplayRuntime {
         DisplayPipelineDependencies dependencies;
         dependencies.displayMode = &mode;
         dependencies.display = &display;
+        dependencies.presentation = &presentation;
         dependencies.parser = &parser;
         dependencies.settings = &settings;
         dependencies.ble = &ble;
@@ -119,7 +128,11 @@ void test_same_session_unknown_update_keeps_identified_gun() {
     runtime.feed(210, 0xC8, 0, 0xD5);
     AlpLaserEvent sameSession = runtime.alp.currentEvent();
     sameSession.gun = AlpGunType::UNKNOWN;
-    runtime.display.setAlpLaserEvent(sameSession);
+    RenderFrame sameFrame;
+    sameFrame.primaryKind = RenderFramePrimaryKind::ALP_LIVE;
+    sameFrame.alpPrimary = sameSession;
+    const auto inputs = runtime.presentation.captureForPaint();
+    runtime.display.renderFrame(sameFrame, inputs.context());
     TEST_ASSERT_TRUE(runtime.display.ut_alpHasLaserEvent());
     TEST_ASSERT_TRUE(runtime.display.ut_alpFreqOverride());
     TEST_ASSERT_EQUAL_STRING("PL3", runtime.display.ut_alpFreqText());

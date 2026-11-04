@@ -15,6 +15,7 @@
 #include "../mocks/Arduino.h"
 #include "../mocks/display.h"
 #include "../mocks/settings.h"
+#include "../mocks/runtime_presentation_source.h"
 #include "../../src/touch_handler.cpp"
 
 #ifndef ARDUINO
@@ -42,6 +43,7 @@ namespace {
 V1Display gDisplay;
 TouchHandler gTouch;
 SettingsManager gSettings;
+RuntimePresentationSource gPresentation{gSettings};
 TouchUiModule gModule;
 
 int gRestoreDisplayCalls = 0;
@@ -113,7 +115,7 @@ void setUp() {
         ++gObdPairRequests;
         return true;
     };
-    gModule.begin(&gDisplay, &gTouch, &gSettings, cbs);
+    gModule.begin(&gDisplay, &gTouch, &gSettings, cbs, gPresentation);
 }
 
 void tearDown() {}
@@ -317,7 +319,7 @@ void test_obd_release_uses_current_safety_and_status_with_maintenance_fallback()
         gObdStatus.enabled = true;
         processInput(1000, true);
         processInput(11000, true);
-        TEST_ASSERT_TRUE(gDisplay.lastObdAttention);
+        TEST_ASSERT_TRUE(gDisplay.lastPresentationStatus.obdAttention);
         if (loseSafety) {
             gObdSafe = false;
         } else {
@@ -326,7 +328,7 @@ void test_obd_release_uses_current_safety_and_status_with_maintenance_fallback()
         processInput(11002, false);
         TEST_ASSERT_EQUAL_INT(0, gObdPairRequests);
         TEST_ASSERT_EQUAL_INT(1, gMaintenanceBootCalls);
-        TEST_ASSERT_FALSE(gDisplay.lastObdAttention);
+        TEST_ASSERT_FALSE(gDisplay.lastPresentationStatus.obdAttention);
     }
 }
 

@@ -33,19 +33,21 @@ SerialClass Serial;
 #undef private
 #include "../../src/packet_parser.h"
 
+#include "../support/presentation_leaf_fixture.h"
+
 V1Display* g_displayInstance = nullptr;
 SettingsManager settings;
 
-V1Display::V1Display(SettingsManager& injectedSettings) : settings_(injectedSettings) {
+V1Display::V1Display() {
     currentPalette_ = ColorThemes::STANDARD();
-    currentPalette_.colorMuted = settings_.get().colorMuted;
-    currentPalette_.colorPersisted = settings_.get().colorPersisted;
+    currentPalette_.colorMuted = settings.get().colorMuted;
+    currentPalette_.colorPersisted = settings.get().colorPersisted;
     g_displayInstance = this;
 }
 V1Display::~V1Display() = default;
 
-uint16_t V1Display::getBandColor(Band band) {
-    const V1Settings& s = settings_.get();
+uint16_t V1Display::getBandColor(const ResolvedPaintStatus& paint, Band band) {
+    const V1Settings& s = settings.get();
     switch (band) {
         case BAND_LASER: return s.colorBandL;
         case BAND_KA: return s.colorBandKa;
@@ -66,7 +68,7 @@ uint16_t V1Display::getBandColor(Band band) {
 // Top-counter font priming is outside this frequency suite.
 bool DisplayFontManager::getTopCounterBounds(char, bool, int&, int&) { return false; }
 
-V1Display display(settings);
+V1Display display;
 
 namespace {
 
@@ -116,7 +118,7 @@ void assertFrequencyText(const char* expected) {
 void setUp() {
     settings.mutableSettings() = V1Settings{};
     display.~V1Display();
-    new (&display) V1Display(settings);
+    new (&display) V1Display();
     display.setTestCanvas(new Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr));
     display.ut_elementCaches() = DisplayElementCaches{};
     display.ut_fontMgr().segment7Ready = true;
@@ -133,23 +135,23 @@ void test_parsed_k_frequency_is_handed_to_renderer_in_ghz_text() {
     TEST_ASSERT_EQUAL_INT(DIR_FRONT, alert.direction);
     TEST_ASSERT_EQUAL_UINT32(24150, alert.frequency);
 
-    display.ut_drawFrequency(alert.frequency, alert.band);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), alert.frequency, alert.band);
 
     assertFrequencyText("24.150");
 }
 
 void test_laser_zero_and_alp_presentations_are_distinct() {
-    display.ut_drawFrequency(0, BAND_LASER);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), 0, BAND_LASER);
     assertFrequencyText("LASER");
 
     display.ut_elementCaches().frequency.invalidate();
     resetRecordedOutput();
-    display.ut_drawFrequency(0, BAND_NONE);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), 0, BAND_NONE);
     assertFrequencyText("--.---");
 
     display.ut_elementCaches().frequency.invalidate();
     resetRecordedOutput();
-    display.ut_drawFrequency(0, BAND_LASER, "LTI");
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), 0, BAND_LASER, "LTI");
     assertFrequencyText("LTI");
 }
 
@@ -164,7 +166,7 @@ void test_priority_photo_type_replaces_numeric_frequency_with_its_compact_identi
         display.ut_elementCaches().frequency.invalidate();
         resetRecordedOutput();
 
-        display.ut_drawFrequency(alert.frequency, alert.band, nullptr, alert.photoType);
+        display.ut_drawFrequency(testDisplayInputs(settings).context(), alert.frequency, alert.band, nullptr, alert.photoType);
 
         assertFrequencyText(kExpectedLabels[photoType - 1]);
     }
@@ -180,14 +182,14 @@ void test_photo_identity_uses_photo_color_independent_of_numeric_frequency_polic
     mutableSettings.colorBandPhoto = 0x780F;
 
     const AlertData photo = radarAlertFromSpecFields(24125, 0x04, 0x20, 1);
-    display.ut_drawFrequency(photo.frequency, photo.band, nullptr, photo.photoType);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), photo.frequency, photo.band, nullptr, photo.photoType);
     assertFrequencyText("MRCT");
     TEST_ASSERT_EQUAL_HEX16(mutableSettings.colorBandPhoto, display.ut_elementCaches().frequency.lastColor);
 
     display.ut_elementCaches().frequency.invalidate();
     resetRecordedOutput();
     const AlertData ordinaryK = radarAlertFromSpecFields(24150, 0x04, 0x20);
-    display.ut_drawFrequency(ordinaryK.frequency, ordinaryK.band);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), ordinaryK.frequency, ordinaryK.band);
     assertFrequencyText("24.150");
     TEST_ASSERT_EQUAL_HEX16(mutableSettings.colorFrequency, display.ut_elementCaches().frequency.lastColor);
 
@@ -218,7 +220,7 @@ void test_color_precedence_is_preserved_in_both_font_paths() {
                                      uint16_t expected, const char* reason) {
             display.ut_elementCaches().frequency.invalidate();
             resetRecordedOutput();
-            display.drawFrequency(frequency, band, muted, photoType);
+            display.drawFrequency(display.ut_resolvePaintStatus(testDisplayInputs(settings).context()), frequency, band, muted, photoType);
             TEST_ASSERT_EQUAL_HEX16_MESSAGE(expected, display.ut_elementCaches().frequency.lastColor, reason);
             TEST_ASSERT_EQUAL_MESSAGE(useOfr, display.ut_elementCaches().frequency.lastUsedOfr, reason);
             TEST_ASSERT_EQUAL_INT_MESSAGE(useOfr ? 1 : 0, frequencyFont().printfCount, reason);
@@ -261,13 +263,13 @@ void test_color_precedence_is_preserved_in_both_font_paths() {
 void test_unknown_photo_type_stays_visible_without_inventing_a_named_identity() {
     const AlertData alert = radarAlertFromSpecFields(24125, 0x04, 0x20, 15);
 
-    display.ut_drawFrequency(alert.frequency, alert.band, nullptr, alert.photoType);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), alert.frequency, alert.band, nullptr, alert.photoType);
 
     assertFrequencyText("P15");
 
     display.ut_elementCaches().frequency.invalidate();
     resetRecordedOutput();
-    display.ut_drawFrequency(24125, BAND_K, nullptr, DisplayVisualContract::PHOTO_TYPE_UNSPECIFIED);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), 24125, BAND_K, nullptr, DisplayVisualContract::PHOTO_TYPE_UNSPECIFIED);
     assertFrequencyText("PHOTO");
 }
 
@@ -275,41 +277,41 @@ void test_photo_metadata_cannot_replace_a_ka_priority_frequency() {
     const AlertData alert = radarAlertFromSpecFields(34700, 0x02, 0x20, 1);
     TEST_ASSERT_EQUAL_INT(BAND_KA, alert.band);
 
-    display.ut_drawFrequency(alert.frequency, alert.band, nullptr, alert.photoType);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), alert.frequency, alert.band, nullptr, alert.photoType);
 
     assertFrequencyText("34.700");
 }
 
 void test_same_frequency_repaints_when_photo_identity_changes_or_clears() {
-    display.ut_drawFrequency(24125, BAND_K, nullptr, 1);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), 24125, BAND_K, nullptr, 1);
     assertFrequencyText("MRCT");
 
     resetRecordedOutput();
-    display.ut_drawFrequency(24125, BAND_K, nullptr, 2);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), 24125, BAND_K, nullptr, 2);
     assertFrequencyText("3D");
 
     resetRecordedOutput();
-    display.ut_drawFrequency(24125, BAND_K);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), 24125, BAND_K);
     assertFrequencyText("24.125");
 }
 
 void test_changed_frequency_clears_and_draws_the_new_digits() {
     const AlertData first = radarAlertFromSpecFields(24150, 0x04, 0x20);
     const AlertData changed = radarAlertFromSpecFields(24151, 0x04, 0x20);
-    display.ut_drawFrequency(first.frequency, first.band);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), first.frequency, first.band);
     resetRecordedOutput();
 
-    display.ut_drawFrequency(changed.frequency, changed.band);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), changed.frequency, changed.band);
 
     assertFrequencyText("24.151");
 }
 
 void test_unchanged_frequency_produces_no_paint_commands() {
     const AlertData alert = radarAlertFromSpecFields(24150, 0x04, 0x20);
-    display.ut_drawFrequency(alert.frequency, alert.band);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), alert.frequency, alert.band);
     resetRecordedOutput();
 
-    display.ut_drawFrequency(alert.frequency, alert.band);
+    display.ut_drawFrequency(testDisplayInputs(settings).context(), alert.frequency, alert.band);
 
     TEST_ASSERT_EQUAL_INT(0, frequencyFont().printfCount);
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRectCalls.size());
@@ -325,7 +327,7 @@ void test_font_failure_paints_every_alp_and_photo_label_character() {
             display.ut_elementCaches().frequency.invalidate();
             resetRecordedOutput();
             const char glyph[] = {*ch, 0};
-            display.ut_drawFrequency(0, BAND_LASER, glyph);
+            display.ut_drawFrequency(testDisplayInputs(settings).context(), 0, BAND_LASER, glyph);
             const size_t strokes = canvas()->fillRoundRectCalls.size() + canvas()->drawLineCalls.size() +
                                    canvas()->fillCircleCalls.size();
             TEST_ASSERT_GREATER_THAN_UINT_MESSAGE(0, strokes, glyph);

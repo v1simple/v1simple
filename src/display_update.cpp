@@ -1,4 +1,5 @@
-// Mode transitions invalidate element caches through prepareFullRedrawNoClear().
+#include "settings_types.h"
+// Mode transitions invalidate element caches through prepareFullRedrawNoClear(paint).
 // Changed live, resting and persisted frames use full-panel transfers; cache hits skip them.
 
 #include "display.h"
@@ -13,13 +14,7 @@
 #include "display_visual_contract.h"
 #include "display_vol_warn.h"
 #include "modules/alp/alp_runtime_module.h"
-#include "settings.h"
 #include "packet_parser.h"
-#if defined(DISPLAY_WAVESHARE_349)
-#include "battery_manager.h"
-#include "wifi_manager.h"
-#include "modules/gps/gps_runtime_module.h"
-#endif
 
 #include <array>
 using DisplayLayout::PRIMARY_ZONE_HEIGHT;
@@ -27,15 +22,6 @@ using DisplayLayout::PRIMARY_ZONE_HEIGHT;
 namespace {
 
 #if defined(DISPLAY_WAVESHARE_349)
-uint8_t batteryVoltageBand(uint16_t millivolts) {
-    if (millivolts > 4125) {
-        return 2;
-    }
-    if (millivolts < 4095) {
-        return 0;
-    }
-    return 1;
-}
 
 bool hasTimeDrivenRestingBlink(const DisplayState& state) {
     return state.flashBits != 0 || state.bandFlashBits != 0 || state.bogeyCounterByte != state.bogeyCounterByte2 ||
@@ -54,27 +40,6 @@ uint32_t hashProfileName(const char* name) {
     return hash;
 }
 
-const char* profileNameForSlot(const V1Settings& s, int slot) {
-    switch (slot % 3) {
-    case 0:
-        return s.slot0Name.length() > 0 ? s.slot0Name.c_str() : "DEFAULT";
-    case 1:
-        return s.slot1Name.length() > 0 ? s.slot1Name.c_str() : "HIGHWAY";
-    default:
-        return s.slot2Name.length() > 0 ? s.slot2Name.c_str() : "COMFORT";
-    }
-}
-
-uint16_t profileColorForSlot(const V1Settings& s, int slot) {
-    switch (slot % 3) {
-    case 0:
-        return s.slot0Color;
-    case 1:
-        return s.slot1Color;
-    default:
-        return s.slot2Color;
-    }
-}
 #endif
 
 } // namespace
@@ -104,9 +69,9 @@ AlertData alpEventToSyntheticAlert(const AlpLaserEvent& event) {
     return alert;
 }
 
-int buildV1AlertArrayFromCards(const RenderFrame& frame, std::array<AlertData, RenderFrame::MAX_CARDS>& alerts) {
+int buildV1AlertArrayFromCards(const RenderFrame& frame, std::array<AlertData, RenderFrame::MAX_CARDS>& alerts, int count) {
     int alertCount = 0;
-    for (int index = 0; index < frame.cardCount; ++index) {
+    for (int index = 0; index < count; ++index) {
         const RenderFrameCard& card = frame.cards[index];
         if (alertCount >= static_cast<int>(alerts.size())) {
             break;
@@ -118,7 +83,10 @@ int buildV1AlertArrayFromCards(const RenderFrame& frame, std::array<AlertData, R
 
 } // namespace
 
-void V1Display::renderFrame(const RenderFrame& frame) {
+void V1Display::renderFrame(const RenderFrame& frame, const DisplayPaintContext& context, int visibleCardCount) {
+    const ResolvedPaintStatus paint = resolvePaintStatus(context, &frame);
+    const int cardCountLimit = visibleCardCount < 0 || visibleCardCount > frame.cardCount
+                                   ? frame.cardCount : visibleCardCount;
     persistedMode_ = false;
 
     switch (frame.primaryKind) {
@@ -129,9 +97,9 @@ void V1Display::renderFrame(const RenderFrame& frame) {
         if (frame.stealthMode) {
             // Stealth replaces the cards without passing through their painter.
             elementCaches_.cards.invalidate();
-            showStealth(frame.stealthSpeedMph, frame.stealthSpeedValid);
+            showStealth(paint, frame.stealthSpeedMph, frame.stealthSpeedValid);
         } else {
-            update(frame.primaryState);
+            update(paint, frame.primaryState);
         }
         break;
 
@@ -142,19 +110,19 @@ void V1Display::renderFrame(const RenderFrame& frame) {
         std::array<AlertData, RenderFrame::MAX_CARDS + 1> liveAlerts{};
         int liveCount = 0;
         liveAlerts[liveCount++] = frame.v1Priority;
-        for (int index = 0; index < frame.cardCount; ++index) {
+        for (int index = 0; index < cardCountLimit; ++index) {
             const RenderFrameCard& card = frame.cards[index];
             if (liveCount >= static_cast<int>(liveAlerts.size())) {
                 break;
             }
             liveAlerts[liveCount++] = card.v1Alert;
         }
-        update(frame.v1Priority, liveAlerts.data(), liveCount, frame.primaryState);
+        update(paint, frame.v1Priority, liveAlerts.data(), liveCount, frame.primaryState);
         break;
     }
 
     case RenderFramePrimaryKind::V1_PERSISTED:
-        updatePersisted(frame.v1Priority, frame.primaryState);
+        updatePersisted(paint, frame.v1Priority, frame.primaryState);
         break;
 
     case RenderFramePrimaryKind::ALP_LIVE:
@@ -162,23 +130,24 @@ void V1Display::renderFrame(const RenderFrame& frame) {
         // ALP frames already contain the full V1 list. Keep it non-null to preserve
         // card grace; null is the screen-transition clear signal.
         std::array<AlertData, RenderFrame::MAX_CARDS> cardAlerts{};
-        const int cardCount = buildV1AlertArrayFromCards(frame, cardAlerts);
+        const int cardCount = buildV1AlertArrayFromCards(frame, cardAlerts, cardCountLimit);
         const AlertData syntheticAlert = alpEventToSyntheticAlert(frame.alpPrimary);
-        update(syntheticAlert, cardAlerts.data(), cardCount, frame.primaryState);
+        update(paint, syntheticAlert, cardAlerts.data(), cardCount, frame.primaryState);
         break;
     }
     }
 }
 
 #if defined(DISPLAY_WAVESHARE_349)
-V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const DisplayState& state, uint32_t nowMs,
-                                                         bool bleContextFresh) const {
-    const V1Settings& s = settings_.get();
-    const uint16_t batteryMv = battery_ ? battery_->getVoltageMillivolts() : 0;
-    const GpsRuntimeStatus gpsStatus = gpsRtMod_ ? gpsRtMod_->snapshot(nowMs) : GpsRuntimeStatus{};
+V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const ResolvedPaintStatus& paint, const DisplayState& state) const {
+    const uint32_t nowMs = paint.context.nowMs;
+    const bool bleContextFresh = paint.bleFresh;
+    const V1Settings& s = paint.context.style.settings;
 
     RestingNoOpKey key;
     key.paletteRevision = paletteRevision_;
+    key.configurationRevision = paint.context.style.configurationRevision;
+    key.cardPersistence = paint.context.cardPersistence;
     key.firmwareVersion = state.v1FirmwareVersion;
     key.batteryMinuteBucket = nowMs / 60000UL;
     key.colorBogey = s.colorBogey;
@@ -199,6 +168,7 @@ V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const DisplayState& sta
         key.colorBars[barIndex] = s.colorBars[barIndex];
     }
     key.colorWifi = s.colorWiFiConnected;
+    key.resolvedBleColor = paint.bleColor;
     key.colorBleConnected = s.colorBleConnected;
     key.colorBleDisconnected = s.colorBleDisconnected;
     key.colorObd = s.colorObd;
@@ -209,23 +179,30 @@ V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const DisplayState& sta
     key.colorAlpAlert = s.colorAlpAlert;
     const bool rssiCanChangePixels =
         state.supportsVolume() && !s.hideVolumeIndicator && !s.hideRssiIndicator && bleContextFresh;
-    key.v1Rssi = rssiCanChangePixels ? bleCtx_.v1Rssi : 0;
-    key.proxyRssi = rssiCanChangePixels ? bleCtx_.proxyRssi : 0;
+    key.v1Rssi = rssiCanChangePixels ? paint.context.status.ble.v1Rssi : 0;
+    key.proxyRssi = rssiCanChangePixels ? paint.context.status.ble.proxyRssi : 0;
     key.currentProfileSlot = currentProfileSlot_;
-    key.currentProfileNameHash = hashProfileName(profileNameForSlot(s, currentProfileSlot_));
-    key.currentProfileColor = profileColorForSlot(s, currentProfileSlot_);
+    key.currentProfileNameHash = hashProfileName(paint.profileName);
+    key.currentProfileColor = paint.profileColor;
     key.activeBands = state.activeBands;
     key.signalBars = state.signalBars;
     key.flashBits = state.flashBits;
     key.bandFlashBits = state.bandFlashBits;
     key.mainVolume = state.mainVolume;
     key.muteVolume = state.muteVolume;
-    key.alpStateRaw = alpStateRaw_;
-    key.alpHbByte1 = alpHbByte1_;
-    key.batteryPct = battery_ ? battery_->getPercentage() : 0;
-    key.batteryVoltageBand = batteryVoltageBand(batteryMv);
-    key.gpsShown = gpsStatus.enabled && gpsStatus.stableHasFix;
-    key.gpsSats = key.gpsShown ? gpsStatus.stableSatellites : 0;
+    key.alpStateRaw = paint.alpState;
+    key.alpHbByte1 = paint.alpHeartbeat;
+    key.batteryPct = paint.batteryPercent;
+    key.batteryVoltageBand = paint.batteryVoltageBand;
+    key.batteryShowOnUsb = paint.batteryShowOnUsb;
+    // Optional explicit text has the same bounded lifetime/length as the
+    // frequency presentation. Retain bytes, never the borrowed pointer.
+    if (paint.hasGunLabel && paint.gunLabel[0] != '\0') {
+        strncpy(key.gunLabel, paint.gunLabel, sizeof(key.gunLabel) - 1);
+        key.gunLabelLidActive = paint.gunLabelLidActive;
+    }
+    key.gpsShown = paint.gpsShown;
+    key.gpsSats = paint.gpsSatellites;
     key.arrows = state.arrows;
     key.priorityArrow = state.priorityArrow;
     key.bogeyCounterChar = state.bogeyCounterChar;
@@ -236,15 +213,15 @@ V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const DisplayState& sta
     key.hasV1Version = state.hasV1Version;
     key.hasKuAlert = state.hasKuAlert;
     key.bleFresh = bleContextFresh;
-    key.v1Connected = bleCtx_.v1Connected;
-    key.proxyConnected = bleCtx_.proxyConnected;
-    key.bleProxyEnabled = bleProxyEnabled_;
-    key.bleProxyClientConnected = bleProxyClientConnected_;
-    key.bleReceivingData = bleReceivingData_;
-    key.wifiServiceActive = wifi_ && wifi_->isWifiServiceActive();
-    key.wifiConnected = wifi_ && wifi_->isConnected();
-    key.wifiGaveUp = wifi_ && wifi_->isReconnectGaveUp();
-    key.hasBattery = battery_ && battery_->hasBattery();
+    key.v1Connected = paint.context.status.ble.v1Connected;
+    key.proxyConnected = paint.context.status.ble.proxyConnected;
+    key.bleProxyEnabled = paint.context.status.bleProxyEnabled;
+    key.bleProxyClientConnected = paint.context.status.bleProxyClientConnected;
+    key.bleReceivingData = paint.context.status.bleReceiving;
+    key.wifiServiceActive = paint.context.status.wifiServiceActive;
+    key.wifiConnected = paint.context.status.wifiConnected;
+    key.wifiGaveUp = paint.context.status.wifiGaveUp;
+    key.hasBattery = paint.context.status.hasBattery;
     key.showBatteryPercent = s.showBatteryPercent;
     key.hideBatteryIcon = s.hideBatteryIcon;
     key.hideVolumeIndicator = s.hideVolumeIndicator;
@@ -253,13 +230,13 @@ V1Display::RestingNoOpKey V1Display::buildRestingNoOpKey(const DisplayState& sta
     key.hideBleIcon = s.hideBleIcon;
     key.hideProfileIndicator = s.hideProfileIndicator;
     key.freqUseBandColor = s.freqUseBandColor;
-    key.profileFlashActive = (nowMs - profileChangedTime_) < HIDE_TIMEOUT_MS;
-    key.obdEnabled = obdEnabled_;
-    key.obdConnected = obdConnected_;
-    key.obdAttention = obdAttention_;
-    key.obdScanAttention = obdScanAttention_;
-    key.alpEnabled = alpEnabled_;
-    key.alpHasLaserEvent = alpHasLaserEvent_;
+    key.profileFlashActive = paint.profileFlashActive;
+    key.obdEnabled = paint.obdShown;
+    key.obdConnected = paint.obdConnected;
+    key.obdAttention = paint.context.status.obdAttention;
+    key.obdScanAttention = (paint.context.status.obdScanInProgress || paint.context.status.obdManualScanPending);
+    key.alpEnabled = paint.alpShown;
+    key.alpHasLaserEvent = paint.alpAlertActive;
     return key;
 }
 
@@ -273,7 +250,8 @@ bool V1Display::canSkipRestingNoOp(const RestingNoOpKey& key) const {
             return false;
         }
     }
-    return key.paletteRevision == last.paletteRevision && key.firmwareVersion == last.firmwareVersion &&
+    return key.paletteRevision == last.paletteRevision &&
+           key.configurationRevision == last.configurationRevision && key.cardPersistence == last.cardPersistence && key.firmwareVersion == last.firmwareVersion &&
            key.batteryMinuteBucket == last.batteryMinuteBucket && key.colorBogey == last.colorBogey &&
            key.colorVolumeMain == last.colorVolumeMain && key.colorVolumeMute == last.colorVolumeMute &&
            key.colorRssiV1 == last.colorRssiV1 && key.colorRssiProxy == last.colorRssiProxy &&
@@ -282,7 +260,7 @@ bool V1Display::canSkipRestingNoOp(const RestingNoOpKey& key) const {
            key.colorBandL == last.colorBandL && key.colorBandKa == last.colorBandKa &&
            key.colorBandK == last.colorBandK && key.colorBandX == last.colorBandX &&
            key.colorBandPhoto == last.colorBandPhoto && key.colorWifi == last.colorWifi &&
-           key.colorBleConnected == last.colorBleConnected && key.colorBleDisconnected == last.colorBleDisconnected &&
+           key.resolvedBleColor == last.resolvedBleColor && key.colorBleConnected == last.colorBleConnected && key.colorBleDisconnected == last.colorBleDisconnected &&
            key.colorObd == last.colorObd && key.colorMuted == last.colorMuted &&
            key.colorAlpConnected == last.colorAlpConnected && key.colorAlpDli == last.colorAlpDli &&
            key.colorAlpLidActive == last.colorAlpLidActive && key.colorAlpAlert == last.colorAlpAlert &&
@@ -294,7 +272,10 @@ bool V1Display::canSkipRestingNoOp(const RestingNoOpKey& key) const {
            key.bandFlashBits == last.bandFlashBits && key.mainVolume == last.mainVolume &&
            key.muteVolume == last.muteVolume && key.alpStateRaw == last.alpStateRaw &&
            key.alpHbByte1 == last.alpHbByte1 && key.batteryPct == last.batteryPct &&
-           key.batteryVoltageBand == last.batteryVoltageBand && key.gpsSats == last.gpsSats &&
+           key.batteryVoltageBand == last.batteryVoltageBand &&
+           key.batteryShowOnUsb == last.batteryShowOnUsb &&
+           strncmp(key.gunLabel, last.gunLabel, sizeof(key.gunLabel)) == 0 &&
+           key.gunLabelLidActive == last.gunLabelLidActive && key.gpsSats == last.gpsSats &&
            key.arrows == last.arrows && key.priorityArrow == last.priorityArrow &&
            key.bogeyCounterChar == last.bogeyCounterChar && key.bogeyCounterChar2 == last.bogeyCounterChar2 &&
            key.bogeyCounterDot == last.bogeyCounterDot && key.bogeyCounterDot2 == last.bogeyCounterDot2 &&
@@ -327,10 +308,10 @@ void V1Display::invalidateRestingNoOpKey() {
 
 #ifndef DISPLAY_RENDER_FRAME_ONLY
 
-void V1Display::drawStatusStrip(const DisplayState& state, char topChar, bool topMuted, bool topDot) {
+void V1Display::drawStatusStrip(const ResolvedPaintStatus& paint, const DisplayState& state, char topChar, bool topMuted, bool topDot) {
     // image2 is the same LED's blink-off image, not a second digit. Differing
     // images (including J/P and blank) alternate on the shared 96 ms cadence.
-    updateBlinkPhase_();
+    updateBlinkPhase_(paint.context.nowMs);
     char bogeyChar = topChar;
     bool bogeyDot = topDot;
     const bool bogeyBlinking =
@@ -339,26 +320,26 @@ void V1Display::drawStatusStrip(const DisplayState& state, char topChar, bool to
         bogeyChar = state.bogeyCounterChar2;
         bogeyDot = state.bogeyCounterDot2;
     }
-    drawTopCounterPair(bogeyChar, topMuted, bogeyDot);
-    const V1Settings& s = settings_.get();
+    drawTopCounterPair(paint, bogeyChar, topMuted, bogeyDot);
+    const V1Settings& s = paint.context.style.settings;
     const bool showVolumeAndRssi = state.supportsVolume() && !s.hideVolumeIndicator;
     if (showVolumeAndRssi) {
-        drawVolumeIndicator(state.mainVolume, state.muteVolume);
-        drawRssiIndicator(bleCtx_.v1Rssi);
+        drawVolumeIndicator(paint, state.mainVolume, state.muteVolume);
+        drawRssiIndicator(paint, paint.context.status.ble.v1Rssi);
     }
-    drawWiFiIndicator();
-    drawBatteryIndicator();
-    drawBLEProxyIndicator();
-    drawObdIndicator();
-    drawGpsIndicator();
-    drawAlpIndicator();
+    drawWiFiIndicator(paint);
+    drawBatteryIndicator(paint);
+    drawBLEProxyIndicator(paint);
+    drawObdIndicator(paint);
+    drawGpsIndicator(paint);
+    drawAlpIndicator(paint);
     drawMuteIcon(topMuted);
-    drawProfileIndicator(currentProfileSlot_);
+    drawProfileIndicator(paint);
 }
 
-void V1Display::update(const DisplayState& state) {
+void V1Display::update(const ResolvedPaintStatus& paint, const DisplayState& state) {
     persistedMode_ = false;
-    const uint32_t nowMs = static_cast<uint32_t>(millis());
+    const uint32_t nowMs = paint.context.nowMs;
 
     const bool needsFullRedraw = currentScreen_ != ScreenMode::Resting || dirty_.resetTracking;
 
@@ -376,25 +357,24 @@ void V1Display::update(const DisplayState& state) {
     // flicker the badge. A lingering mute becomes visible with the next alert.
     const bool effectiveMuted = false;
 
-    const bool bleContextFresh = hasFreshBleContext(nowMs);
-    syncTopIndicators(nowMs);
+    const bool bleContextFresh = paint.bleFresh;
 
     bool showVolumeWarning = false;
     if (!bleContextFresh) {
         volZeroWarn_.reset();
     } else {
         const bool volZero = (state.mainVolume == 0 && state.hasVolumeData);
-        const bool proxyConnected = bleCtx_.proxyConnected;
-        showVolumeWarning = volZeroWarn_.evaluate(volZero, proxyConnected, speedVolZeroActive_);
+        const bool proxyConnected = paint.context.status.ble.proxyConnected;
+        showVolumeWarning = volZeroWarn_.evaluate(paint.context.nowMs, volZero, proxyConnected, paint.context.status.speedVolZeroActive);
     }
 
 #if defined(DISPLAY_WAVESHARE_349)
     const bool volumeWarningTimeDriven = bleContextFresh && state.hasVolumeData && state.mainVolume == 0 &&
-                                         !bleCtx_.proxyConnected && !speedVolZeroActive_;
+                                         !paint.context.status.ble.proxyConnected && !paint.context.status.speedVolZeroActive;
     const bool allowRestingNoOpSkip = !volumeWarningTimeDriven && !hasTimeDrivenRestingBlink(state);
     RestingNoOpKey restingNoOpKey;
     if (allowRestingNoOpSkip) {
-        restingNoOpKey = buildRestingNoOpKey(state, nowMs, bleContextFresh);
+        restingNoOpKey = buildRestingNoOpKey(paint, state);
         if (!needsFullRedraw && !hadPendingExternalDraws && canSkipRestingNoOp(restingNoOpKey)) {
             lastState_ = state;
             return;
@@ -408,33 +388,33 @@ void V1Display::update(const DisplayState& state) {
     dirty_.multiAlert = true;
 
     if (needsFullRedraw) {
-        drawBaseFrame();
+        drawBaseFrame(paint);
     }
 
     char topChar = state.bogeyCounterChar;
-    drawStatusStrip(state, topChar, effectiveMuted, state.bogeyCounterDot);
+    drawStatusStrip(paint, state, topChar, effectiveMuted, state.bogeyCounterDot);
 
     // Resting has no alert owner. Keep the shared physical cell labelled K;
     // Ku is a live-alert identity, not a persistent replacement for that cell.
     const uint8_t restingBandMask = static_cast<uint8_t>(state.activeBands & ~BAND_KU);
-    const bool bandsPainted = drawBandIndicators(restingBandMask, effectiveMuted);
+    const bool bandsPainted = drawBandIndicators(paint, restingBandMask, effectiveMuted);
     if (bandsPainted || dirty_.gpsIndicator) {
-        drawGpsIndicator(); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
+        drawGpsIndicator(paint); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
     }
 
     // Volume-zero warning replaces frequency display
     if (showVolumeWarning) {
-        drawVolumeZeroWarning();
+        drawVolumeZeroWarning(paint);
     } else {
-        drawFrequency(0, BAND_NONE, effectiveMuted);
+        drawFrequency(paint, 0, BAND_NONE, effectiveMuted);
     }
 
-    drawVerticalSignalBars(state.signalBars, state.signalBars, BAND_KA, effectiveMuted);
+    drawVerticalSignalBars(paint, state.signalBars, state.signalBars, BAND_KA, effectiveMuted);
 
-    drawDirectionArrow(DIR_NONE, effectiveMuted, 0);
+    drawDirectionArrow(paint, DIR_NONE, effectiveMuted, 0);
 
     AlertData emptyPriority;
-    drawSecondaryAlertCards(nullptr, 0, emptyPriority, effectiveMuted);
+    drawSecondaryAlertCards(paint, nullptr, 0, emptyPriority, effectiveMuted);
 
     const bool paintedThisFrame = !drawnRegion_.empty();
     if (needsFullRedraw || hadPendingExternalDraws || paintedThisFrame) {
@@ -452,10 +432,10 @@ void V1Display::update(const DisplayState& state) {
 #endif
 }
 
-void V1Display::updatePersisted(const AlertData& alert, const DisplayState& state) {
+void V1Display::updatePersisted(const ResolvedPaintStatus& paint, const AlertData& alert, const DisplayState& state) {
     if (!alert.isValid) {
         persistedMode_ = false;
-        update(state);
+        update(paint, state);
         return;
     }
 
@@ -470,30 +450,29 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     dirty_.multiAlert = true;
 
     if (needsFullRedraw) {
-        drawBaseFrame();
+        drawBaseFrame(paint);
     }
 
     // Bogey counter shows V1's decoded display — NOT greyed, always visible
     char topChar = state.bogeyCounterChar;
-    syncTopIndicators(static_cast<uint32_t>(millis()));
-    drawStatusStrip(state, topChar, false, state.bogeyCounterDot);
+    drawStatusStrip(paint, state, topChar, false, state.bogeyCounterDot);
 
-    const bool bandsPainted = drawBandIndicators(alert.band, true);
+    const bool bandsPainted = drawBandIndicators(paint, alert.band, true);
     if (bandsPainted || dirty_.gpsIndicator) {
-        drawGpsIndicator(); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
+        drawGpsIndicator(paint); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
     }
 
     // Persistence owns a specific alert row, so preserve that row's Photo
     // type. The shared P counter may have belonged to a different row.
     const bool isPhotoRadar = (alert.band == BAND_K) && (alert.photoType != 0);
-    drawFrequency(alert.frequency, alert.band, true, isPhotoRadar ? alert.photoType : 0);
+    drawFrequency(paint, alert.frequency, alert.band, true, isPhotoRadar ? alert.photoType : 0);
 
-    drawVerticalSignalBars(0, 0, alert.band, true);
+    drawVerticalSignalBars(paint, 0, 0, alert.band, true);
 
-    drawDirectionArrow(alert.direction, true);
+    drawDirectionArrow(paint, alert.direction, true);
 
     AlertData emptyPriority;
-    drawSecondaryAlertCards(nullptr, 0, emptyPriority, true);
+    drawSecondaryAlertCards(paint, nullptr, 0, emptyPriority, true);
 
     const bool paintedThisFrame = !drawnRegion_.empty();
     if (needsFullRedraw || hadPendingExternalDraws || paintedThisFrame) {
@@ -505,7 +484,7 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     currentScreen_ = ScreenMode::Persisted;
 }
 
-void V1Display::update(const AlertData& priority, const AlertData* allAlerts, int alertCount,
+void V1Display::update(const ResolvedPaintStatus& paint, const AlertData& priority, const AlertData* allAlerts, int alertCount,
                        const DisplayState& state) {
     persistedMode_ = false;
 
@@ -515,18 +494,18 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     }
 
     // Prior frames consume their bounds, so non-empty bounds here are external
-    // paint (e.g. setBLEProxyStatus()) that still needs a full-canvas transfer.
+    // paint (e.g. refreshBleIndicator(context)) that still needs a full-canvas transfer.
     const bool hadPendingExternalDraws = !drawnRegion_.empty();
     drawnRegion_.reset();
 
-    const V1Settings& s = settings_.get();
+    const V1Settings& s = paint.context.style.settings;
     const bool needsFullRedraw = currentScreen_ != ScreenMode::Live || dirty_.resetTracking;
 
     dirty_.multiAlert = true;
 
     // Priority-only hides directions the V1 is lighting; require explicit slot opt-in.
     Direction arrowsToShow;
-    if (settings_.getSlotPriorityArrowOnly(s.activeSlot)) {
+    if (paint.context.style.priorityArrowOnly) {
         arrowsToShow = static_cast<Direction>(state.priorityArrow & state.arrows);
     } else {
         arrowsToShow = state.arrows;
@@ -536,11 +515,10 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     bool liveTopCounterDot = state.bogeyCounterDot;
 
     if (needsFullRedraw) {
-        drawBaseFrame();
+        drawBaseFrame(paint);
     }
 
-    syncTopIndicators(static_cast<uint32_t>(millis()));
-    drawStatusStrip(state, liveTopCounterChar, state.muted, liveTopCounterDot);
+    drawStatusStrip(paint, state, liveTopCounterChar, state.muted, liveTopCounterDot);
 
     // Photo identity belongs to its K row, not an unrelated priority frequency.
     // The shared P-counter fallback is valid only for a lone K row.
@@ -550,30 +528,30 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     const uint8_t priorityPhotoType = priority.photoType != 0
                                           ? priority.photoType
                                           : DisplayVisualContract::PHOTO_TYPE_UNSPECIFIED;
-    drawFrequency(priority.frequency, priority.band, state.muted, isPhotoRadar ? priorityPhotoType : 0);
+    drawFrequency(paint, priority.frequency, priority.band, state.muted, isPhotoRadar ? priorityPhotoType : 0);
 
     // Only a Ku priority may rename the shared K cell; secondary Ku stays in its
     // card. The physical K flash bit drives the Ku label's blink.
     const uint8_t physicalBandMask = static_cast<uint8_t>(state.activeBands & ~BAND_KU);
     const uint8_t primaryBandMask = static_cast<uint8_t>(
         physicalBandMask | ((priority.band == BAND_KU) ? BAND_KU : BAND_NONE));
-    const bool bandsPainted = drawBandIndicators(primaryBandMask, state.muted, state.bandFlashBits);
+    const bool bandsPainted = drawBandIndicators(paint, primaryBandMask, state.muted, state.bandFlashBits);
     if (bandsPainted || dirty_.gpsIndicator) {
-        drawGpsIndicator(); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
+        drawGpsIndicator(paint); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
     }
-    drawVerticalSignalBars(state.signalBars, state.signalBars, priority.band, state.muted);
+    drawVerticalSignalBars(paint, state.signalBars, state.signalBars, priority.band, state.muted);
 
     // The parser exposes V1's image1-vs-image2 arrow blink bits directly;
     // alert count must not synthesize additional blinks.
     const uint8_t arrowFlashBits = state.flashBits;
-    drawDirectionArrow(arrowsToShow, state.muted, arrowFlashBits);
+    drawDirectionArrow(paint, arrowsToShow, state.muted, arrowFlashBits);
 
     if (needsFullRedraw) {
         dirty_.cards = true;
         elementCaches_.cards.invalidate();
     }
 
-    drawSecondaryAlertCards(allAlerts, alertCount, priority, state.muted);
+    drawSecondaryAlertCards(paint, allAlerts, alertCount, priority, state.muted);
 
     // Regional transfers can leave counter/card changes stale on AXS15231B.
     // Transfer the full changed canvas; cache hits still skip the panel push.

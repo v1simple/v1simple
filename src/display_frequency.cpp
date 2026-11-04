@@ -1,3 +1,4 @@
+#include "settings_types.h"
 #include "display.h"
 #include "display_layout.h"
 #include "display_draw.h"
@@ -7,7 +8,6 @@
 #include "display_segments.h"
 #include "display_font_manager.h"
 #include "display_visual_contract.h"
-#include "settings.h"
 #include <algorithm>
 #include <cstring>
 
@@ -94,9 +94,9 @@ void getFrequencyTextBounds(DisplayFontManager& fontMgr, int fontSize, const cha
 }
 } // namespace
 
-V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_t freqMHz, Band band, bool muted,
+V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(const ResolvedPaintStatus& paint, uint32_t freqMHz, Band band, bool muted,
                                                                         uint8_t photoType) {
-    const V1Settings& s = settings_.get();
+    const V1Settings& s = paint.context.style.settings;
     FrequencyPresentation presentation;
     const bool isPhotoRadar = band == BAND_K && photoType != 0;
     presentation.band = band;
@@ -107,8 +107,8 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
     presentation.hasFrequency = hasFreq;
 
     bool isAlpOverride = false;
-    if (alpFreqOverride_ && alpFreqText_[0] != '\0') {
-        strncpy(presentation.text, alpFreqText_, sizeof(presentation.text));
+    if (paint.hasGunLabel && paint.gunLabel[0] != '\0') {
+        strncpy(presentation.text, paint.gunLabel, sizeof(presentation.text));
         presentation.text[sizeof(presentation.text) - 1] = '\0';
         isAlpOverride = true;
     } else if (band == BAND_LASER) {
@@ -129,7 +129,7 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
     if (isAlpOverride) {
         // LID active (above LID speed limit) uses colorAlpLidActive; otherwise
         // DLI active uses colorAlpDli. Naming matches AL Priority manual.
-        freqColor = muted ? PALETTE_MUTED_OR_PERSISTED : (alpLidActive_ ? s.colorAlpLidActive : s.colorAlpDli);
+        freqColor = muted ? PALETTE_MUTED_OR_PERSISTED : (paint.gunLabelLidActive ? s.colorAlpLidActive : s.colorAlpDli);
     } else {
         if (band == BAND_LASER) {
             freqColor = muted ? PALETTE_MUTED_OR_PERSISTED : s.colorBandL;
@@ -141,7 +141,7 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
             // Photo labels keep their identity color regardless of numeric-frequency policy.
             freqColor = s.colorBandPhoto;
         } else if (s.freqUseBandColor && band != BAND_NONE) {
-            freqColor = getBandColor(band);
+            freqColor = getBandColor(paint, band);
         } else {
             freqColor = s.colorFrequency;
         }
@@ -150,8 +150,8 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
     return presentation;
 }
 
-void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, uint8_t photoType) {
-    renderFrequencyPresentation(resolveFrequencyPresentation(freqMHz, band, muted, photoType));
+void V1Display::drawFrequencySegment7(const ResolvedPaintStatus& paint, uint32_t freqMHz, Band band, bool muted, uint8_t photoType) {
+    renderFrequencyPresentation(resolveFrequencyPresentation(paint, freqMHz, band, muted, photoType));
 }
 
 void V1Display::renderFrequencyPresentation(const FrequencyPresentation& presentation) {
@@ -438,7 +438,7 @@ void V1Display::prewarmFrequencyDigitAtlas() {
                   static_cast<unsigned long>(frequencyDigitAtlas_.storeCount() - storesBefore), millis() - warmStartMs);
 }
 
-void V1Display::prewarmFrequencyRasterCache() {
+void V1Display::prewarmFrequencyRasterCache(const ResolvedPaintStatus& paint) {
     if (!fontMgr_.segment7Ready || !frequencyRasterCache_.enabled() || !tft_ || !tft_->getFramebuffer()) {
         return;
     }
@@ -466,36 +466,24 @@ void V1Display::prewarmFrequencyRasterCache() {
         {"staLKr", false},
     };
 
-    const bool savedAlpOverride = alpFreqOverride_;
-    const bool savedAlpLid = alpLidActive_;
-    char savedAlpText[sizeof(alpFreqText_)] = {};
-    std::strncpy(savedAlpText, alpFreqText_, sizeof(savedAlpText));
-    savedAlpText[sizeof(savedAlpText) - 1] = '\0';
-
+    ResolvedPaintStatus warmPaint = paint;
     const unsigned long warmStartMs = millis();
     const uint32_t storesBefore = frequencyRasterCache_.storeCount();
 
-    alpFreqOverride_ = false;
-    alpLidActive_ = false;
-    alpFreqText_[0] = '\0';
+    warmPaint.hasGunLabel = false;
+    warmPaint.gunLabelLidActive = false;
+    warmPaint.gunLabel = "";
     for (const FrequencyWarmSample& sample : kWarmSamples) {
         elementCaches_.frequency.invalidate();
-        drawFrequencySegment7(sample.freqMHz, sample.band, sample.muted, sample.photoType);
+        drawFrequencySegment7(warmPaint, sample.freqMHz, sample.band, sample.muted, sample.photoType);
     }
-
     for (const AlpWarmSample& sample : kAlpWarmSamples) {
-        alpFreqOverride_ = true;
-        alpLidActive_ = sample.lidActive;
-        std::strncpy(alpFreqText_, sample.text, sizeof(alpFreqText_));
-        alpFreqText_[sizeof(alpFreqText_) - 1] = '\0';
+        warmPaint.hasGunLabel = true;
+        warmPaint.gunLabelLidActive = sample.lidActive;
+        warmPaint.gunLabel = sample.text;
         elementCaches_.frequency.invalidate();
-        drawFrequencySegment7(0, BAND_LASER, false, false);
+        drawFrequencySegment7(warmPaint, 0, BAND_LASER, false, false);
     }
-
-    alpFreqOverride_ = savedAlpOverride;
-    alpLidActive_ = savedAlpLid;
-    std::strncpy(alpFreqText_, savedAlpText, sizeof(alpFreqText_));
-    alpFreqText_[sizeof(alpFreqText_) - 1] = '\0';
 
     elementCaches_.frequency.invalidate();
     drawnRegion_.reset();
@@ -507,11 +495,11 @@ void V1Display::prewarmFrequencyRasterCache() {
                   millis() - warmStartMs);
 }
 
-void V1Display::drawVolumeZeroWarning() {
+void V1Display::drawVolumeZeroWarning(const ResolvedPaintStatus& paint) {
     // Flash at ~2Hz
     static unsigned long lastFlashTime = 0;
     static bool flashOn = true;
-    unsigned long now = millis();
+    unsigned long now = paint.context.nowMs;
     if (now - lastFlashTime >= 250) {
         flashOn = !flashOn;
         lastFlashTime = now;
@@ -549,6 +537,6 @@ void V1Display::drawVolumeZeroWarning() {
     }
 }
 
-void V1Display::drawFrequency(uint32_t freqMHz, Band band, bool muted, uint8_t photoType) {
-    drawFrequencySegment7(freqMHz, band, muted, photoType);
+void V1Display::drawFrequency(const ResolvedPaintStatus& paint, uint32_t freqMHz, Band band, bool muted, uint8_t photoType) {
+    drawFrequencySegment7(paint, freqMHz, band, muted, photoType);
 }

@@ -20,6 +20,7 @@
 #include "modules/health/health_journal.h"
 #include "runtime_coordinator.h"
 #include "settings.h"
+#include "runtime_presentation_source.h"
 #include "storage_manager.h"
 #include "usb_profile_runtime.h"
 #include "v1_devices.h"
@@ -35,12 +36,13 @@ StorageManager storage;
 V1ProfileManager profiles;
 V1DeviceStore devices;
 SettingsManager settings(storage, profiles);
+RuntimePresentationSource presentation(settings);
 WiFiManager wifiManager(settings, profiles, devices, storage);
 ProductEventLog productEventLog;
 HealthJournal healthJournal;
-DriveRuntime driveRuntime(settings, profiles, devices, storage, batteryManager, productEventLog, healthJournal);
+DriveRuntime driveRuntime(settings, presentation, profiles, devices, storage, batteryManager, productEventLog, healthJournal);
 MaintenanceRuntime maintenanceRuntime(
-    wifiManager, settings, profiles, devices, storage, driveRuntime.display(),
+    wifiManager, settings, presentation, profiles, devices, storage, driveRuntime.display(),
     driveRuntime.preview(), driveRuntime.power(), batteryManager, driveRuntime.touch(), driveRuntime.ble(), driveRuntime.parser(),
     driveRuntime.autoPush(), driveRuntime.obd(), driveRuntime.speed(), driveRuntime.gps(), driveRuntime.quiet(),
     productEventLog, healthJournal, driveRuntime.state());
@@ -161,12 +163,12 @@ void initializeSharedHardware(esp_reset_reason_t resetReason, bool maintenanceBo
     batteryManager.begin();
     logBootStage("battery", setupStartMs, stageStartedMs);
 
-    driveRuntime.display().setObdRuntimeModule(&driveRuntime.obd());
-    driveRuntime.display().setAlpRuntimeModule(&driveRuntime.alp());
-    driveRuntime.display().setSystemStatusSources(batteryManager, wifiManager, driveRuntime.gps());
-    if (!driveRuntime.display().begin()) {
+    presentation.bind(driveRuntime.obd(), driveRuntime.alp(), batteryManager, wifiManager,
+                      driveRuntime.gps(), driveRuntime.quiet());
+    const auto initialPresentation = presentation.captureForPaint();
+    if (!driveRuntime.display().begin(initialPresentation.context())) {
         Serial.println("Display initialization failed!");
-        fatalBootError(driveRuntime.display(), "Display init failed", false);
+        fatalBootError(driveRuntime.display(), presentation, "Display init failed", false);
     }
     driveRuntime.state().bootReadyDeadlineMs = millis() + 5000;
 
@@ -189,21 +191,27 @@ void initializeSharedHardware(esp_reset_reason_t resetReason, bool maintenanceBo
         Serial.println("[V1SettingsJob] return intent could not be consumed in maintenance boot");
     }
     // Display initialization precedes NVS loading; apply the saved foregrounds now.
-    driveRuntime.display().updateColorTheme();
-    driveRuntime.power().begin(&batteryManager, &driveRuntime.display(), &settings);
+    driveRuntime.display().updateColorTheme(makeDisplayStyleView(settings));
+    driveRuntime.power().begin(&batteryManager, &driveRuntime.display(), &settings, presentation);
     driveRuntime.power().logStartupStatus();
     logBootStage("settings", setupStartMs, stageStartedMs);
 
     if (maintenanceBoot) {
         logBootCheckpoint("maintenance_ui_begin", setupStartMs);
         const uint32_t startedMs = millis();
-        driveRuntime.display().showMaintenanceMode();
+        {
+            const auto inputs = presentation.captureForPaint();
+            driveRuntime.display().showMaintenanceMode(inputs.context());
+        }
         Serial.printf("[BootTiming] maintenance_ui_ms=%lu\n",
                       static_cast<unsigned long>(millis() - startedMs));
     } else if (resetReason == ESP_RST_POWERON) {
         logBootCheckpoint("splash_begin", setupStartMs);
         const uint32_t startedMs = millis();
-        driveRuntime.display().showBootSplash();
+        {
+            const auto inputs = presentation.captureForPaint();
+            driveRuntime.display().showBootSplash(inputs.context());
+        }
         Serial.printf("[BootTiming] splash_call_ms=%lu\n",
                       static_cast<unsigned long>(millis() - startedMs));
         driveRuntime.state().bootSplashHoldActive = true;
@@ -216,7 +224,7 @@ void initializeSharedHardware(esp_reset_reason_t resetReason, bool maintenanceBo
                       static_cast<unsigned long>(millis() - startedMs));
     }
     logBootStage("boot_ui", setupStartMs, stageStartedMs);
-    driveRuntime.preview().begin(&driveRuntime.display());
+    driveRuntime.preview().begin(&driveRuntime.display(), presentation);
 }
 } // namespace
 

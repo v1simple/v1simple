@@ -20,7 +20,7 @@ struct SliderRuntime : SpeedFadeRuntime {
     TouchUiModule touchUi;
     SliderRuntime() {
         touch.begin();
-        touchUi.begin(&display, &touch, &settings, {});
+        touchUi.begin(&display, &touch, &settings, {}, presentation);
     }
     void openSliders() {
         now = 11000;

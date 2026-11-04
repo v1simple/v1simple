@@ -183,8 +183,20 @@ void test_stale_v1_rows_cannot_appear_or_speak_while_disconnected() {
     r.scan();
 }
 
+void test_status_only_paint_keeps_session_gun_then_scan_clears_it() {
+    Runtime runtime;
+    runtime.live();
+    const auto inputs = runtime.presentation.captureForPaint();
+    runtime.display.drawBatteryIndicator(inputs.context());
+    TEST_ASSERT_TRUE(runtime.display.ut_alpHasLaserEvent());
+    TEST_ASSERT_EQUAL_STRING("PL3", runtime.display.ut_alpFreqText());
+    runtime.silence();
+    runtime.scan();
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_status_only_paint_keeps_session_gun_then_scan_clears_it);
     RUN_TEST(test_disconnected_alp_end_paints_scan_and_repeated_idle_ticks_do_not_repaint);
     RUN_TEST(test_disconnected_persisted_tail_expires_without_any_packet);
     RUN_TEST(test_scan_refreshes_real_alp_badge_without_repainting_primary_or_unchanged_status);

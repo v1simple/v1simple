@@ -1,18 +1,20 @@
 #pragma once
 
+#include "runtime_presentation_source.h"
+
 #include <Arduino.h>
 #include "packet_parser.h" // For AlertData, Band, Direction
 #include "display.h"       // For V1Display, DisplayState
 
 /**
  * Timed preview for band, direction, multi-alert, ALP, and status rendering.
- * It uses preview setters and does not own or mutate runtime modules.
+ * It supplies synthetic frame/status values without mutating runtime sources.
  */
 class DisplayPreviewModule {
   public:
     DisplayPreviewModule();
 
-    void begin(V1Display* display);
+    void begin(V1Display* display, RuntimePresentationSource& presentation);
 
     // Start/stop preview
     void requestHold(uint32_t durationMs);
@@ -150,6 +152,7 @@ class DisplayPreviewModule {
     static constexpr uint32_t PREVIEW_TAIL_MS = 600;   // Extra time after last step
 
     V1Display* display_ = nullptr;
+    RuntimePresentationSource* presentation_ = nullptr;
 
     bool previewActive_ = false;
     bool previewEnded_ = false;
@@ -182,5 +185,4 @@ class DisplayPreviewModule {
     ResolvedStep lastResolved_{};
     bool hasLastResolved_ = false;
     void resetCarryState();
-    void cleanupPreviewOverrides();
 };

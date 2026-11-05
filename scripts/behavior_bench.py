@@ -230,6 +230,26 @@ class Runner:
         verify_identity(actual, self.expected)
         return actual
 
+    def initial_status(self):
+        # Opening USB can restart a slow storage boot. Only this initial,
+        # read-only admission shares the existing controlled-boot budget.
+        client = self.device.client
+        deadline = client.clock() + self.device.mode_timeout
+        last = None
+        while client.clock() < deadline:
+            try:
+                actual = self.device.status(timeout=min(2., deadline - client.clock()),
+                                            attempts=1, deadline=deadline)
+            except usb.TransportError as exc:
+                last = exc
+            else:
+                verify_identity(actual, self.expected)
+                if client.clock() >= deadline:
+                    break
+                return actual
+            client.sleep(min(.1, max(0., deadline - client.clock())))
+        raise usb.TransportError("Initial USB status was not confirmed within the startup deadline") from last
+
     def mode(self, target: str):
         original = self.status()
         actual = self.device.mode(target, original)
@@ -643,7 +663,7 @@ class Runner:
                 cleanup("original mode", lambda: self.mode(initial_status["mode"]))
 
         try:
-            current = self.status()
+            current = self.initial_status()
             initial_status = current
             if self.journal:
                 restoration_attempted = True

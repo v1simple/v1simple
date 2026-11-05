@@ -19,6 +19,7 @@ from unittest.mock import Mock, patch
 
 import behavior_bench as bench
 from test_behavior_state import snapshot, profiles, USB_IDENTITY
+from test_usb_profiles import Clock, StartingWireDevice, WireDevice
 
 
 IDENTITY = {"git": "123abcd", "image": "abcdef123", "mode": "normal", "boot": 1,
@@ -83,8 +84,16 @@ class Fixture:
         class Device:
             def __init__(self, client):
                 self.client = client
+                self.mode_timeout = 45
+                if "startup_unavailable" in owner.failures:
+                    self.client.clock = Clock()
+                    self.client.sleep = self.client.clock.sleep
 
-            def status(self):
+            def status(self, **kwargs):
+                if "startup_unavailable" in owner.failures:
+                    owner.events.append("status_probe")
+                    self.client.sleep(kwargs["timeout"])
+                    raise bench.usb.TransportError("fixture startup unavailable")
                 return deepcopy(owner.status_value)
 
             def mode(self, target, original):
@@ -280,6 +289,78 @@ class Fixture:
             return self.runner.execute()
 
 
+class InitialReadinessTests(unittest.TestCase):
+    def runner(self, peer, clock):
+        runner = bench.Runner.__new__(bench.Runner)
+        runner.device = bench.usb.Device(bench.usb.Client(peer, clock=clock, sleep=clock.sleep))
+        runner.expected = {"git": "1234567", "image": "abcdef123"}
+        return runner
+
+    def test_slow_storage_boot_is_admitted_without_changing_mutation_limits(self):
+        clock = Clock()
+        peer = StartingWireDevice(clock, ready_at=23.595)
+        runner = self.runner(peer, clock)
+        self.assertEqual(runner.initial_status()["mode"], "normal")
+        self.assertGreaterEqual(clock(), peer.ready_at)
+        self.assertLess(clock(), 27)
+        self.assertTrue(all(b" status\n" in raw for _, raw in peer.startup_requests))
+        self.assertEqual([verb for _, verb, _ in peer.history], ["status"])
+        self.assertEqual(peer.closes, 0)
+        self.assertEqual((runner.device.client.timeout, runner.device.client.attempts), (2., 3))
+        peer.drop_always.add("maintenance")
+        started = clock()
+        with self.assertRaises(bench.usb.TransportError):
+            runner.device.client.command("maintenance")
+        self.assertGreaterEqual(clock() - started, 6.)
+        self.assertLess(clock() - started, 6.1)
+
+    def test_shared_deadline_bounds_absence_and_rejects_a_late_complete_reply(self):
+        class LateReply(WireDevice):
+            def read(self, count):
+                self.clock.now = 45.001
+                result = bytes(self.output[:count])
+                del self.output[:count]
+                return result
+
+        for make_peer in (lambda clock: StartingWireDevice(clock, ready_at=100), LateReply):
+            with self.subTest(peer=make_peer):
+                clock = Clock()
+                peer = make_peer(clock)
+                runner = self.runner(peer, clock)
+                with self.assertRaisesRegex(bench.usb.TransportError, "startup deadline"):
+                    runner.initial_status()
+                self.assertGreaterEqual(clock(), 45.)
+                self.assertLess(clock(), 45.02)
+                self.assertTrue(all(verb == "status" for _, verb, _ in peer.history))
+
+    def test_malformed_rejected_and_foreign_status_are_not_retried(self):
+        for changed in ({"mode": "invalid"}, {"git": "7654321"}, {"image": "fedcba987"},
+                        {"ok": False, "error": "busy"}):
+            with self.subTest(changed=changed):
+                clock = Clock()
+                peer = WireDevice(clock)
+                runner = self.runner(peer, clock)
+                reply = {**peer.dispatch("status", []), **changed}
+                with patch.object(peer, "dispatch", return_value=reply):
+                    with self.assertRaises((bench.usb.ProfileError, bench.Incomplete)):
+                        runner.initial_status()
+                self.assertEqual(len(peer.history), 1)
+                self.assertLess(clock(), 1.)
+
+    def test_immediate_transport_absence_has_bounded_backoff(self):
+        clock = Clock()
+        runner = self.runner(WireDevice(clock), clock)
+        with patch.object(runner.device, "status", side_effect=bench.usb.TransportError("absent")) as probe:
+            with self.assertRaises(bench.usb.TransportError):
+                runner.initial_status()
+        self.assertAlmostEqual(clock(), 45.)
+        self.assertLessEqual(probe.call_count, 451)
+        for call in probe.call_args_list:
+            self.assertEqual(call.kwargs["deadline"], 45.)
+            self.assertEqual(call.kwargs["attempts"], 1)
+            self.assertLessEqual(call.kwargs["timeout"], 2.)
+
+
 class CoordinatorTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -350,6 +431,20 @@ class CoordinatorTests(unittest.TestCase):
                 self.assertNotIn("browser_write", fixture.events)
                 self.assertNotIn("restore_write", fixture.events)
                 self.assertEqual(fixture.status_value["mode"], "normal")
+                self.assertEqual(fixture.events[-1], "usb_close")
+
+    def test_initial_unavailable_or_wrong_identity_cannot_start_admission_writes(self):
+        for unavailable in (False, True):
+            with self.subTest(unavailable=unavailable), tempfile.TemporaryDirectory() as directory:
+                fixture = Fixture(Path(directory), ["startup_unavailable"] if unavailable else [])
+                if not unavailable:
+                    fixture.status_value["git"] = "7654321"
+                result = fixture.execute()
+                self.assertEqual(result["result"], "INCOMPLETE")
+                self.assertEqual(result["restoration"], "not_needed")
+                self.assertIsNone(fixture.runner.journal)
+                self.assertFalse((Path(directory) / "recovery.json").exists())
+                self.assertTrue(all(event in ("status_probe", "usb_close") for event in fixture.events))
                 self.assertEqual(fixture.events[-1], "usb_close")
 
     def test_uncertain_browser_commit_is_not_retried_and_is_restored(self):

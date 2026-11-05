@@ -57,6 +57,15 @@ the ten-second warning. It temporarily silences the speaker, restores all owned
 settings, and never starts a microphone recorder. It requires 5 GB, a qualified
 candidate, and `--real-v1-off`; `all` and `acceptance` keep their existing scope.
 
+A fade exposure can remain unreadable between a complete glyph and blank.
+Only then, the analyzer inspects every retained native frame in a bounded
+neighborhood. Opposite complete endpoints must be within 50 ms, with intact
+controls, consecutive source frames, and no visible added content or reversal.
+Intermediate fading subsets remain marked unreadable, with a separate transition
+receipt; the cadence calculation uses the endpoint interval. This does not prove
+individual strokes below visibility. Wrong stable text, persistent partials,
+missing frames and uncertain transitions cannot pass.
+
 For audio, acceptance, or warning, retain the qualified firmware, ELF, and their `identity.json`
 manifest together. The manifest must name the exact full commit, successful CI
 result and exit code, image identity, and SHA-256 of its files. The repository's
@@ -164,3 +173,11 @@ The second command also uses an existing built web interface and Chrome against 
 local test server. It exercises real Display and profile storage interactions,
 including ignored writes, failed initial reads, baseline drift, stale-name
 collisions, and a lost response after a committed write.
+
+The warning cadence check reads every retained native camera frame in the active
+window. It verifies consecutive source identities and timestamps, measures each
+visible/blank edge as an interval, and requires a complete `VOL 0` witness in
+every visible phase. Presence alone does not prove text. Same-direction edges
+measure the full cycle, retaining the 10 ms aggregate half-cycle allowance while
+allowing at most 50 ms of optical rise/fall asymmetry per phase. Missing frames,
+extra phases and rapid flashing cannot pass by aliasing the text sample grid.

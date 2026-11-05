@@ -985,6 +985,42 @@ class AcceptanceAdmissionTests(unittest.TestCase):
         self.assertEqual(json.loads((self.directory / "campaign.json").read_text()), original)
 
 
+class WarningNativeFrameTests(unittest.TestCase):
+    def frames(self):
+        pts = [1. + index * .005 for index in range(11)]
+        host = [1_000_000_000 + index * 5_000_000 for index in range(11)]
+        return SimpleNamespace(host=host, pts=pts, video=Path("fixture.mov"),
+                               rows=[{"frame_seq": index + 100, "source_pts_value": index * 150}
+                                     for index in range(11)],
+                               decoder=Mock(side_effect=lambda _path, when: (when, "original pixels")))
+
+    def test_every_original_native_frame_is_retained_once_with_exact_identity(self):
+        frames = self.frames()
+        result = bench._warning_native_frames(frames, 1_025_000_000)
+        self.assertEqual([row["frame_seq"] for row in result], list(range(100, 111)))
+        self.assertEqual([row["host_capture_ns"] for row in result], frames.host)
+        self.assertEqual([row["video_pts_seconds"] for row in result], frames.pts)
+        self.assertEqual([row["source_frame"] for row in result], frames.rows)
+        self.assertEqual(frames.decoder.call_count, 11)
+
+    def test_missing_duplicate_out_of_order_or_wrong_decoded_frame_is_rejected(self):
+        for change in (lambda frames: frames.rows[5].update(frame_seq=106),
+                       lambda frames: frames.rows[5].update(frame_seq=104),
+                       lambda frames: frames.host.__setitem__(5, frames.host[4]),
+                       lambda frames: frames.host.__setitem__(6, frames.host[4]),
+                       lambda frames: frames.decoder.configure_mock(
+                           side_effect=lambda _path, when: (when + .005, "wrong frame")),
+                       lambda frames: frames.decoder.configure_mock(
+                           side_effect=lambda _path, when: (float("nan"), "invalid timestamp"))):
+            with self.subTest(change=change):
+                frames = self.frames()
+                change(frames)
+                with self.assertRaises(bench.CaptureError):
+                    bench._warning_native_frames(frames, 1_025_000_000)
+        with self.assertRaises(bench.CaptureError):
+            bench._warning_native_frames(self.frames(), 1_025_000_001)
+
+
 class WarningEvidenceTests(unittest.TestCase):
     def setUp(self):
         from test_behavior_audio_runner import fixture

@@ -8,6 +8,7 @@ after a host interruption; `analyze` reads a finished capture without a DUT.
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_left, bisect_right
 from copy import deepcopy
 import fcntl
 import hashlib
@@ -891,8 +892,31 @@ def warning_evidence(directory: Path, plan: dict) -> dict:
             "expected_onset_ns": max(min(volumes) + 15_000_000_000, tail["clear_accepted_ns"])}
 
 
+def _warning_native_frames(frames: RecordedFrames, target_ns: int) -> list[dict]:
+    """Decode every retained source frame in the bounded transition neighborhood."""
+    first = bisect_left(frames.host, target_ns - 25_000_000)
+    stop = bisect_right(frames.host, target_ns + 25_000_000)
+    indices = list(range(first, stop))
+    if not indices or target_ns not in frames.host[first:stop]:
+        raise CaptureError("Original unreadable warning frame is missing")
+    for previous, index in zip(indices, indices[1:]):
+        if (frames.rows[index]["frame_seq"] != frames.rows[previous]["frame_seq"] + 1
+                or frames.host[index] <= frames.host[previous]):
+            raise CaptureError("Native warning frame coverage is missing or unordered")
+    result = []
+    for index in indices:
+        actual_pts, rgb = frames.decoder(frames.video, frames.pts[index])
+        if not abs(actual_pts - frames.pts[index]) <= .00001:
+            raise CaptureError("Warning transition decoder did not return the exact source frame")
+        result.append({"time_s": frames.host[index] / 1e9,
+                       "host_capture_ns": frames.host[index], "video_pts_seconds": actual_pts,
+                       "frame_seq": frames.rows[index]["frame_seq"],
+                       "source_frame": dict(frames.rows[index]), "rgb": rgb})
+    return result
+
+
 def analyze_warning(directory: Path, *, tolerance: float = .35) -> list[dict]:
-    from behavior_visual import observe_warning_frame, evaluate_warning
+    from behavior_visual import observe_warning_frame, evaluate_warning, evaluate_warning_transition
     plan = json.loads((directory / "observations.json").read_text())
     if tolerance != plan.get("timing_tolerance_s"):
         raise Incomplete("Warning analysis cannot change its declared tolerance")
@@ -912,7 +936,31 @@ def analyze_warning(directory: Path, *, tolerance: float = .35) -> list[dict]:
                            onset + 12_500_000_000)
     checks = evaluate_warning(samples, reference, onset_s=onset / 1e9, tolerance_s=tolerance,
                               clear_idle_s=clear / 1e9, live_control=live)
+    transitions = {}
+    for row in samples:
+        if (row.get("warning_state") != "unreadable"
+                or not onset / 1e9 + tolerance <= row["time_s"] <= onset / 1e9 + 10. - tolerance):
+            continue
+        try:
+            native = _warning_native_frames(frames, round(row["time_s"] * 1e9))
+            transition = evaluate_warning_transition(native, frames.registration, reference, row["time_s"])
+            transition["native_frames"] = [{key: value for key, value in item.items() if key != "rgb"}
+                                            for item in native]
+        except CaptureError as exc:
+            transition = {"result": "INCOMPLETE", "target_s": row["time_s"], "reason": str(exc)}
+        transitions[row["time_s"]] = transition
+    presence_error = None
+    try:
+        presence = frames.warning_presence(round(onset + tolerance * 1e9),
+                                           round(onset + (10. - tolerance) * 1e9))
+    except CaptureError as exc:
+        presence, presence_error = [], str(exc)
+    checks = evaluate_warning(samples, reference, onset_s=onset / 1e9, tolerance_s=tolerance,
+                              clear_idle_s=clear / 1e9, live_control=live, transitions=transitions,
+                              native_presence=presence)
     atomic_json(directory / "warning-pixels.json", {"reference": reference, "live": live, "samples": samples})
+    atomic_json(directory / "warning-presence.json", {"frames": presence, "error": presence_error})
+    atomic_json(directory / "warning-transitions.json", {"transitions": list(transitions.values())})
     atomic_json(directory / "warning-result.json", {"checks": checks, "analysis_completed": True})
     return checks
 

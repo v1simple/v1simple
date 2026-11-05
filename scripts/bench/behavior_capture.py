@@ -7,12 +7,16 @@ is a host observation; only the camera establishes the visible DUT response.
 from __future__ import annotations
 
 import bisect
+from collections import deque
+from fractions import Fraction
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import pty
+import re
+import selectors
 import signal
 import subprocess
 import sys
@@ -189,6 +193,172 @@ class RecordedFrames:
             if progress:
                 progress(len(samples), len(requested))
         return samples
+
+    def warning_presence(self, start_ns: int, end_ns: int) -> list[dict[str, Any]]:
+        """Stream every original frame for warning cadence, preserving exact identities.
+
+        Presence is not glyph identity: the caller must retain full-text witnesses.
+        Only scalar observations survive each decoded frame; RGB stays bounded.
+        """
+        import numpy as np
+        from read_replay_fields import registered_pixels
+
+        if not (
+            type(start_ns) is int
+            and type(end_ns) is int
+            and 0 <= start_ns < end_ns
+            and end_ns - start_ns <= 12_000_000_000
+        ):
+            raise ValueError("native warning window must be increasing and at most 12 seconds")
+        if start_ns < self.host[0] or end_ns > self.host[-1]:
+            raise CaptureError("native warning window is outside the capture")
+        first = bisect.bisect_left(self.host, start_ns)
+        last = bisect.bisect_right(self.host, end_ns)
+        selected = self.rows[first:last]
+        if (
+            len(selected) < 3
+            or len(selected) > 3000
+            or selected[0]["host_capture_ns"] - start_ns > 10_000_000
+            or end_ns - selected[-1]["host_capture_ns"] > 10_000_000
+            or any(
+                b["frame_seq"] != a["frame_seq"] + 1
+                or not 0 < b["host_capture_ns"] - a["host_capture_ns"] <= 10_000_000
+                for a, b in zip(selected, selected[1:])
+            )
+        ):
+            raise CaptureError("native warning window has a missing source frame or timing gap")
+        low = selected[0]["video_pts_value"] / selected[0]["video_pts_timescale"]
+        high = selected[-1]["video_pts_value"] / selected[-1]["video_pts_timescale"]
+        seek = max(0.0, low - 0.05)
+        command = [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-nostats",
+            "-loglevel",
+            "info",
+            "-copyts",
+            "-ss",
+            f"{seek:.9f}",
+            "-t",
+            f"{high - seek + 0.05:.9f}",
+            "-i",
+            str(self.video),
+            "-vf",
+            f"select='between(t,{low - 1e-7:.9f},{high + 1e-7:.9f})',format=rgb24,showinfo",
+            "-fps_mode",
+            "passthrough",
+            "-an",
+            "-f",
+            "rawvideo",
+            "-",
+        ]
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
+        )
+        deadline = time.monotonic() + 120
+        frame_bytes = 1280 * 720 * 3
+        pixels = bytearray()
+        lines = bytearray()
+        pending = deque()
+        results = []
+        timebase = None
+        metadata_count = 0
+        selector = selectors.DefaultSelector()
+        for stream in (process.stdout, process.stderr):
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ)
+        time_pattern = re.compile(r"config in time_base: (\d+)/(\d+),")
+        frame_pattern = re.compile(
+            r"\bn:\s*(\d+) pts:\s*(-?\d+) pts_time:.*? fmt:(\w+).*? s:(\d+)x(\d+)\b"
+        )
+        try:
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CaptureError("native warning decoder exceeded 120 seconds")
+                events = selector.select(min(remaining, 1.0))
+                for key, _ in events:
+                    stream = key.fileobj
+                    data = os.read(stream.fileno(), 65536)
+                    if not data:
+                        selector.unregister(stream)
+                        continue
+                    if stream is process.stdout:
+                        pixels.extend(data)
+                    else:
+                        lines.extend(data)
+                        while b"\n" in lines:
+                            raw, _, tail = lines.partition(b"\n")
+                            lines = bytearray(tail)
+                            line = raw.decode(errors="replace")
+                            match = time_pattern.search(line)
+                            if match:
+                                value = Fraction(int(match[1]), int(match[2]))
+                                if timebase is not None and timebase != value:
+                                    raise CaptureError("native warning decoder time base changed")
+                                timebase = value
+                            match = frame_pattern.search(line)
+                            if match:
+                                seq, pts, fmt, width, height = match.groups()
+                                if (
+                                    timebase is None
+                                    or int(seq) != metadata_count
+                                    or fmt != "rgb24"
+                                    or (int(width), int(height)) != (1280, 720)
+                                    or metadata_count >= len(selected)
+                                ):
+                                    raise CaptureError(
+                                        "native warning decoder frame metadata is invalid"
+                                    )
+                                source = selected[metadata_count]
+                                if int(pts) * timebase != Fraction(
+                                    source["video_pts_value"], source["video_pts_timescale"]
+                                ):
+                                    raise CaptureError(
+                                        "native warning decoded PTS differs from the verified source frame"
+                                    )
+                                pending.append(metadata_count)
+                                metadata_count += 1
+                    if len(lines) > 65536 or len(pixels) > frame_bytes * 2 or len(pending) > 32:
+                        raise CaptureError("native warning decoder exceeded its bounded buffers")
+                    while len(pixels) >= frame_bytes and pending:
+                        index = pending.popleft()
+                        if index != len(results):
+                            raise CaptureError("native warning decoder frame order changed")
+                        rgb = np.frombuffer(bytes(pixels[:frame_bytes]), dtype=np.uint8).reshape(
+                            (720, 1280, 3)
+                        )
+                        del pixels[:frame_bytes]
+                        center = registered_pixels(rgb, self.registration)[230:375, 450:880]
+                        source = selected[index]
+                        results.append(
+                            {
+                                "host_monotonic_ns": source["host_capture_ns"],
+                                "video_pts_seconds": source["video_pts_value"]
+                                / source["video_pts_timescale"],
+                                "frame_seq": source["frame_seq"],
+                                "center_lit_pixels": int((center.max(axis=2) >= 35).sum()),
+                                "source_frame": source,
+                            }
+                        )
+            code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+            if (
+                code
+                or pixels
+                or pending
+                or metadata_count != len(selected)
+                or len(results) != len(selected)
+            ):
+                raise CaptureError("native warning decoding ended without every verified frame")
+        finally:
+            selector.close()
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            process.stdout.close()
+            process.stderr.close()
+        return results
 
 
 def is_clear_notification(event: dict[str, Any]) -> bool:

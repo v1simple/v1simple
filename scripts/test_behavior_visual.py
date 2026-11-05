@@ -133,6 +133,27 @@ def warning_live_control(clear_s=15):
     return [{"time_s": clear_s - 1.1 + index / 10, **deepcopy(observed)} for index in range(10)]
 
 
+def warning_native_frames(images, *, start=0., step=.005):
+    return [{"time_s": start + index * step, "frame_seq": index, "rgb": image.copy()}
+            for index, image in enumerate(images)]
+
+
+def warning_native_presence(*, half=.250, delay=0., frozen=False):
+    """Independent 200 fps source timeline, not interpolation of text samples."""
+    rows = []
+    for index in range(1861):
+        elapsed_ns = 350_000_000 + index * 5_000_000
+        host = 15_000_000_000 + elapsed_ns
+        phase_ns = elapsed_ns - round(delay * 1e9)
+        visible = not frozen and (phase_ns // round(half * 1e9)) % 2 == 1
+        source = {"host_capture_ns": host, "frame_seq": index,
+                  "video_pts_value": index, "video_pts_timescale": 200}
+        rows.append({"host_monotonic_ns": host, "video_pts_seconds": index / 200,
+                     "frame_seq": index, "center_lit_pixels": 8000 if visible else 0,
+                     "source_frame": source})
+    return rows
+
+
 class WarningVisualTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -152,11 +173,13 @@ class WarningVisualTests(unittest.TestCase):
                 value = self.on if (round(elapsed * 1000) // (100 if fast else 250)) % 2 else self.off
             rows.append({"time_s": 15 + elapsed, **deepcopy(value)})
         reference = [{"time_s": 2 + index / 10, **deepcopy(self.idle)} for index in range(5)]
+        self.native = warning_native_presence(half=.100 if fast else .250, frozen=frozen)
         return rows, reference
 
     def evaluate(self, rows, reference, *, clear=15, live=None):
         return visual.evaluate_warning(rows, reference, onset_s=15, clear_idle_s=clear,
-                                       live_control=warning_live_control(clear) if live is None else live)
+                                       live_control=warning_live_control(clear) if live is None else live,
+                                       native_presence=self.native)
 
     def test_full_glyph_identity_and_blank_are_distinct(self):
         self.assertEqual(self.on["warning"]["text"], "VOL 0", self.on["warning"])
@@ -201,6 +224,135 @@ class WarningVisualTests(unittest.TestCase):
         self.assertEqual(blink["result"], "INCOMPLETE", checks)
         self.assertEqual(blink["failures"], [])
 
+    def test_native_transition_has_opposite_complete_endpoints_and_preserves_unknown(self):
+        on, off = warning_fixture(), warning_fixture("     ")
+        dim = warning_fixture(color=(40, 8, 3))
+        _, reference = self.series()
+        for images in ([on, dim, off], [off, dim, on],
+                       [on, warning_fixture(" OL 0", color=(40, 8, 3)), off]):
+            with self.subTest(direction=images[0][260, 500].tolist()):
+                frames = warning_native_frames(images)
+                proof = visual.evaluate_warning_transition(frames, IDENTITY, reference, .005)
+                self.assertEqual(proof["result"], "PASS", proof)
+                self.assertEqual(proof["kind"], "bounded_transition")
+                self.assertEqual((proof["start_s"], proof["end_s"]), (0., .01))
+                self.assertIsNone(visual.observe_warning_frame(images[1], IDENTITY)["warning"]["text"])
+
+    def test_transition_rejects_added_content_reversal_wrong_endpoints_and_missing_coverage(self):
+        on, off = warning_fixture(), warning_fixture("     ")
+        dim = warning_fixture(color=(40, 8, 3))
+        _, reference = self.series()
+        extra = dim.copy()
+        extra[330:340, 830:855] = (40, 8, 3)
+        occluded = dim.copy()
+        occluded[188:278, 240:312] = 0
+        offset = [on.copy(), warning_fixture("VOL 8", color=(40, 8, 3)), off.copy()]
+        reappearing = [on.copy(), warning_fixture(" OL 0", color=(40, 8, 3)), dim.copy(), off.copy()]
+        for image in [*offset, *reappearing]:
+            center = image[230:375, 450:880]
+            center[center.max(axis=2) == 0] = (8, 0, 0)
+        cases = [([on, warning_fixture("VOL 8", color=(40, 8, 3)), off], .005),
+                 (offset, .005), (reappearing, .005), ([on, extra, off], .005), ([on, occluded, off], .005),
+                 ([on, warning_fixture(color=(3, 8, 40)), off], .005),
+                 ([on, dim, on], .005), ([off, dim, off], .005),
+                 ([warning_fixture("VOL O"), dim, off], .005),
+                 ([on, warning_fixture(" OL 0", color=(40, 8, 3)),
+                   warning_fixture(" OL 0", color=(80, 8, 3)), off], .005),
+                 ([on] + [dim] * 11 + [off], .005),
+                 ([warning_fixture("VOL O"), on, dim, off], .01),
+                 ([on, dim, off, warning_fixture("VOL O")], .005)]
+        for images, target in cases:
+            with self.subTest(target=target, count=len(images)):
+                proof = visual.evaluate_warning_transition(warning_native_frames(images), IDENTITY, reference, target)
+                self.assertEqual(proof["result"], "INCOMPLETE", proof)
+        for change in (lambda rows: rows[2].update(frame_seq=3),
+                       lambda rows: rows[2].update(time_s=.005),
+                       lambda rows: rows[2].update(time_s=.016)):
+            frames = warning_native_frames([on, dim, off])
+            change(frames)
+            self.assertEqual(visual.evaluate_warning_transition(frames, IDENTITY, reference, .005)["result"],
+                             "INCOMPLETE")
+
+    def test_native_edge_intervals_keep_raw_unknown_and_cannot_hide_bad_cadence(self):
+        on, off = warning_fixture(), warning_fixture("     ")
+        dim = warning_fixture(color=(40, 8, 3))
+        rows, reference = self.series()
+        target = 15.5
+        next(row for row in rows if row["time_s"] == target).update(
+            visual.observe_warning_frame(dim, IDENTITY))
+        proof = visual.evaluate_warning_transition(
+            warning_native_frames([on, dim, off], start=target - .005), IDENTITY, reference, target)
+        self.assertEqual(proof["result"], "PASS", proof)
+        # The original unknown is visibly fading until the native blank endpoint.
+        next(row for row in self.native if row["host_monotonic_ns"] == 15_500_000_000)["center_lit_pixels"] = 800
+        checks = visual.evaluate_warning(rows, reference, onset_s=15, clear_idle_s=15,
+                                          live_control=warning_live_control(), transitions={target: proof},
+                                          native_presence=self.native)
+        blink = next(row for row in checks if row["check"] == "warning_blink")
+        self.assertEqual(blink["result"], "PASS", checks)
+        self.assertEqual(next(row for row in rows if row["time_s"] == target)["warning_state"], "unreadable")
+        edge = next(row for row in blink["edge_intervals"] if row["low_s"] == target)
+        self.assertAlmostEqual(edge["high_s"], proof["end_s"])
+
+    def test_all_native_cadence_rejects_fast_alias_and_nonquarter_second_periods(self):
+        for half in (.0625, .225, .250, .300):
+            with self.subTest(half=half):
+                rows, reference = self.series()
+                for row in rows:
+                    elapsed = row["time_s"] - 15
+                    if 0 <= elapsed < 10:
+                        visible = (round(elapsed * 1e9) // round(half * 1e9)) % 2
+                        row.update(deepcopy(self.on if visible else self.off))
+                self.native = warning_native_presence(half=half)
+                checks = self.evaluate(rows, reference)
+                blink = next(row for row in checks if row["check"] == "warning_blink")
+                self.assertEqual(blink["result"], "PASS" if half == .250 else "FAIL", checks)
+
+    def test_native_cadence_accepts_bounded_lcd_asymmetry_but_not_hidden_phases(self):
+        rows, reference = self.series()
+        for source in self.native:
+            elapsed_ns = source["host_monotonic_ns"] - 15_000_000_000
+            phase_ns = elapsed_ns % 500_000_000
+            source["center_lit_pixels"] = 8000 if phase_ns >= 260_000_000 or phase_ns < 40_000_000 else 0
+        by_time = {row["host_monotonic_ns"]: row for row in self.native}
+        for row in rows:
+            source = by_time.get(round(row["time_s"] * 1e9))
+            if source:
+                row.update(deepcopy(self.on if source["center_lit_pixels"] else self.off))
+        blink = next(row for row in self.evaluate(rows, reference) if row["check"] == "warning_blink")
+        self.assertEqual(blink["result"], "PASS", blink)
+        for interval in blink["mean_intervals"]:
+            self.assertLessEqual(interval["low_s"], .25)
+            self.assertGreaterEqual(interval["high_s"], .25)
+        for start, end in ((15_605_000_000, 15_615_000_000), (15_745_000_000, 16_005_000_000)):
+            rows, reference = self.series()
+            for source in self.native:
+                if start <= source["host_monotonic_ns"] < end:
+                    source["center_lit_pixels"] = 8000 - source["center_lit_pixels"]
+            blink = next(row for row in self.evaluate(rows, reference) if row["check"] == "warning_blink")
+            self.assertNotEqual(blink["result"], "PASS", blink)
+
+    def test_native_identity_endpoint_coverage_and_glyph_witnesses_are_required(self):
+        for change in (lambda rows: rows.pop(100),
+                       lambda rows: rows[100].update(frame_seq=99),
+                       lambda rows: rows[100].update(host_monotonic_ns=rows[99]["host_monotonic_ns"]),
+                       lambda rows: rows[100].update(video_pts_seconds=999.),
+                       lambda rows: rows.pop(0),
+                       lambda rows: rows.__delitem__(slice(-5, None)),
+                       lambda rows: rows.clear()):
+            rows, reference = self.series()
+            change(self.native)
+            if len(self.native) == 1860 and self.native[0]["frame_seq"] == 1:
+                # One absent edge frame is within the explicit10ms endpoint
+                # tolerance; five absent frames are not.
+                del self.native[:4]
+            blink = next(row for row in self.evaluate(rows, reference) if row["check"] == "warning_blink")
+            self.assertEqual(blink["result"], "INCOMPLETE", blink)
+        rows, reference = self.series()
+        self.native[50]["center_lit_pixels"] = 8000
+        blink = next(row for row in self.evaluate(rows, reference) if row["check"] == "warning_blink")
+        self.assertNotEqual(blink["result"], "PASS", blink)
+
     def test_default_delay_flash_and_expiry_pass(self):
         rows, reference = self.series()
         checks = self.evaluate(rows, reference)
@@ -219,6 +371,7 @@ class WarningVisualTests(unittest.TestCase):
                     else:
                         value = self.idle
                     row.update({key: deepcopy(value) for key, value in value.items() if key != "time_s"})
+                self.native = warning_native_presence(delay=delay)
                 checks = self.evaluate(rows, reference)
                 if delay == .25:
                     self.assertEqual([row["result"] for row in checks], ["PASS"] * 4, checks)
@@ -259,6 +412,7 @@ class WarningVisualTests(unittest.TestCase):
                 if 0 <= elapsed < 10:
                     value = self.on if int(round(elapsed * 1000) / round(half * 1000)) % 2 else self.off
                     row.update(deepcopy(value))
+            self.native = warning_native_presence(half=half)
             self.assertTrue(any(row["result"] == "FAIL" for row in self.evaluate(rows, reference)))
         rows, reference = self.series()
         self.assertTrue(any(row["result"] != "PASS" for row in self.evaluate(rows[12:], reference)))

@@ -214,8 +214,423 @@ def observe_warning_frame(rgb, registration):
     return result
 
 
+def evaluate_warning_transition(frames, registration, idle_reference, target_s):
+    """Validate one short optical fade without relabeling intermediate text.
+
+    Complete opposite endpoints, original native-frame coverage and visible
+    pixel monotonicity bound the transition; subvisibility strokes are not
+    independently certified by an intermediate exposure.
+    """
+
+    def reject(reason):
+        return {"result": "INCOMPLETE", "reason": reason, "target_s": target_s}
+
+    if len(frames) < 3 or not np.isfinite(target_s):
+        return reject("missing native frames or invalid target time")
+    if any(not np.isfinite(row["time_s"]) for row in frames):
+        return reject("invalid native frame time")
+    if any(
+        b["time_s"] <= a["time_s"]
+        or b["time_s"] - a["time_s"] > 0.010000001
+        or b["frame_seq"] != a["frame_seq"] + 1
+        for a, b in zip(frames, frames[1:])
+    ):
+        return reject("native frame coverage is unordered or has a gap")
+    target = min(range(len(frames)), key=lambda i: abs(frames[i]["time_s"] - target_s))
+    if abs(frames[target]["time_s"] - target_s) > 1e-6:
+        return reject("original unknown frame is missing")
+    observations = [observe_warning_frame(row["rgb"], registration) for row in frames]
+    states = [
+        "on"
+        if row["warning"]["text"] == "VOL 0"
+        else "off"
+        if row["warning"]["blank"]
+        else "unknown"
+        for row in observations
+    ]
+    if states[target] != "unknown":
+        return reject("target is already a stable observation")
+    left = next((i for i in range(target - 1, -1, -1) if states[i] != "unknown"), None)
+    right = next(
+        (i for i in range(target + 1, len(frames)) if states[i] != "unknown"), None
+    )
+    if left is None or right is None or states[left] == states[right]:
+        return reject("opposite readable endpoints are missing")
+    span = frames[right]["time_s"] - frames[left]["time_s"]
+    if span > 0.050000001:
+        return reject("transition bracket exceeds 50 ms")
+    # Inspect every collected neighbor: one unresolved transition, with stable
+    # full text/blank on its respective sides. Never cherry-pick clean edges.
+    if any(state != states[left] for state in states[: left + 1]) or any(
+        state != states[right] for state in states[right:]
+    ):
+        return reject("collected neighbors contain another unresolved or wrong state")
+    reference, error = _reference(idle_reference)
+    if error:
+        return reject(error)
+    guard_reference = np.median(
+        np.array([row.get("warning_guard_grid", []) for row in idle_reference]), axis=0
+    )
+    if guard_reference.shape != (356,) or guard_reference.sum() < 1:
+        return reject("original control masks are missing")
+    for row in observations:
+        guard = np.array(row["warning_guard_grid"])
+        if (
+            not _visible(row)
+            or guard.shape != guard_reference.shape
+            or np.abs(guard - guard_reference).sum()
+            / max(float(guard_reference.sum()), 1.0)
+            > 0.25
+        ):
+            return reject("control masks are not preserved")
+        if row["primary_frequency"] is not None or any(
+            row["activity"][field]
+            > reference["activity"][field] + REGION_ALLOWANCE[field]
+            for field in ("main_bars", "card0", "card1", "arrows")
+        ):
+            return reject("alert content is present")
+    on_index = left if states[left] == "on" else right
+    off_index = right if states[right] == "off" else left
+    selected = frames[left : right + 1]
+    pixels = [
+        registered_pixels(row["rgb"], registration)[230:375, 450:880].astype(np.float64)
+        for row in selected
+    ]
+    on, off = pixels[on_index - left], pixels[off_index - left]
+    x, y, scale = observations[on_index]["warning"]["fitted_geometry"]
+    wanted = _warning_geometry()[-1]
+    nominal = np.zeros(on.shape[:2], bool)
+    allowed = np.zeros_like(nominal)
+    for r, c in zip(*np.where(wanted)):
+        x0, x1 = round(x + c * scale) - 450, round(x + (c + 1) * scale) - 450
+        y0, y1 = round(y + r * scale) - 230, round(y + (r + 1) * scale) - 230
+        for fringe, mask in ((2, nominal), (4, allowed)):
+            mask[
+                max(0, y0 - fringe) : min(len(mask), y1 + fringe),
+                max(0, x0 - fringe) : min(mask.shape[1], x1 + fringe),
+            ] = True
+    budget = max(50, int(nominal.sum() * 0.025))
+    low, high = (
+        np.minimum(on[:, :, 0], off[:, :, 0]),
+        np.maximum(on[:, :, 0], off[:, :, 0]),
+    )
+    direction = 1 if states[left] == "off" else -1
+    columns, rows = np.meshgrid(np.arange(30) + 0.5, np.arange(8) + 0.5)
+    xs = np.rint(x + columns * scale).astype(int) - 450
+    ys = np.rint(y + rows * scale).astype(int) - 230
+
+    def cell_majorities(mask):
+        integral = np.pad(mask.astype(np.int32), ((1, 0), (1, 0))).cumsum(0).cumsum(1)
+        return (
+            integral[ys + 2, xs + 2]
+            - integral[ys - 1, xs + 2]
+            - integral[ys + 2, xs - 1]
+            + integral[ys - 1, xs - 1]
+        ) >= 5
+
+    detail = []
+    previous = None
+    for source, pixel in zip(selected, pixels):
+        red_channel = pixel[:, :, 0]
+        lit = pixel.max(axis=2) >= 35
+        red = (red_channel >= pixel[:, :, 1] * 1.3) & (
+            red_channel >= pixel[:, :, 2] * 1.5
+        )
+        extra = int((lit & ~allowed).sum())
+        wrong_hue = int((lit & ~red).sum())
+        outside = int(((red_channel <= low - 35) | (red_channel >= high + 35)).sum())
+        reverse = (
+            np.zeros_like(allowed)
+            if previous is None
+            else direction * (red_channel - previous) <= -35
+        )
+        reversed_pixels = int(reverse.sum())
+        # A coherent new visible stroke or reappearance is not scattered
+        # optical noise, even with a nonzero camera background. Reuse the
+        # decoder's absolute35 visibility floor and 3x3 cell majority.
+        new_cells = int(
+            (cell_majorities((red_channel >= 35) & (high < 35)) & ~wanted).sum()
+        )
+        visibility_reverse = (
+            np.zeros_like(allowed)
+            if previous is None
+            else (
+                ((red_channel < 35) & (previous >= 35))
+                if direction == 1
+                else ((red_channel >= 35) & (previous < 35))
+            )
+        )
+        reverse_cells = int(cell_majorities(reverse | visibility_reverse).sum())
+        detail.append(
+            {
+                "time_s": source["time_s"],
+                "frame_seq": source["frame_seq"],
+                "outside_endpoint_pixels": outside,
+                "reverse_pixels": reversed_pixels,
+                "new_foreground_cells": new_cells,
+                "reverse_cells": reverse_cells,
+                "extra_lit_pixels": extra,
+                "wrong_hue_pixels": wrong_hue,
+            }
+        )
+        if (
+            new_cells
+            or reverse_cells
+            or max(outside, reversed_pixels, extra, wrong_hue) > budget
+        ):
+            return {
+                **reject(
+                    "visible pixels do not follow the bounded endpoint transition"
+                ),
+                "details": detail,
+                "budget": budget,
+            }
+        previous = (
+            red_channel
+            if previous is None
+            else (
+                np.maximum(previous, red_channel)
+                if direction == 1
+                else np.minimum(previous, red_channel)
+            )
+        )
+    return {
+        "result": "PASS",
+        "kind": "bounded_transition",
+        "target_s": target_s,
+        "from_state": states[left],
+        "to_state": states[right],
+        "start_s": selected[0]["time_s"],
+        "end_s": selected[-1]["time_s"],
+        "duration_s": span,
+        "budget": budget,
+        "inspected_native_frames": len(frames),
+        "details": detail,
+        "interpretation": "one short monotone optical transition; intermediate subsets are not stable text proof",
+    }
+
+
+def _warning_blink(rows, transitions, native_presence, active_window):
+    """Use every captured frame for cadence and sampled full text for identity."""
+
+    def reject(reason, result="INCOMPLETE", **detail):
+        return {"result": result, "reason": reason, **detail}
+
+    if not rows:
+        return reject("missing active samples")
+    if any(
+        b["time_s"] <= a["time_s"] or b["time_s"] - a["time_s"] > 0.140000001
+        for a, b in zip(rows, rows[1:])
+    ):
+        return reject("active sample coverage has a gap")
+    admitted = {}
+    for row in rows:
+        state = row["warning_state"]
+        if state == "idle":
+            return reject("warning expired during active interval", "FAIL")
+        if state in ("on", "off"):
+            continue
+        proof = transitions.get(row["time_s"])
+        if (
+            not proof
+            or proof.get("result") != "PASS"
+            or proof.get("kind") != "bounded_transition"
+            or proof.get("target_s") != row["time_s"]
+            or proof.get("from_state") not in ("on", "off")
+            or proof.get("to_state") not in ("on", "off")
+            or proof["from_state"] == proof["to_state"]
+            or not all(_finite(proof.get(key)) for key in ("start_s", "end_s"))
+            or not proof["start_s"] < row["time_s"] < proof["end_s"]
+            or not 0 < proof["end_s"] - proof["start_s"] <= 0.050000001
+        ):
+            return reject("unreadable sample has no validated bounded transition")
+        admitted[row["time_s"]] = proof
+
+    native = list(native_presence or [])
+    if not 3 <= len(native) <= 3000:
+        return reject("complete native warning presence is missing")
+    for row in native:
+        source = row.get("source_frame", {})
+        if (
+            type(row.get("host_monotonic_ns")) is not int
+            or type(row.get("frame_seq")) is not int
+            or type(row.get("center_lit_pixels")) is not int
+            or not 0 <= row["center_lit_pixels"] <= 145 * 430
+            or source.get("host_capture_ns") != row["host_monotonic_ns"]
+            or source.get("frame_seq") != row["frame_seq"]
+            or type(source.get("video_pts_value")) is not int
+            or type(source.get("video_pts_timescale")) is not int
+            or source["video_pts_timescale"] <= 0
+            or not _finite(row.get("video_pts_seconds"))
+            or abs(
+                row["video_pts_seconds"]
+                - source["video_pts_value"] / source["video_pts_timescale"]
+            )
+            > 1e-9
+        ):
+            return reject("native presence source identity is invalid")
+    if any(
+        b["frame_seq"] != a["frame_seq"] + 1
+        or not 0 < b["host_monotonic_ns"] - a["host_monotonic_ns"] <= 10_000_000
+        or b["video_pts_seconds"] <= a["video_pts_seconds"]
+        for a, b in zip(native, native[1:])
+    ):
+        return reject("native presence source coverage is missing or unordered")
+    first_s, last_s = (
+        native[0]["host_monotonic_ns"] / 1e9,
+        native[-1]["host_monotonic_ns"] / 1e9,
+    )
+    if (
+        not 0 <= first_s - active_window[0] <= 0.010000001
+        or not 0 <= active_window[1] - last_s <= 0.010000001
+    ):
+        return reject("native presence does not cover both active-window endpoints")
+    by_time = {row["host_monotonic_ns"]: row for row in native}
+    groups = []
+    edges = []
+    for row in native:
+        state = "visible" if row["center_lit_pixels"] >= 40 else "blank"
+        now = row["host_monotonic_ns"] / 1e9
+        if not groups or groups[-1]["state"] != state:
+            if groups:
+                edges.append(
+                    {
+                        "from_state": groups[-1]["state"],
+                        "to_state": state,
+                        "low_s": groups[-1]["end"],
+                        "high_s": now,
+                    }
+                )
+            groups.append(
+                {
+                    "state": state,
+                    "start": now,
+                    "end": now,
+                    "first_frame_seq": row["frame_seq"],
+                    "last_frame_seq": row["frame_seq"],
+                    "frames": 1,
+                    "full_glyph_witnesses": [],
+                }
+            )
+        else:
+            groups[-1]["end"] = now
+            groups[-1]["last_frame_seq"] = row["frame_seq"]
+            groups[-1]["frames"] += 1
+    # Presence is not text. Every stable sampled observation must agree with
+    # its exact native frame, and each visible phase needs a full-glyph witness.
+    for row in rows:
+        source = by_time.get(round(row["time_s"] * 1e9))
+        if source is None:
+            return reject("sampled content is missing its exact native frame")
+        visible = source["center_lit_pixels"] >= 40
+        if row["warning_state"] == "on":
+            if not visible:
+                return reject("full glyph conflicts with native blank presence")
+            group = next(
+                item
+                for item in groups
+                if item["first_frame_seq"]
+                <= source["frame_seq"]
+                <= item["last_frame_seq"]
+            )
+            group["full_glyph_witnesses"].append(row["time_s"])
+        elif row["warning_state"] == "off" and visible:
+            return reject("sampled blank conflicts with native visible presence")
+    for proof in admitted.values():
+        low, high = proof["start_s"], proof["end_s"]
+        start = by_time.get(round(low * 1e9))
+        end = by_time.get(round(high * 1e9))
+        if start is None or end is None:
+            return reject("bounded transition endpoints lack exact native coverage")
+        direction = (
+            ("visible", "blank")
+            if proof["from_state"] == "on"
+            else ("blank", "visible")
+        )
+        actual = (
+            "visible" if start["center_lit_pixels"] >= 40 else "blank",
+            "visible" if end["center_lit_pixels"] >= 40 else "blank",
+        )
+        matching = [
+            edge
+            for edge in edges
+            if round(low * 1e9) <= round(edge["low_s"] * 1e9)
+            and round(edge["high_s"] * 1e9) <= round(high * 1e9)
+        ]
+        if (
+            actual != direction
+            or len(matching) != 1
+            or (matching[0]["from_state"], matching[0]["to_state"]) != direction
+        ):
+            return reject("bounded transition conflicts with native phase edges")
+    if not 30 <= len(groups) <= 44 or {item["state"] for item in groups} != {
+        "visible",
+        "blank",
+    }:
+        return reject(
+            "warning did not repeatedly alternate visible and blank phases",
+            "FAIL",
+            groups=groups,
+        )
+    if any(group["end"] - group["start"] > 0.300000001 for group in groups):
+        return reject(
+            "a native warning phase exceeded 300 ms", "FAIL", groups=groups, edges=edges
+        )
+    durations = []
+    for entry, exit_edge in zip(edges, edges[1:]):
+        low = exit_edge["low_s"] - entry["high_s"]
+        high = exit_edge["high_s"] - entry["low_s"]
+        durations.append({"low_s": low, "high_s": high})
+        # The visible threshold can cross at different points in LCD rise and
+        # fall. Bound each phase by the declared 50 ms optical transition, then
+        # measure cadence using like-direction edges so that asymmetry cancels.
+        if high < 0.20 or low > 0.30:
+            return reject(
+                "native phase excludes the 250 ms plus/minus 50 ms optical bound",
+                "FAIL",
+                groups=groups,
+                edges=edges,
+                durations=durations,
+            )
+    means = []
+    for direction in ("visible", "blank"):
+        same = [edge for edge in edges if edge["to_state"] == direction]
+        intervals = 2 * (len(same) - 1)
+        low = (same[-1]["low_s"] - same[0]["high_s"]) / intervals
+        high = (same[-1]["high_s"] - same[0]["low_s"]) / intervals
+        means.append({"to_state": direction, "low_s": low, "high_s": high})
+        if not low - 0.01 <= 0.25 <= high + 0.01:
+            return reject(
+                "native aggregate cadence interval excludes 250 ms",
+                "FAIL",
+                groups=groups,
+                edges=edges,
+                mean_intervals=means,
+            )
+    if any(
+        group["state"] == "visible" and not group["full_glyph_witnesses"]
+        for group in groups
+    ):
+        return reject(
+            "a native visible phase lacks a complete VOL 0 witness",
+            groups=groups,
+            edges=edges,
+        )
+    return {
+        "result": "PASS",
+        "groups": groups,
+        "edges": edges,
+        "mean_interval_s": [
+            min(item["low_s"] for item in means),
+            max(item["high_s"] for item in means),
+        ],
+        "mean_intervals": means,
+        "native_frame_count": len(native),
+        "transitions": list(admitted.values()),
+    }
+
 def evaluate_warning(samples, idle_reference, *, onset_s, tolerance_s=.35,
-                     clear_idle_s=None, live_control=None):
+                     clear_idle_s=None, live_control=None, transitions=None, native_presence=None):
     """Require warning onset, repeated visible on/off phases, then original idle."""
     if not _finite(onset_s) or not .1 <= tolerance_s <= .5:
         raise ValueError("Invalid warning observation timing")
@@ -276,31 +691,11 @@ def evaluate_warning(samples, idle_reference, *, onset_s, tolerance_s=.35,
         incomplete[names[1]].append("pre-warning placeholder is unreadable")
     active = _window(selected, (onset_s + tolerance_s, onset_s + 10. - tolerance_s), .14,
                      "warning blink", incomplete[names[2]])
-    groups = []
-    for row in active:
-        state = row["warning_state"]
-        if state not in ("on", "off"):
-            (failures if state == "idle" else incomplete)[names[2]].append("warning glyph/off phase is missing")
-        if not groups or groups[-1]["state"] != state:
-            groups.append({"state": state, "start": row["time_s"], "end": row["time_s"]})
-        else:
-            groups[-1]["end"] = row["time_s"]
-    if (not any(row["warning_state"] == "unreadable" for row in active)
-            and (not 30 <= len(groups) <= 44 or not {"on", "off"} <= {row["state"] for row in groups})):
-        failures[names[2]].append("warning did not repeatedly alternate complete VOL 0 glyphs with blank phases")
-    for previous, group, following in zip(groups, groups[1:], groups[2:]):
-        # Unreadable frames cannot locate either edge of a visible half-cycle.
-        if (all(item["state"] in ("on", "off") for item in (previous, group, following))
-                and not .08 <= group["end"] - group["start"] <= .31):
-            failures[names[2]].append("warning half-cycle differs from the 250 ms cadence")
-    if len(groups) >= 3 and all(group["state"] in ("on", "off") for group in groups):
-        # Infer cadence across many transitions; individual 0.1 s samples do
-        # not locate each edge exactly. Two endpoint sample gaps bound the mean.
-        intervals = len(groups) - 2
-        mean = (groups[-1]["start"] - groups[1]["start"]) / intervals
-        allowance = .28 / intervals + .01
-        if abs(mean - .25) > allowance:
-            failures[names[2]].append("aggregate warning cadence differs from 250 ms")
+    blink = _warning_blink(active, transitions or {}, native_presence,
+                           (onset_s + tolerance_s, onset_s + 10. - tolerance_s))
+    if blink["result"] != "PASS":
+        (failures if blink["result"] == "FAIL" else incomplete)[names[2]].append(blink["reason"])
+    groups = blink.get("groups", [])
     expired = _window(selected, (onset_s + 10. + tolerance_s + .3, onset_s + 12.), .14,
                       "warning expiry", incomplete[names[3]])
     if any(row["warning_state"] in ("on", "off") for row in expired):
@@ -309,7 +704,10 @@ def evaluate_warning(samples, idle_reference, *, onset_s, tolerance_s=.35,
         incomplete[names[3]].append("post-warning placeholder is unreadable")
     return [{"check": name, **_report(failures=list(dict.fromkeys(failures[name])),
                                       incomplete=list(dict.fromkeys(incomplete[name])),
-                                      **({"observed_half_cycles": groups} if name == names[2] else {}))}
+                                      **({"observed_half_cycles": groups, "edge_intervals": blink.get("edges", []),
+                                          "mean_interval_s": blink.get("mean_interval_s"),
+                                          "mean_intervals": blink.get("mean_intervals", []),
+                                          "native_frame_count": blink.get("native_frame_count") } if name == names[2] else {}))}
             for name in names]
 
 

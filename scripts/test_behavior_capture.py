@@ -615,5 +615,134 @@ class CaptureTests(unittest.TestCase):
             self.frames(decoder_shift=.001).decoded_samples(1_200_000_000, 1_800_000_000)
 
 
+class NativePresenceTests(unittest.TestCase):
+    """Real pipe decoding must account for every native source frame."""
+
+    def setUp(self):
+        import numpy as np
+        from read_replay_fields import READER_REFERENCE_CROP
+        self.np = np
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.frames = subject.RecordedFrames.__new__(subject.RecordedFrames)
+        self.frames.video = self.root / "fixture.mov"
+        self.frames.rows = [{"status": "written", "frame_seq": 10 + i,
+            "host_capture_ns": 1_000_000_000 + i * 5_000_000,
+            "video_pts_value": 2_700_000 + 150 * i, "video_pts_timescale": 30_000,
+            "source_pts_value": 30_000_000 + 150 * i, "source_pts_timescale": 30_000}
+            for i in range(3)]
+        self.frames.host = [row["host_capture_ns"] for row in self.frames.rows]
+        self.frames.registration = {"result": "PASS", "transform": {
+            "kind": "dynamic_similarity", "crop_fractions": list(READER_REFERENCE_CROP)}}
+        # Exact camera-sized RGB fixtures span the established 35 visibility floor.
+        self.images = []
+        for index, level in enumerate((34, 35, 0)):
+            rgb = np.zeros((720, 1280, 3), dtype=np.uint8)
+            rgb[230:240, 450:460, 0] = level
+            self.images.append(rgb)
+            (self.root / f"frame-{index}.rgb").write_bytes(rgb.tobytes())
+        self.real_popen = subject.subprocess.Popen
+        self.processes = []
+        self.commands = []
+
+    def emitter(self, *, pts=None, count=3, short=False, exit_code=0, bad_format=False,
+                duplicate_index=False, no_metadata=False):
+        pts = [2_700_000 + 150 * i for i in range(count)] if pts is None else pts
+        records = []
+        for i, value in enumerate(pts):
+            records.append({"index": 0 if duplicate_index else i, "pts": value,
+                            "file": str(self.root / f"frame-{i % 3}.rgb")})
+        code = """
+import json,sys
+from pathlib import Path
+records=json.loads(sys.argv[1])
+sys.stderr.write('config in time_base: 1/30000, frame_rate: 200/1\\n');sys.stderr.flush()
+for record in records:
+    if not int(sys.argv[5]):
+        sys.stderr.write(f'n: {record["index"]} pts: {record["pts"]} pts_time: 90 fmt:{sys.argv[4]} s:1280x720\\n');sys.stderr.flush()
+    raw=Path(record['file']).read_bytes()
+    sys.stdout.buffer.write(raw[:-1] if int(sys.argv[2]) else raw);sys.stdout.buffer.flush()
+sys.exit(int(sys.argv[3]))
+"""
+        def launch(command, **kwargs):
+            self.commands.append(command)
+            process = self.real_popen([sys.executable, "-c", code, json.dumps(records),
+                str(int(short)), str(exit_code), "yuv420p" if bad_format else "rgb24",
+                str(int(no_metadata))], **kwargs)
+            self.processes.append(process)
+            return process
+        return launch
+
+    def decode(self, **kwargs):
+        with mock.patch.object(subject.subprocess, "Popen", side_effect=self.emitter(**kwargs)):
+            return self.frames.warning_presence(self.frames.host[0], self.frames.host[-1])
+
+    def test_stream_retains_every_exact_source_identity_and_same_registered_center(self):
+        from read_replay_fields import registered_pixels
+        rows = self.decode()
+        self.assertEqual([row["frame_seq"] for row in rows], [10, 11, 12])
+        self.assertEqual([row["host_monotonic_ns"] for row in rows], self.frames.host)
+        self.assertEqual([row["source_frame"] for row in rows], self.frames.rows)
+        expected = [int((registered_pixels(image, self.frames.registration)[230:375, 450:880]
+                         .max(axis=2) >= 35).sum()) for image in self.images]
+        self.assertEqual(expected, [0, 100, 0])
+        self.assertEqual([row["center_lit_pixels"] for row in rows], expected)
+        self.assertEqual([row["video_pts_seconds"] for row in rows], [90, 90.005, 90.01])
+        self.assertIn("-copyts", self.commands[0])
+        self.assertIn("passthrough", self.commands[0])
+        self.assertNotIn("-r", self.commands[0])
+        self.assertTrue(all(process.poll() is not None for process in self.processes))
+        # A registration change moves the marker out of the observed center.
+        self.frames.registration["transform"]["crop_fractions"][0] += 20 / 1280
+        shifted = self.decode()
+        self.assertEqual([row["center_lit_pixels"] for row in shifted], [0, 0, 0])
+
+    def test_one_tick_wrong_duplicate_or_reordered_pts_cannot_pass(self):
+        for pts in ([2_700_001, 2_700_150, 2_700_300],
+                    [2_700_000, 2_700_000, 2_700_300],
+                    [2_700_000, 2_700_300, 2_700_150]):
+            with self.subTest(pts=pts), self.assertRaisesRegex(subject.CaptureError, "decoded PTS"):
+                self.decode(pts=pts)
+
+    def test_missing_extra_partial_and_failed_decoder_cannot_pass(self):
+        for options in ({"count": 2}, {"count": 4}, {"short": True}, {"exit_code": 1},
+                        {"bad_format": True}, {"duplicate_index": True}, {"no_metadata": True}):
+            with self.subTest(options=options), self.assertRaises(subject.CaptureError):
+                self.decode(**options)
+        self.assertTrue(all(process.poll() is not None for process in self.processes))
+
+    def test_source_sequence_hole_and_long_gap_reject_before_decode(self):
+        for change in ("sequence", "time"):
+            rows = deepcopy(self.frames.rows)
+            if change == "sequence":
+                rows[1]["frame_seq"] += 1
+            else:
+                rows[1]["host_capture_ns"] = rows[0]["host_capture_ns"] + 11_000_000
+            self.frames.rows = rows
+            with mock.patch.object(subject.subprocess, "Popen") as launch:
+                with self.subTest(change=change), self.assertRaisesRegex(subject.CaptureError, "missing source"):
+                    self.frames.warning_presence(self.frames.host[0], self.frames.host[-1])
+                launch.assert_not_called()
+            self.frames.rows = [{**row, "frame_seq": 10 + i,
+                                "host_capture_ns": 1_000_000_000 + i * 5_000_000}
+                               for i, row in enumerate(rows)]
+
+    def test_outside_or_unbounded_window_rejects_before_decode(self):
+        for bounds in ((0, 1_010_000_000), (1_000_000_000, 14_000_000_000),
+                       (True, 1_010_000_000), (1_000_000_000, 1_000_000_000)):
+            with mock.patch.object(subject.subprocess, "Popen") as launch:
+                with self.subTest(bounds=bounds), self.assertRaises((ValueError, subject.CaptureError)):
+                    self.frames.warning_presence(*bounds)
+                launch.assert_not_called()
+
+    def test_deadline_stops_and_reaps_decoder(self):
+        with mock.patch.object(subject.time, "monotonic", side_effect=[0., 121.]):
+            with self.assertRaisesRegex(subject.CaptureError, "120 seconds"):
+                self.decode()
+        self.assertEqual(len(self.processes), 1)
+        self.assertIsNotNone(self.processes[0].poll())
+
+
 if __name__ == "__main__":
     unittest.main()

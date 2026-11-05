@@ -13,9 +13,18 @@ otherwise Python 3 with `pyserial==3.5`. It installs nothing automatically.
 ./profiles.sh restore .artifacts/usb-profiles/original.json
 ```
 
-Slot numbers are **0, 1 and 2**, matching firmware and WebUI. Persistence is an
-integer **0–5 seconds**. `set-slot` changes only that slot's persistence; it
-does not select the slot or alter other settings or profiles.
+The CLI uses firmware array indices **0, 1 and 2**. The WebUI labels the same
+slots starting at **1**:
+
+| CLI slot index | WebUI label |
+| --- | --- |
+| `0` | Slot 1 |
+| `1` | Slot 2 |
+| `2` | Slot 3 |
+
+The example above changes **WebUI Slot 2** to a two-second persistence.
+Persistence is an integer **0–5 seconds**. `set-slot` changes only that slot's
+persistence; it does not select the slot or alter other settings or profiles.
 
 `load FILE` and `restore FILE` both replace the complete catalog and slot bundle.
 Profiles absent from the file are removed. Before either operation or `set-slot`,

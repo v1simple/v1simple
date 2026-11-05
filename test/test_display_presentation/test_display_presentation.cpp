@@ -427,6 +427,65 @@ class LowBatteryCanvas : public Arduino_Canvas {
     uint8_t size_ = 0;
 };
 
+void test_zero_volume_warning_real_painter_flashes_and_restores_idle_frequency() {
+    Fixture f;
+    auto* canvas = new LowBatteryCanvas;
+    f.display.setTestCanvas(canvas);
+    f.display.ut_fontMgr().segment7Ready = true;
+    RenderFrame idle;
+    idle.primaryKind = RenderFramePrimaryKind::IDLE;
+    idle.primaryState.bogeyCounterChar = idle.primaryState.bogeyCounterChar2 = 'L';
+    idle.primaryState.bogeyCounterByte = idle.primaryState.bogeyCounterByte2 = 0x38;
+    idle.primaryState.hasVolumeData = true;
+    idle.primaryState.mainVolume = 0;
+    const auto paintAt = [&](uint32_t now) {
+        mockMillis = now;
+        f.source.noteBleSample({true, false, -65, 0}, false, now);
+        const auto inputs = f.source.captureForPaint();
+        f.display.renderFrame(idle, inputs.context());
+    };
+    const auto warningTextCount = [&]() {
+        unsigned count = 0;
+        for (const auto& text : canvas->text) {
+            if (text.value != "VOL 0") continue;
+            ++count;
+            TEST_ASSERT_EQUAL_INT(190, text.x);
+            TEST_ASSERT_EQUAL_INT(45, text.y);
+            TEST_ASSERT_EQUAL_HEX16(0xF800, text.color);
+            TEST_ASSERT_EQUAL_UINT8(6, text.size);
+        }
+        return count;
+    };
+
+    paintAt(1000);
+    TEST_ASSERT_EQUAL_STRING("--.---", f.display.ut_elementCaches().frequency.lastText);
+    canvas->resetPaint();
+    paintAt(17000); // First eligible frame starts the existing blank phase.
+    TEST_ASSERT_EQUAL_UINT(0, warningTextCount());
+    TEST_ASSERT_EQUAL_INT(1, canvas->getFlushCount());
+    TEST_ASSERT_FALSE(f.display.volumeZeroWarningRefreshDue(17249));
+    TEST_ASSERT_TRUE(f.display.volumeZeroWarningRefreshDue(17250));
+    canvas->resetPaint();
+    paintAt(17250);
+    TEST_ASSERT_EQUAL_UINT(1, warningTextCount());
+    TEST_ASSERT_EQUAL_INT(1, canvas->getFlushCount());
+    TEST_ASSERT_FALSE(f.display.volumeZeroWarningRefreshDue(17499));
+    TEST_ASSERT_TRUE(f.display.volumeZeroWarningRefreshDue(17500));
+    canvas->resetPaint();
+    paintAt(17500);
+    TEST_ASSERT_EQUAL_UINT(0, warningTextCount());
+    TEST_ASSERT_EQUAL_INT(1, canvas->getFlushCount());
+    canvas->resetPaint();
+    paintAt(27000);
+    TEST_ASSERT_EQUAL_STRING("--.---", f.display.ut_elementCaches().frequency.lastText);
+    TEST_ASSERT_EQUAL_UINT(0, warningTextCount());
+    TEST_ASSERT_EQUAL_INT(1, canvas->getFlushCount());
+    TEST_ASSERT_FALSE(f.display.volumeZeroWarningRefreshDue(27250));
+    canvas->resetPaint();
+    paintAt(27250);
+    TEST_ASSERT_EQUAL_INT(0, canvas->getFlushCount());
+}
+
 void test_power_warning_uses_fresh_inputs_through_preemption_restore_and_release() {
     Fixture f;
     auto* canvas = new LowBatteryCanvas;
@@ -566,5 +625,6 @@ int main() {
     RUN_TEST(test_battery_percent_cadence_and_profile_overlap_share_resolved_values);
     RUN_TEST(test_status_only_paint_preserves_same_session_gun_but_new_empty_frame_clears_it);
     RUN_TEST(test_power_warning_uses_fresh_inputs_through_preemption_restore_and_release);
+    RUN_TEST(test_zero_volume_warning_real_painter_flashes_and_restores_idle_frequency);
     return UNITY_END();
 }

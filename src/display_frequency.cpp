@@ -496,14 +496,7 @@ void V1Display::prewarmFrequencyRasterCache(const ResolvedPaintStatus& paint) {
 }
 
 void V1Display::drawVolumeZeroWarning(const ResolvedPaintStatus& paint) {
-    // Flash at ~2Hz
-    static unsigned long lastFlashTime = 0;
-    static bool flashOn = true;
-    unsigned long now = paint.context.nowMs;
-    if (now - lastFlashTime >= 250) {
-        flashOn = !flashOn;
-        lastFlashTime = now;
-    }
+    const bool flashOn = volZeroWarn_.flashOn(paint.context.nowMs);
 
     const int leftMargin = 120;
     const int rightMargin = 200;

@@ -122,7 +122,8 @@ bool DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestr
             lastDisconnectedRefreshMs_ = ctx.nowMs;
             return true;
         }
-        if (ctx.v1PersistenceRefreshDue || display_->secondaryCardRefreshDue(ctx.nowMs)) return true;
+        if (ctx.v1PersistenceRefreshDue || display_->secondaryCardRefreshDue(ctx.nowMs) ||
+            display_->volumeZeroWarningRefreshDue(ctx.nowMs)) return true;
         const DisplayState liveState = parser_->getDisplayState();
         const bool counterBlink = !display_->isStealthScreen() &&
                                   (liveState.bogeyCounterByte != liveState.bogeyCounterByte2 ||

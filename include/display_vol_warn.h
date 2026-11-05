@@ -3,18 +3,26 @@
 #include <Arduino.h>
 
 struct VolumeZeroWarning {
-    unsigned long detectedMs = 0;     // When volume=0 was first detected
-    unsigned long warningStartMs = 0; // When warning display actually started
-    bool acknowledged = false;
-
-    static constexpr unsigned long DELAY_MS = 15000;
-    static constexpr unsigned long DURATION_MS = 10000;
+    static constexpr uint32_t DELAY_MS = 15000;
+    static constexpr uint32_t DURATION_MS = 10000;
+    static constexpr uint32_t FLASH_INTERVAL_MS = 250;
 
     // Re-arm when volume becomes nonzero or the app connects/disconnects.
     void reset() {
-        detectedMs = 0;
-        warningStartMs = 0;
-        acknowledged = false;
+        phase_ = Phase::Idle;
+        phaseStartedMs_ = lastPaintMs_ = 0;
+    }
+
+    // The renderer and quiet-loop scheduler share these phase boundaries.
+    bool refreshDue(uint32_t now) const {
+        if (phase_ == Phase::Delay) return elapsed(now) >= DELAY_MS;
+        if (phase_ != Phase::Active) return false;
+        return elapsed(now) >= DURATION_MS ||
+               elapsed(now) / FLASH_INTERVAL_MS != elapsed(lastPaintMs_) / FLASH_INTERVAL_MS;
+    }
+
+    bool flashOn(uint32_t now) const {
+        return phase_ == Phase::Active && (elapsed(now) / FLASH_INTERVAL_MS) % 2 != 0;
     }
 
     /// Returns true while the warning should be drawn.
@@ -26,28 +34,34 @@ struct VolumeZeroWarning {
             reset();
             return false;
         }
-        if (acknowledged) {
+        if (phase_ == Phase::Acknowledged) {
             return false;
         }
 
-        if (detectedMs == 0) {
-            detectedMs = now;
+        if (phase_ == Phase::Idle) {
+            phase_ = Phase::Delay;
+            phaseStartedMs_ = now;
         }
 
-        if ((now - detectedMs) < DELAY_MS) {
-            return false;
+        if (phase_ == Phase::Delay) {
+            if (elapsed(now) < DELAY_MS) return false;
+            phase_ = Phase::Active;
+            phaseStartedMs_ = now;
         }
 
-        if (warningStartMs == 0) {
-            warningStartMs = now;
-        }
-
-        if ((now - warningStartMs) < DURATION_MS) {
+        if (elapsed(now) < DURATION_MS) {
+            lastPaintMs_ = now;
             return true;
         }
 
-        acknowledged = true;
+        phase_ = Phase::Acknowledged;
         return false;
     }
 
+  private:
+    enum class Phase : uint8_t { Idle, Delay, Active, Acknowledged };
+    Phase phase_ = Phase::Idle;
+    uint32_t phaseStartedMs_ = 0;
+    uint32_t lastPaintMs_ = 0;
+    uint32_t elapsed(uint32_t now) const { return static_cast<uint32_t>(now - phaseStartedMs_); }
 };

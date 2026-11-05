@@ -41,6 +41,8 @@ std::vector<DisplayLayout::DisplayRect> regionalTransfers;
 uint32_t lastFrequencyMHz = 0;
 Band lastFrequencyBand = BAND_NONE;
 uint8_t lastFrequencyPhotoType = 0;
+unsigned frequencyDrawCalls = 0;
+unsigned volumeWarningDrawCalls = 0;
 
 class RecordingCanvas : public Arduino_Canvas {
   public:
@@ -98,11 +100,12 @@ void V1Display::drawBaseFrame(const ResolvedPaintStatus& paint) {
     elementCaches_.invalidateAll();
 }
 void V1Display::drawFrequency(const ResolvedPaintStatus& paint, uint32_t frequency, Band band, bool, uint8_t photoType) {
+    ++frequencyDrawCalls;
     lastFrequencyMHz = frequency;
     lastFrequencyBand = band;
     lastFrequencyPhotoType = photoType;
 }
-void V1Display::drawVolumeZeroWarning(const ResolvedPaintStatus& paint) {}
+void V1Display::drawVolumeZeroWarning(const ResolvedPaintStatus& paint) { ++volumeWarningDrawCalls; }
 void V1Display::drawVolumeIndicator(const ResolvedPaintStatus& paint, uint8_t, uint8_t) {}
 void V1Display::drawRssiIndicator(const ResolvedPaintStatus& paint, int) {}
 void V1Display::drawWiFiIndicator(const ResolvedPaintStatus& paint) {}
@@ -189,6 +192,7 @@ void clearObservations() {
     lastFrequencyMHz = 0;
     lastFrequencyBand = BAND_NONE;
     lastFrequencyPhotoType = 0;
+    frequencyDrawCalls = volumeWarningDrawCalls = 0;
 }
 
 DisplayState stateFor(const AlertData& primary, char counter, uint8_t mainBars) {
@@ -744,8 +748,8 @@ struct CounterBlinkRuntime {
         orchestration.begin(&display, &ble, &preview, &restore, &parser, nullptr, nullptr, nullptr, presentation);
     }
 
-    void feed(uint8_t id, std::initializer_list<uint8_t> payload, uint32_t nowMs = 10000) {
-        std::vector<uint8_t> packet{0xAA, 0xD8, 0xEA, id, static_cast<uint8_t>(payload.size() + 1)};
+    void feed(uint8_t id, std::initializer_list<uint8_t> payload, uint32_t nowMs = 10000, uint8_t destination = 0xD8) {
+        std::vector<uint8_t> packet{0xAA, destination, 0xEA, id, static_cast<uint8_t>(payload.size() + 1)};
         packet.insert(packet.end(), payload);
         uint8_t checksum = 0;
         for (uint8_t value : packet) checksum = static_cast<uint8_t>(checksum + value);
@@ -767,6 +771,15 @@ struct CounterBlinkRuntime {
         displayFrame(on, off, 0, bandArrows, bandArrows);
     }
 
+    void zeroVolumeIdle(uint32_t nowMs) {
+        processEarly(nowMs);
+        feed(PACKET_ID_RESP_ALL_VOLUME, {0, 0, 0, 0}, nowMs, 0xD6);
+        feed(PACKET_ID_DISPLAY_DATA, {0x38, 0x38, 0, 0, 0, 0x0C, 0x0C, 0}, nowMs);
+        presentParsedFrame(pipeline, nowMs);
+        TEST_ASSERT_TRUE(parser.getDisplayState().hasVolumeData);
+        TEST_ASSERT_EQUAL_UINT8(0, parser.getDisplayState().mainVolume);
+    }
+
     bool refresh(uint32_t nowMs, DisplayOrchestrationRefreshContext context = {}) {
         mockMillis = nowMs;
         context.nowMs = nowMs;
@@ -782,9 +795,124 @@ struct CounterBlinkRuntime {
         context.bootSplashHoldActive = bootSplashHoldActive;
         context.overloadThisLoop = overloadThisLoop;
         context.bleContext.v1Connected = ble.isConnected();
+        context.bleContext.proxyConnected = ble.isProxyClientConnected();
         orchestration.processEarly(context);
     }
 };
+
+void test_zero_volume_warning_advances_after_terminal_idle_without_packets() {
+    CounterBlinkRuntime runtime;
+    runtime.zeroVolumeIdle(1000);
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x11, 0x5E, 0x56, 0xA0, 0, 0x24, 0x80}, 8000);
+    runtime.feed(PACKET_ID_DISPLAY_DATA, {0x06, 0x06, 0x3F, 0x24, 0x24, 0x0C, 0x0C, 0}, 8000);
+    presentParsedFrame(runtime.pipeline, 8000);
+    runtime.feed(PACKET_ID_ALERT_DATA, {0, 0, 0, 0, 0, 0, 0}, 17000);
+    runtime.zeroVolumeIdle(17000);
+    TEST_ASSERT_EQUAL_UINT(1, volumeWarningDrawCalls);
+    clearObservations();
+
+    // BLE remains connected and sampled, but the last accepted packet is idle.
+    runtime.processEarly(17249);
+    TEST_ASSERT_FALSE(runtime.refresh(17249));
+    runtime.processEarly(17250);
+    TEST_ASSERT_TRUE_MESSAGE(runtime.refresh(17250), "quiet connected idle must advance the warning after 250 ms");
+    TEST_ASSERT_EQUAL_UINT(1, volumeWarningDrawCalls);
+    TEST_ASSERT_EQUAL_UINT(0, frequencyDrawCalls);
+    clearObservations();
+    runtime.processEarly(27000);
+    TEST_ASSERT_TRUE_MESSAGE(runtime.refresh(27000), "the warning must restore ordinary idle after ten seconds");
+    TEST_ASSERT_EQUAL_UINT(0, volumeWarningDrawCalls);
+    TEST_ASSERT_EQUAL_UINT(1, frequencyDrawCalls);
+    runtime.processEarly(27250);
+    TEST_ASSERT_FALSE(runtime.refresh(27250));
+}
+
+void test_zero_volume_warning_starts_without_another_packet() {
+    CounterBlinkRuntime runtime;
+    runtime.zeroVolumeIdle(1000);
+    clearObservations();
+    runtime.processEarly(15999);
+    TEST_ASSERT_FALSE(runtime.refresh(15999));
+    runtime.processEarly(16000);
+    TEST_ASSERT_TRUE_MESSAGE(runtime.refresh(16000), "zero-volume delay must expire without a parsed edge");
+    TEST_ASSERT_EQUAL_UINT(1, volumeWarningDrawCalls);
+}
+
+void test_zero_volume_warning_keeps_presentation_gates_and_live_priority() {
+    CounterBlinkRuntime runtime;
+    runtime.zeroVolumeIdle(1000);
+    runtime.processEarly(16000);
+    DisplayOrchestrationRefreshContext suppressed;
+    suppressed.bootSplashHoldActive = true;
+    TEST_ASSERT_FALSE(runtime.refresh(16000, suppressed));
+    suppressed = {};
+    suppressed.overloadLateThisLoop = true;
+    TEST_ASSERT_FALSE(runtime.refresh(16000, suppressed));
+    suppressed = {};
+    suppressed.pipelineRanThisLoop = true;
+    TEST_ASSERT_FALSE(runtime.refresh(16000, suppressed));
+    runtime.preview.requestHold(1000);
+    TEST_ASSERT_FALSE(runtime.refresh(16000));
+    runtime.preview.cancel();
+    TEST_ASSERT_TRUE(runtime.refresh(16000));
+    TEST_ASSERT_EQUAL_UINT(1, volumeWarningDrawCalls);
+    runtime.processEarly(16000); // Consume the cancelled preview's ordinary restore edge.
+
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x11, 0x5E, 0x56, 0xA0, 0, 0x24, 0x80}, 16100);
+    runtime.feed(PACKET_ID_DISPLAY_DATA, {0x06, 0x06, 0x3F, 0x24, 0x24, 0x0C, 0x0C, 0}, 16100);
+    presentParsedFrame(runtime.pipeline, 16100);
+    clearObservations();
+    runtime.processEarly(16250);
+    TEST_ASSERT_FALSE(runtime.refresh(16250));
+    TEST_ASSERT_EQUAL_UINT(0, volumeWarningDrawCalls);
+    TEST_ASSERT_EQUAL_UINT(0, frequencyDrawCalls);
+    TEST_ASSERT_EQUAL_INT(DisplayMode::LIVE, runtime.mode);
+}
+
+void test_zero_volume_warning_exclusions_cancel_pending_refresh() {
+    for (unsigned exclusion = 0; exclusion < 4; ++exclusion) {
+        setUp();
+        CounterBlinkRuntime runtime;
+        runtime.zeroVolumeIdle(1000);
+        runtime.processEarly(16000);
+        TEST_ASSERT_TRUE(runtime.refresh(16000));
+        if (exclusion == 0) runtime.feed(PACKET_ID_RESP_ALL_VOLUME, {4, 2, 4, 2}, 16100, 0xD6);
+        if (exclusion == 1) runtime.ble.setProxyConnected(true);
+        if (exclusion == 2) runtime.presentation.status.speedVolZeroActive = true;
+        if (exclusion == 3) runtime.parser.resetVolumeState();
+        runtime.processEarly(16100);
+        presentParsedFrame(runtime.pipeline, 16100);
+        clearObservations();
+        runtime.processEarly(17000);
+        TEST_ASSERT_FALSE(runtime.refresh(17000));
+        TEST_ASSERT_EQUAL_UINT(0, volumeWarningDrawCalls);
+        TEST_ASSERT_EQUAL_UINT(0, frequencyDrawCalls);
+    }
+}
+
+void test_zero_volume_warning_delay_and_active_expiry_cross_clock_wrap() {
+    for (const uint32_t first : {UINT32_MAX - 14000u, UINT32_MAX - 20000u}) {
+        setUp();
+        CounterBlinkRuntime runtime;
+        runtime.zeroVolumeIdle(first);
+        clearObservations();
+        const uint32_t start = first + 15000u;
+        runtime.processEarly(start - 1);
+        TEST_ASSERT_FALSE(runtime.refresh(start - 1));
+        runtime.processEarly(start);
+        TEST_ASSERT_TRUE(runtime.refresh(start));
+        TEST_ASSERT_EQUAL_UINT(1, volumeWarningDrawCalls);
+        runtime.processEarly(start + 250u);
+        TEST_ASSERT_TRUE(runtime.refresh(start + 250u));
+        TEST_ASSERT_EQUAL_UINT(2, volumeWarningDrawCalls);
+        clearObservations();
+        runtime.processEarly(start + 10000u);
+        TEST_ASSERT_TRUE(runtime.refresh(start + 10000u));
+        TEST_ASSERT_EQUAL_UINT(1, frequencyDrawCalls);
+        TEST_ASSERT_EQUAL_UINT(0, volumeWarningDrawCalls);
+        TEST_ASSERT_FALSE(runtime.refresh(start + 10250u));
+    }
+}
 
 void assertCounterBlinkCycle(CounterBlinkRuntime& runtime, const char* on) {
     TEST_ASSERT_EQUAL_STRING(on, display.ut_elementCaches().topCounter.lastText);
@@ -1375,6 +1503,11 @@ int main() {
     RUN_TEST(test_idle_junk_counter_blinks_through_parser_pipeline_and_transfer);
     RUN_TEST(test_idle_steady_counter_does_not_request_extra_transfers);
     RUN_TEST(test_v1_persisted_alert_expires_without_another_detector_packet);
+    RUN_TEST(test_zero_volume_warning_advances_after_terminal_idle_without_packets);
+    RUN_TEST(test_zero_volume_warning_starts_without_another_packet);
+    RUN_TEST(test_zero_volume_warning_keeps_presentation_gates_and_live_priority);
+    RUN_TEST(test_zero_volume_warning_exclusions_cancel_pending_refresh);
+    RUN_TEST(test_zero_volume_warning_delay_and_active_expiry_cross_clock_wrap);
     RUN_TEST(test_v1_persisted_alert_expiry_restores_stealth_owner);
     RUN_TEST(test_secondary_card_expires_without_packets_while_primary_stays_steady);
     RUN_TEST(test_secondary_card_expiry_waits_for_existing_presentation_gates);

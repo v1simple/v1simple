@@ -88,6 +88,7 @@ public:
     unsigned long getLastBlinkToggleMs() const { return lastBlinkToggleMs; }
     static constexpr unsigned long getBlinkIntervalMs() { return 96; }
     bool secondaryCardRefreshDue(uint32_t) const { return false; }
+    bool volumeZeroWarningRefreshDue(uint32_t) const { return false; }
     bool isStealthScreen() const { return lifecycleState_.presentation == DisplayMockPresentation::STEALTH; }
     uint32_t renderSeq = 0;
 

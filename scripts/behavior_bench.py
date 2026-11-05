@@ -259,12 +259,17 @@ class Runner:
             last = None
             while time.monotonic() < deadline:
                 try:
-                    self.http.display()
+                    self.http.display(timeout_s=deadline-time.monotonic())
+                    if time.monotonic() >= deadline:
+                        break
                     return actual
                 except Exception as exc:
                     last = exc
-                    try_join_maintenance_wifi(ssid=self.connection["ssid"], timeout_s=min(10, deadline-time.monotonic()))
-                    time.sleep(.25)
+                    remaining = deadline-time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try_join_maintenance_wifi(ssid=self.connection["ssid"], timeout_s=min(30, remaining))
+                    time.sleep(min(.25, max(0., deadline-time.monotonic())))
             raise Incomplete("Maintenance website could not be reached") from last
         return actual
 

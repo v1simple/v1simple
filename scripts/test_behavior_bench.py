@@ -11,6 +11,7 @@ import hashlib
 import os
 from pathlib import Path
 import runpy
+import subprocess
 import sys
 import tempfile
 from types import MethodType, SimpleNamespace
@@ -359,6 +360,106 @@ class InitialReadinessTests(unittest.TestCase):
             self.assertEqual(call.kwargs["deadline"], 45.)
             self.assertEqual(call.kwargs["attempts"], 1)
             self.assertLessEqual(call.kwargs["timeout"], 2.)
+
+
+class MaintenanceReadinessTests(unittest.TestCase):
+    def runner(self):
+        runner = bench.Runner.__new__(bench.Runner)
+        runner.status = Mock(return_value=deepcopy(IDENTITY))
+        runner.expected = {key: IDENTITY[key] for key in ("git", "image")}
+        runner.device = SimpleNamespace(mode=Mock(return_value={**IDENTITY, "mode": "maintenance", "boot": 2}))
+        runner.connection = {"ssid": "Fixture"}
+        runner.http = bench.HttpDevice("http://localhost:18765")
+        return runner
+
+    def test_both_wifi_credentials_fit_and_http_proves_join_when_ssid_is_hidden(self):
+        clock, runner = Clock(), self.runner()
+        state = {"connected": False, "attempts": []}
+        join = bench.try_join_maintenance_wifi
+
+        def execute(command, **kwargs):
+            action = command[1]
+            credential = action == "-setairportnetwork" and len(command) == 5
+            duration = (4.8 if credential else 5.7) if action == "-setairportnetwork" else .025
+            if action == "-setairportnetwork":
+                state["attempts"].append((credential, kwargs["timeout"]))
+            if duration > kwargs["timeout"]:
+                clock.sleep(kwargs["timeout"])
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            clock.sleep(duration)
+            if action == "-listallhardwareports":
+                output = "Hardware Port: Wi-Fi\nDevice: en0\n"
+            elif action == "-getairportnetwork":
+                output = "You are not associated with an AirPort network.\n"
+            else:
+                state["connected"] = credential
+                output = "" if credential else "Failed to join network"
+            return SimpleNamespace(returncode=0, stdout=output)
+
+        def request(endpoint, *, timeout_s):
+            self.assertEqual(endpoint, "/api/display/settings")
+            if not state["connected"]:
+                clock.sleep(min(8., timeout_s))
+                raise OSError("fixture host is on another network")
+            return snapshot()["display"]
+
+        def recover(**kwargs):
+            result = join(**kwargs, run=execute, monotonic=clock)
+            self.assertFalse(result)  # The host masks SSID even after joining.
+            return result
+
+        with patch.object(bench.time, "monotonic", clock), patch.object(bench.time, "sleep", clock.sleep), \
+                patch.object(runner.http, "request", side_effect=request), \
+                patch.object(bench, "try_join_maintenance_wifi", side_effect=recover) as rejoin:
+            self.assertEqual(runner.mode("maintenance")["mode"], "maintenance")
+        self.assertEqual([credential for credential, _ in state["attempts"]], [False, True])
+        self.assertGreaterEqual(state["attempts"][1][1], 4.8)
+        rejoin.assert_called_once_with(ssid="Fixture", timeout_s=30)
+        self.assertLess(clock(), 60.)
+        runner.device.mode.assert_called_once()
+
+    def test_http_and_rejoin_share_one_total_deadline(self):
+        clock, runner = Clock(), self.runner()
+        budgets = []
+        def request(endpoint, *, timeout_s):
+            budgets.append(timeout_s)
+            clock.sleep(min(8., timeout_s))
+            raise OSError("fixture website unavailable")
+        def recover(*, ssid, timeout_s):
+            clock.sleep(timeout_s)
+            return False
+        with patch.object(bench.time, "monotonic", clock), patch.object(bench.time, "sleep", clock.sleep), \
+                patch.object(runner.http, "request", side_effect=request), \
+                patch.object(bench, "try_join_maintenance_wifi", side_effect=recover) as rejoin:
+            with self.assertRaisesRegex(bench.Incomplete, "Maintenance website"):
+                runner.mode("maintenance")
+        self.assertEqual(clock(), 60.)
+        self.assertEqual(budgets, [60., 21.75])
+        self.assertEqual([call.kwargs["timeout_s"] for call in rejoin.call_args_list], [30, 13.75])
+        runner.device.mode.assert_called_once()
+
+    def test_late_valid_http_response_cannot_admit_maintenance(self):
+        clock, runner = Clock(), self.runner()
+        def late(endpoint, *, timeout_s):
+            self.assertEqual(timeout_s, 60.)
+            clock.sleep(60.1)
+            return snapshot()["display"]
+        with patch.object(bench.time, "monotonic", clock), patch.object(bench.time, "sleep", clock.sleep), \
+                patch.object(runner.http, "request", side_effect=late), \
+                patch.object(bench, "try_join_maintenance_wifi") as rejoin:
+            with self.assertRaisesRegex(bench.Incomplete, "Maintenance website"):
+                runner.mode("maintenance")
+        rejoin.assert_not_called()
+        runner.device.mode.assert_called_once()
+
+    def test_optional_display_timeout_keeps_complete_canonical_validation(self):
+        http = bench.HttpDevice("http://localhost:18765")
+        with patch.object(http, "request", return_value=snapshot()["display"]) as request:
+            self.assertEqual(http.display(timeout_s=.5), bench.canonical_display(snapshot()["display"]))
+            request.assert_called_once_with("/api/display/settings", timeout_s=.5)
+            request.return_value = {}
+            with self.assertRaises(ValueError):
+                http.display()
 
 
 class CoordinatorTests(unittest.TestCase):

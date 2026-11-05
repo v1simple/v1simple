@@ -308,8 +308,8 @@ class HttpDevice:
         validate_snapshot(value)
         return value
 
-    def display(self) -> dict:
-        return canonical_display(self.request(ENDPOINTS["display"]))
+    def display(self, *, timeout_s: float | None = None) -> dict:
+        return canonical_display(self.request(ENDPOINTS["display"], timeout_s=timeout_s))
 
     def wait_profile_readable(self, name: str, timeout_s: float = 30) -> dict:
         """Poll only an explicitly busy profile GET; never retry a mutation."""

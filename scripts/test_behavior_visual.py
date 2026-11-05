@@ -273,6 +273,39 @@ class WarningVisualTests(unittest.TestCase):
             self.assertEqual(visual.evaluate_warning_transition(frames, IDENTITY, reference, .005)["result"],
                              "INCOMPLETE")
 
+    def test_observed_background_fringe_keeps_amplitude_hue_and_foreground_guards(self):
+        on = warning_fixture()
+        dim = warning_fixture(color=(40, 8, 3))
+        off = warning_fixture("     ")
+        _, reference = self.series()
+        x, y, scale = self.on["warning"]["fitted_geometry"]
+        cx, cy = round(x + 27.5 * scale), round(y + 3.5 * scale)
+
+        def marked(image, color):
+            result = image.copy()
+            result[cy-1:cy+2, cx-1:cx+2] = color
+            return result
+
+        cases = [
+            ("observed fringe", [marked(on, (40, 8, 3)), marked(on, (20, 4, 2)),
+                                  marked(dim, (40, 8, 3)), off], .01, "PASS"),
+            ("unwitnessed addition", [on, marked(on, (20, 4, 2)),
+                                       marked(dim, (40, 8, 3)), off], .01, "INCOMPLETE"),
+            ("coherent amplitude reversal", [marked(on, (40, 8, 3)), marked(on, (20, 4, 2)),
+                                              marked(dim, (80, 8, 3)), off], .01, "INCOMPLETE"),
+            ("wrong source hue", [marked(on, (40, 100, 3)), marked(on, (20, 4, 2)),
+                                   marked(dim, (40, 8, 3)), off], .01, "INCOMPLETE"),
+            ("coherent new hue", [marked(on, (40, 8, 3)), marked(on, (20, 4, 2)),
+                                   marked(dim, (10, 10, 230)), off], .01, "INCOMPLETE"),
+            ("foreground reappearance", [on, warning_fixture(" OL 0", color=(40, 8, 3)),
+                                          dim, off], .005, "INCOMPLETE"),
+        ]
+        for name, images, target, expected in cases:
+            with self.subTest(case=name):
+                proof = visual.evaluate_warning_transition(warning_native_frames(images), IDENTITY,
+                                                           reference, target)
+                self.assertEqual(proof["result"], expected, proof)
+
     def test_native_edge_intervals_keep_raw_unknown_and_cannot_hide_bad_cadence(self):
         on, off = warning_fixture(), warning_fixture("     ")
         dim = warning_fixture(color=(40, 8, 3))

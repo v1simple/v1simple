@@ -328,6 +328,24 @@ def evaluate_warning_transition(frames, registration, idle_reference, target_s):
             + integral[ys - 1, xs - 1]
         ) >= 5
 
+    # Full-glyph neighbors can prove that a background cell already contains
+    # a visible optical edge. Only its absolute visibility crossing is then
+    # ambiguous; all existing delta/content/reversal gates remain mandatory.
+    witnessed_background = np.zeros_like(wanted)
+    for frame, state in zip(frames, states):
+        if state != "on":
+            continue
+        baseline = registered_pixels(frame["rgb"], registration)[
+            230:375, 450:880
+        ].astype(np.float64)
+        baseline_red = baseline[:, :, 0]
+        visible_red = (
+            (baseline_red >= 35)
+            & (baseline_red >= baseline[:, :, 1] * 1.3)
+            & (baseline_red >= baseline[:, :, 2] * 1.5)
+        )
+        witnessed_background |= cell_majorities(visible_red) & ~wanted
+
     detail = []
     previous = None
     for source, pixel in zip(selected, pixels):
@@ -338,6 +356,7 @@ def evaluate_warning_transition(frames, registration, idle_reference, target_s):
         )
         extra = int((lit & ~allowed).sum())
         wrong_hue = int((lit & ~red).sum())
+        wrong_hue_cells = int(cell_majorities(lit & ~red).sum())
         outside = int(((red_channel <= low - 35) | (red_channel >= high + 35)).sum())
         reverse = (
             np.zeros_like(allowed)
@@ -349,7 +368,11 @@ def evaluate_warning_transition(frames, registration, idle_reference, target_s):
         # optical noise, even with a nonzero camera background. Reuse the
         # decoder's absolute35 visibility floor and 3x3 cell majority.
         new_cells = int(
-            (cell_majorities((red_channel >= 35) & (high < 35)) & ~wanted).sum()
+            (
+                cell_majorities((red_channel >= 35) & (high < 35))
+                & ~wanted
+                & ~witnessed_background
+            ).sum()
         )
         visibility_reverse = (
             np.zeros_like(allowed)
@@ -360,7 +383,12 @@ def evaluate_warning_transition(frames, registration, idle_reference, target_s):
                 else ((red_channel >= 35) & (previous < 35))
             )
         )
-        reverse_cells = int(cell_majorities(reverse | visibility_reverse).sum())
+        reverse_cells = int(
+            (
+                (cell_majorities(reverse | visibility_reverse) & ~witnessed_background)
+                | cell_majorities(reverse)
+            ).sum()
+        )
         detail.append(
             {
                 "time_s": source["time_s"],
@@ -371,10 +399,12 @@ def evaluate_warning_transition(frames, registration, idle_reference, target_s):
                 "reverse_cells": reverse_cells,
                 "extra_lit_pixels": extra,
                 "wrong_hue_pixels": wrong_hue,
+                "wrong_hue_cells": wrong_hue_cells,
             }
         )
         if (
-            new_cells
+            wrong_hue_cells
+            or new_cells
             or reverse_cells
             or max(outside, reversed_pixels, extra, wrong_hue) > budget
         ):
@@ -406,7 +436,7 @@ def evaluate_warning_transition(frames, registration, idle_reference, target_s):
         "budget": budget,
         "inspected_native_frames": len(frames),
         "details": detail,
-        "interpretation": "one short monotone optical transition; intermediate subsets are not stable text proof",
+        "interpretation": "one short optical transition within the existing noise bounds; intermediate subsets are not stable text proof",
     }
 
 

@@ -46,6 +46,153 @@ async function startNew() {
 }
 
 describe('mounted authoring session boundaries', () => {
+    it.each(['unchanged', 'cancel', 'reset then cancel', 'reset then cancel after ACK', 'cancel and reopen', 'reopen then cancel after ACK'])(
+        'retains acknowledged fields on the next description-only save after %s', async (transition) => {
+            const save = pending();
+            let saves = 0;
+            const mock = install([{ method: 'POST', match: '/api/v1/profile', respond: () =>
+                ++saves === 1 ? save.response : jsonResponse({ success: true }) }]);
+            const view = render(Page);
+            try {
+                const row = (await screen.findByText('Daily', { exact: true })).closest('.surface-panel');
+                await fireEvent.click(within(row).getByRole('button', { name: 'Edit', exact: true }));
+                await screen.findByText('Editing profile: Daily');
+                const editor = within(document.getElementById('profile-editor'));
+                await fireEvent.click(screen.getByLabelText('X Band'));
+                await fireEvent.click(editor.getByRole('button', { name: 'Save Profile', exact: true }));
+                await waitFor(() => expect(postCalls(mock, '/api/v1/profile')).toHaveLength(1));
+                const first = JSON.parse(postCalls(mock, '/api/v1/profile')[0][1].body);
+                expect(first.settings.xBand).toBe(false);
+
+                if (transition.startsWith('reset')) {
+                    await fireEvent.click(screen.getByText('Reset this draft', { exact: true }));
+                    await fireEvent.click(editor.getByRole('button', { name: 'Reset this draft to local defaults' }));
+                }
+                if (transition !== 'unchanged' && transition !== 'reset then cancel after ACK') {
+                    await fireEvent.click(editor.getByRole('button', { name: 'Cancel', exact: true }));
+                }
+                const reopened = transition.includes('reopen');
+                if (reopened) {
+                    await fireEvent.click(editor.getByRole('button', { name: 'Edit', exact: true }));
+                    await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'Later unsent description' } });
+                }
+                save.resolve(jsonResponse({ success: true }));
+                await screen.findByText('Profile "Daily" saved');
+                if (transition.endsWith('after ACK')) {
+                    await fireEvent.click(editor.getByRole('button', { name: 'Cancel', exact: true }));
+                }
+                if (transition !== 'cancel and reopen') {
+                    expect(screen.getByLabelText('X Band')).toBeDisabled();
+                    await fireEvent.click(editor.getByRole('button', { name: 'Edit', exact: true }));
+                } else {
+                    expect(screen.getByLabelText('Description')).toHaveValue('Later unsent description');
+                }
+                await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'Only a new description' } });
+                await fireEvent.click(editor.getByRole('button', { name: 'Save Profile', exact: true }));
+                await waitFor(() => expect(postCalls(mock, '/api/v1/profile')).toHaveLength(2));
+                const second = JSON.parse(postCalls(mock, '/api/v1/profile')[1][1].body);
+                expect(second).toEqual({ ...first, description: 'Only a new description' });
+                expect(mock.mock.calls.filter(([url]) => url.startsWith('/api/v1/profile?'))).toHaveLength(1);
+                expect(postCalls(mock, '/api/v1/apply')).toHaveLength(0);
+            } finally { view.unmount(); }
+        }
+    );
+
+    it.each([false, true])('reselects a pending saved profile without an obsolete read (via another profile: %s)', async (viaOther) => {
+        const save = pending();
+        const obsoleteRead = pending();
+        let saves = 0;
+        let dailyReads = 0;
+        const daily = { schemaVersion: 4, name: 'Daily', description: 'Original', settings: { xBand: true } };
+        const mock = install([
+            { method: 'GET', match: '/api/v1/profiles', respond: jsonResponse({
+                schemaVersion: 4, profiles: [{ name: 'Daily' }, { name: 'Night' }]
+            }) },
+            { method: 'GET', match: '/api/v1/profile?name=Daily', respond: () =>
+                ++dailyReads === 1 ? jsonResponse(daily) : obsoleteRead.response },
+            { method: 'GET', match: '/api/v1/profile?name=Night', respond: jsonResponse({ ...daily, name: 'Night' }) },
+            { method: 'POST', match: '/api/v1/profile', respond: () =>
+                ++saves === 1 ? save.response : jsonResponse({ success: true }) }
+        ]);
+        const view = render(Page);
+        const select = async (name) => {
+            const row = (await screen.findByText(name, { exact: true })).closest('.surface-panel');
+            const details = row.closest('details');
+            if (!details.open) await fireEvent.click(details.querySelector('summary'));
+            await fireEvent.click(within(row).getByRole('button', { name: 'Edit', exact: true }));
+            await screen.findByText(`Editing profile: ${name}`);
+        };
+        try {
+            await select('Daily');
+            await fireEvent.click(screen.getByLabelText('X Band'));
+            await fireEvent.click(screen.getByRole('button', { name: 'Save Profile', exact: true }));
+            await waitFor(() => expect(postCalls(mock, '/api/v1/profile')).toHaveLength(1));
+            if (viaOther) await select('Night');
+            await select('Daily');
+            await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'Reselected intent' } });
+            expect(dailyReads).toBe(1);
+            save.resolve(jsonResponse({ success: true }));
+            await screen.findByText('Profile "Daily" saved');
+            // A pending selection must not start a GET that could arrive after ACK.
+            await act(async () => obsoleteRead.resolve(jsonResponse(daily)));
+            expect(screen.getByLabelText('Description')).toHaveValue('Reselected intent');
+            expect(screen.getByLabelText('X Band')).not.toBeChecked();
+            await fireEvent.click(screen.getByRole('button', { name: 'Save Profile', exact: true }));
+            await waitFor(() => expect(postCalls(mock, '/api/v1/profile')).toHaveLength(2));
+            const payloads = postCalls(mock, '/api/v1/profile').map(([, init]) => JSON.parse(init.body));
+            expect(payloads[1]).toEqual({ ...payloads[0], description: 'Reselected intent' });
+            expect(mock.mock.calls.filter(([url]) => url.startsWith('/api/v1/profile?'))).toHaveLength(viaOther ? 2 : 1);
+        } finally { view.unmount(); }
+    });
+
+    it.each(['before ACK', 'after ACK'])('retires an older selection read when Save starts, even if it returns %s', async (responseOrder) => {
+        const save = pending();
+        const olderRead = pending();
+        let saves = 0;
+        let reads = 0;
+        const original = { schemaVersion: 4, name: 'Daily', description: 'Original', settings: { xBand: true } };
+        const finishOlderRead = async () => {
+            const json = vi.fn(async () => original);
+            olderRead.resolve({ ok: true, json });
+            await waitFor(() => expect(json).toHaveBeenCalledOnce());
+            await act(async () => {});
+        };
+        const mock = install([
+            { method: 'GET', match: '/api/v1/profile?name=Daily', respond: () =>
+                ++reads === 1 ? jsonResponse(original) : olderRead.response },
+            { method: 'POST', match: '/api/v1/profile', respond: () =>
+                ++saves === 1 ? save.response : jsonResponse({ success: true }) }
+        ]);
+        const view = render(Page);
+        try {
+            const row = (await screen.findByText('Daily', { exact: true })).closest('.surface-panel');
+            await fireEvent.click(within(row).getByRole('button', { name: 'Edit', exact: true }));
+            await screen.findByText('Editing profile: Daily');
+            await fireEvent.click(screen.getByLabelText('X Band'));
+            const savedRow = screen.getByText('Daily', { exact: true }).closest('.surface-panel');
+            await fireEvent.click(savedRow.closest('details').querySelector('summary'));
+            await fireEvent.click(within(savedRow).getByRole('button', { name: 'Edit', exact: true }));
+            await waitFor(() => expect(reads).toBe(2));
+            await fireEvent.click(screen.getByRole('button', { name: 'Save Profile', exact: true }));
+            await waitFor(() => expect(postCalls(mock, '/api/v1/profile')).toHaveLength(1));
+            if (responseOrder === 'before ACK') await finishOlderRead();
+            save.resolve(jsonResponse({ success: true }));
+            await screen.findByText('Profile "Daily" saved');
+            if (responseOrder === 'after ACK') await finishOlderRead();
+            expect(screen.getByLabelText('X Band')).toBeDisabled();
+            expect(screen.getByLabelText('X Band')).not.toBeChecked();
+            const editor = within(document.getElementById('profile-editor'));
+            await fireEvent.click(editor.getByRole('button', { name: 'Edit', exact: true }));
+            await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'Only a new description' } });
+            await fireEvent.click(editor.getByRole('button', { name: 'Save Profile', exact: true }));
+            await waitFor(() => expect(postCalls(mock, '/api/v1/profile')).toHaveLength(2));
+            const payloads = postCalls(mock, '/api/v1/profile').map(([, init]) => JSON.parse(init.body));
+            expect(payloads[0].settings.xBand).toBe(false);
+            expect(payloads[1]).toEqual({ ...payloads[0], description: 'Only a new description' });
+            expect(reads).toBe(2);
+        } finally { view.unmount(); }
+    });
+
     it('keeps a new naming dialog and editor open when the identical old dialog save completes', async () => {
         const save = pending();
         const mock = install([{ method: 'POST', match: '/api/v1/profile', respond: () => save.response }]);

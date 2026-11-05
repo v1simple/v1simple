@@ -236,6 +236,13 @@
         authoring.cancel();
     }
 
+    function saveEditedProfile() {
+        // This Save supersedes earlier selections; later selections still own
+        // their independent load generation and authoring source.
+        profileLoadGeneration += 1;
+        return authoring.saveEdit(deletingProfile);
+    }
+
     async function copyProfile(name) {
         const loadGeneration = ++profileLoadGeneration;
         try {
@@ -261,6 +268,11 @@
 
     async function editProfile(name) {
         const loadGeneration = ++profileLoadGeneration;
+        if (authoring.reeditPending(name)) {
+            message = null;
+            void focusEditor();
+            return;
+        }
         message = { type: 'info', text: `Loading ${name}...` };
         try {
             const res = await fetchWithTimeout(
@@ -404,7 +416,7 @@
                 ? customFrequencyError(authoring.draft.settings, authoring.draft.detector)
                 : null}
             oncancelEditing={cancelProfileEditing}
-            onsaveEditedProfile={() => authoring.saveEdit(deletingProfile)}
+            onsaveEditedProfile={saveEditedProfile}
             oncreateNewProfile={createNewProfile}
             onstartEditing={startEditing}
             onaddCustomFrequencyRange={addCustomFrequencyRange}

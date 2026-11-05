@@ -112,6 +112,87 @@ describe('profile authoring submitted contents and completion policies', () => {
         expect(Object.values(owner.draft.inTheBox.bands).every((band) => !band.muteOutside && !band.unmuteInside)).toBe(true);
     });
 
+    it.each(['reopen', 'reset'])('advances an Edit baseline while preserving later %s changes in every domain', async (transition) => {
+        const state = pendingSave();
+        const { owner } = state;
+        const source = owner.acceptedProfile;
+        owner.draft.settings.x = false;
+        owner.draft.detector.display = 'on';
+        owner.draft.inTheBox.bands.k.muteOutside = true;
+        owner.draft.description = 'Submitted description';
+        const promise = owner.saveEdit();
+        const transmitted = JSON.parse(fetch.mock.calls[0][1].body);
+        if (transition === 'reopen') {
+            owner.cancel();
+            owner.reedit();
+            expect(owner.draft.settings.x).toBe(false);
+            expect(owner.draft.detector.display).toBe('on');
+            expect(owner.draft.inTheBox.bands.k.muteOutside).toBe(true);
+            expect(owner.draft.description).toBe('Submitted description');
+            owner.draft.settings.k = true;
+            owner.draft.settings.baseBytes[0] = 0;
+            owner.draft.detector.customFrequencyDefinitions[0].lowerMHz = 23920;
+            owner.draft.inTheBox.boxes.x.lowerMHz = 10502;
+            owner.draft.description = 'Later unsent description';
+        } else owner.resetEditableDomains();
+        const draft = owner.draft;
+        const later = { settings: JSON.stringify(draft.settings), detector: JSON.stringify(draft.detector),
+            inTheBox: JSON.stringify(draft.inTheBox), description: draft.description };
+        expect(owner.acceptedProfile).toBe(source);
+        expect(owner.acceptedProfile.settings.x).toBe(true);
+        state.resolve({ ok: true });
+        await promise;
+        expect(owner.draft).toBe(draft);
+        expect(owner.draft.source).toBe(owner.acceptedProfile);
+        expect(owner.acceptedProfile.settings.x).toBe(false);
+        expect(owner.acceptedProfile.settings.baseBytes).toEqual(transmitted.settings.baseBytes);
+        expect(owner.acceptedProfile.detector.display).toBe('on');
+        expect(owner.acceptedProfile.detector.customFrequencyDefinitions[0].lowerMHz).toBe(23910);
+        expect(owner.acceptedProfile.inTheBox.bands.k.muteOutside).toBe(true);
+        expect(owner.acceptedProfile.inTheBox.boxes.x.lowerMHz).toBe(10501);
+        expect(owner.acceptedProfile.description).toBe('Submitted description');
+        expect({ settings: JSON.stringify(draft.settings), detector: JSON.stringify(draft.detector),
+            inTheBox: JSON.stringify(draft.inTheBox), description: draft.description }).toEqual(later);
+        expect(fetch).toHaveBeenCalledOnce();
+    });
+
+    it.each(['new', 'captured', 'copy', 'other profile'])('does not replace a later %s selection after an Edit ACK', async (selection) => {
+        const state = pendingSave();
+        state.owner.draft.settings.x = false;
+        const promise = state.owner.saveEdit();
+        if (selection === 'new') state.owner.beginNew();
+        if (selection === 'captured') state.owner.beginCaptured({ settings: { bytes: [1, 2, 3, 4, 5, 6] } });
+        if (selection === 'copy') state.owner.beginCopy(document, []);
+        if (selection === 'other profile') state.owner.beginEdit({ ...document, name: 'Other' });
+        const live = { source: state.owner.acceptedProfile, draft: state.owner.draft, dialog: state.owner.namingDialog };
+        state.resolve({ ok: true });
+        await promise;
+        expect(state.owner.acceptedProfile).toBe(live.source);
+        expect(state.owner.draft).toBe(live.draft);
+        expect(state.owner.namingDialog).toBe(live.dialog);
+        expect(state.onSaved).toHaveBeenCalledExactlyOnceWith('Daily', 'Original', true);
+    });
+
+    it.each(['rejected', 'lost response'])('keeps a reopened Edit retryable without accepting the submission on %s', async (failure) => {
+        const state = pendingSave();
+        const source = state.owner.acceptedProfile;
+        state.owner.draft.settings.x = false;
+        const promise = state.owner.saveEdit();
+        state.owner.cancel();
+        state.owner.reedit();
+        state.owner.draft.description = 'Later unsent description';
+        if (failure === 'rejected') state.resolve({ ok: false, text: async () => 'Storage unavailable' });
+        else state.reject(new Error('Lost acknowledgement'));
+        await promise;
+        expect(state.owner.acceptedProfile).toBe(source);
+        expect(state.owner.acceptedProfile.settings.x).toBe(true);
+        expect(state.owner.draft.settings.x).toBe(false);
+        expect(state.owner.draft.description).toBe('Later unsent description');
+        expect(state.owner.savingProfile).toBeNull();
+        expect(state.onSaved).not.toHaveBeenCalled();
+        expect(fetch).toHaveBeenCalledOnce();
+    });
+
     it.each(['missing response', 'unreadable rejection'])('keeps the entire draft without retry on %s', async (failure) => {
         const state = pendingSave();
         const draft = state.owner.draft;

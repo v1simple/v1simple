@@ -164,14 +164,14 @@ export function createProfileAuthoring({ onSaved, onMessage }) {
         if (!disposed) onMessage(message);
     }
 
-    function begin(source, kind, suggestedName = '') {
+    function begin(source, kind, suggestedName = '', values = source) {
         acceptedProfile = source;
         draft = {
             id: ++nextIdentity, source: acceptedProfile, kind, suggestedName,
-            settings: cloneSettings(source.settings),
-            detector: cloneDetectorConfiguration(source.detector),
-            inTheBox: cloneInTheBoxSettings(source.inTheBox),
-            description: source.description || ''
+            settings: cloneSettings(values.settings),
+            detector: cloneDetectorConfiguration(values.detector),
+            inTheBox: cloneInTheBoxSettings(values.inTheBox),
+            description: values.description || ''
         };
         namingDialog = null;
     }
@@ -194,6 +194,14 @@ export function createProfileAuthoring({ onSaved, onMessage }) {
 
     function cancel() {
         draft = null;
+    }
+
+    function reeditPending(name) {
+        if (submitted?.intent !== 'edit' || submitted.name !== name) return false;
+        // Keep the submitted source until ACK. A concurrent load could still
+        // return its older contents, even after this save has been acknowledged.
+        begin(submitted.source, 'edit', '', submitted.profile);
+        return true;
     }
 
     async function save(intent, profiles, blocked) {
@@ -234,7 +242,12 @@ export function createProfileAuthoring({ onSaved, onMessage }) {
         };
         const submission = {
             name, intent, source, editorId: editor?.id, dialogId: dialog?.id,
-            descriptionAtStart: editor?.description, prepared
+            descriptionAtStart: editor?.description,
+            profile: {
+                ...source, draft: false, name, description: prepared.description,
+                settings: prepared.savedSettings, detector: prepared.savedDetector,
+                inTheBox: prepared.savedInTheBox
+            }
         };
         submitted = submission;
         if (!creating) publish({ type: 'info', text: `Saving ${name}...` });
@@ -249,7 +262,14 @@ export function createProfileAuthoring({ onSaved, onMessage }) {
             }
             const { payload } = response;
             onSaved(name, payload.description, true);
-            const sameEditor = acceptedProfile === source && draft?.id === submission.editorId;
+            const sameSource = acceptedProfile === source;
+            const sameEditor = sameSource && draft?.id === submission.editorId;
+            // Edit acknowledgement advances the saved source even if its editor
+            // was canceled or reset. A newly selected source owns its own state.
+            if (sameSource && (!creating || sameEditor)) {
+                acceptedProfile = submission.profile;
+                if (draft?.source === source) draft.source = acceptedProfile;
+            }
             if (sameEditor) {
                 const dialogUnchanged = !creating || (namingDialog?.id === submission.dialogId &&
                     namingDialog.name.trim() === name && namingDialog.description.trim() === payload.description);
@@ -261,13 +281,6 @@ export function createProfileAuthoring({ onSaved, onMessage }) {
                         : draft.description.trim() === payload.description) && settingsUnchanged &&
                     detectorConfigurationsEqual(draft.detector, prepared.savedDetector) &&
                     inTheBoxConfigurationsEqual(draft.inTheBox, prepared.savedInTheBox));
-                acceptedProfile = {
-                    ...source, draft: false, name, description: payload.description,
-                    settings: prepared.savedSettings, detector: prepared.savedDetector,
-                    inTheBox: prepared.savedInTheBox
-                };
-                // Keep later unsent edits attached to the acknowledged source.
-                if (draft) draft.source = acceptedProfile;
                 if (draftUnchanged && dialogUnchanged) cancel();
                 if (creating && dialogUnchanged) namingDialog = null;
             }
@@ -296,7 +309,13 @@ export function createProfileAuthoring({ onSaved, onMessage }) {
             openNamingDialog();
         },
         beginEdit(data) { begin(decodedProfile(data), 'edit'); },
-        reedit() { if (acceptedProfile?.settings) begin(acceptedProfile, 'edit'); },
+        reedit() {
+            if (!acceptedProfile?.settings) return;
+            // Reopening a pending Edit starts from what was sent, without
+            // declaring it accepted or letting later edits mutate the request.
+            if (!reeditPending(acceptedProfile.name)) begin(acceptedProfile, 'edit');
+        },
+        reeditPending,
         resetEditableDomains() {
             if (draft) draft = { ...draft, id: ++nextIdentity, ...defaults() };
         },

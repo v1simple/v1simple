@@ -1,4 +1,166 @@
 #include "../support/audio_worker_harness.h"
+#include <algorithm>
+#include <cstring>
+#include <fstream>
+#include <iterator>
+
+// Independent G.711 expansion and literal phrase expectations. Do not use the
+// production lookup table or its chosen filenames to generate this oracle.
+static int16_t referenceMulaw(uint8_t encoded) {
+    const uint8_t value = static_cast<uint8_t>(~encoded);
+    const int magnitude = ((value & 0x0f) * 8 + 132) << ((value >> 4) & 7);
+    return static_cast<int16_t>((value & 0x80) ? 132 - magnitude : magnitude - 132);
+}
+
+static std::vector<int16_t> referencePhrase(std::initializer_list<const char*> clips) {
+    TEST_ASSERT_EQUAL_INT16(-32124, referenceMulaw(0));
+    TEST_ASSERT_EQUAL_INT16(32124, referenceMulaw(128));
+    TEST_ASSERT_EQUAL_INT16(0, referenceMulaw(127));
+    TEST_ASSERT_EQUAL_INT16(0, referenceMulaw(255));
+    std::vector<int16_t> expected;
+    for (const char* clip : clips) {
+        const auto path = std::filesystem::path(PROJECT_DIR) / "tools/freq_audio/mulaw" / clip;
+        std::ifstream input(path, std::ios::binary);
+        TEST_ASSERT_TRUE_MESSAGE(input.good(), clip);
+        const std::vector<char> bytes{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+        TEST_ASSERT_FALSE_MESSAGE(bytes.empty(), clip);
+        for (const char byte : bytes) {
+            const int16_t sample = referenceMulaw(static_cast<uint8_t>(byte));
+            expected.push_back(sample);
+            expected.push_back(sample);
+        }
+    }
+    return expected;
+}
+
+static std::vector<int16_t> capturedPcm(bool acceptedOnly = true) {
+    std::vector<int16_t> samples;
+    for (const auto& write : g_mock_i2s_state.pcmWrites) {
+        const size_t bytes = acceptedOnly ? write.acceptedBytes : write.submitted.size();
+        TEST_ASSERT_LESS_OR_EQUAL_UINT(write.submitted.size(), bytes);
+        TEST_ASSERT_EQUAL_UINT(0, bytes % (2 * sizeof(int16_t)));
+        const size_t offset = samples.size();
+        samples.resize(offset + bytes / sizeof(int16_t));
+        if (bytes) std::memcpy(samples.data() + offset, write.submitted.data(), bytes);
+    }
+    return samples;
+}
+
+static void assertPhrase(const std::vector<int16_t>& expected) {
+    const auto actual = capturedPcm();
+    TEST_ASSERT_EQUAL_UINT(expected.size(), actual.size());
+    TEST_ASSERT_EQUAL_INT16_ARRAY(expected.data(), actual.data(), expected.size());
+    for (const auto& write : g_mock_i2s_state.pcmWrites) {
+        TEST_ASSERT_EQUAL(ESP_OK, write.result);
+        TEST_ASSERT_EQUAL_UINT(write.submitted.size(), write.acceptedBytes);
+    }
+}
+
+static void configureFullPhrase(AudioRuntime& runtime) {
+    runtime.settings.settings.voiceAlertMode = VOICE_MODE_BAND_FREQ;
+    runtime.settings.settings.voiceDirectionEnabled = true;
+    runtime.settings.settings.announceBogeyCount = false;
+    runtime.settings.settings.announceSecondaryAlerts = false;
+    g_mock_i2s_state.capturePcm = true;
+}
+
+void test_parsed_full_phrase_emits_exact_stereo_pcm_once() {
+    AudioRuntime runtime;
+    configureFullPhrase(runtime);
+    audio_set_volume(100);
+    g_mock_i2s_state.onWrite = [] { TEST_ASSERT_EQUAL_UINT8(0xbf, lastVolumeRegister()); };
+    runtime.alert(34700);
+    runAcceptedJob();
+    const auto expected = referencePhrase({"band_ka.mul", "tens_34.mul", "digit_7.mul", "tens_00.mul", "dir_ahead.mul"});
+    assertPhrase(expected);
+    for (unsigned i = 0; i < 20; ++i) {
+        mockMillis += 100;
+        runtime.alert(34700);
+    }
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+    assertPhrase(expected);
+}
+
+void test_detector_zero_then_live_and_new_episode_preserve_exact_pcm() {
+    AudioRuntime runtime;
+    configureFullPhrase(runtime);
+    runtime.settings.settings.muteVoiceIfVolZero = true;
+    runtime.packet(PACKET_ID_RESP_ALL_VOLUME, {0, 0, 4, 0});
+    runtime.alert(34700);
+    TEST_ASSERT_FALSE(audio_playing.load());
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
+    TEST_ASSERT_TRUE(g_mock_i2s_state.pcmWrites.empty());
+    mockMillis += 100;
+    runtime.packet(PACKET_ID_RESP_ALL_VOLUME, {4, 0, 4, 0});
+    runtime.alert(34700);
+    runAcceptedJob();
+    auto expected = referencePhrase({"band_ka.mul", "tens_34.mul", "digit_7.mul", "tens_00.mul", "dir_ahead.mul"});
+    assertPhrase(expected);
+    mockMillis += 100;
+    runtime.alert(34700); // Consume the receipt before ending this episode.
+    runtime.clear();
+    mockMillis += 3000;
+    runtime.clear();
+    // Literal wire frame: one priority X10.525 alert from behind.
+    runtime.packet(PACKET_ID_ALERT_DATA, {0x11, 0x29, 0x1d, 0xac, 0, 0x88, 0x80});
+    runtime.present(mockMillis);
+    runAcceptedJob();
+    const auto next = referencePhrase({"band_x.mul", "tens_10.mul", "digit_5.mul", "tens_25.mul", "dir_behind.mul"});
+    expected.insert(expected.end(), next.begin(), next.end());
+    assertPhrase(expected);
+    for (unsigned i = 0; i < 20; ++i) {
+        mockMillis += 100;
+        runtime.present(mockMillis);
+    }
+    TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
+    assertPhrase(expected);
+}
+
+void test_local_speaker_zero_keeps_pcm_and_applies_codec_mute_at_every_write() {
+    AudioRuntime runtime;
+    configureFullPhrase(runtime);
+    audio_set_volume(0);
+    g_mock_i2s_state.onWrite = [] { TEST_ASSERT_EQUAL_UINT8(0, lastVolumeRegister()); };
+    runtime.alert(34700);
+    runAcceptedJob();
+    const auto expected = referencePhrase({"band_ka.mul", "tens_34.mul", "digit_7.mul", "tens_00.mul", "dir_ahead.mul"});
+    assertPhrase(expected);
+    // Codec mute, not zero PCM, is the local speaker's hardware contract.
+    TEST_ASSERT_TRUE(std::any_of(expected.begin(), expected.end(), [](int16_t sample) { return sample != 0; }));
+}
+
+void test_volume_preview_emits_only_ka_ahead_pcm() {
+    g_mock_i2s_state.capturePcm = true;
+    play_test_voice();
+    runAcceptedJob();
+    assertPhrase(referencePhrase({"band_ka.mul", "dir_ahead.mul"}));
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+}
+
+void test_failed_pcm_write_preserves_exact_submitted_prefix_without_retry() {
+    AudioRuntime runtime;
+    configureFullPhrase(runtime);
+    runtime.alert(34700);
+    g_mock_i2s_state.writeResults = {ESP_OK, ESP_ERR_TIMEOUT};
+    runAcceptedJob();
+    const auto expected = referencePhrase({"band_ka.mul", "tens_34.mul", "digit_7.mul", "tens_00.mul", "dir_ahead.mul"});
+    TEST_ASSERT_EQUAL_UINT(2, g_mock_i2s_state.pcmWrites.size());
+    const auto submitted = capturedPcm(false);
+    const auto accepted = capturedPcm();
+    TEST_ASSERT_GREATER_THAN_UINT(0, accepted.size());
+    TEST_ASSERT_LESS_THAN_UINT(submitted.size(), accepted.size());
+    TEST_ASSERT_LESS_THAN_UINT(expected.size(), submitted.size());
+    TEST_ASSERT_EQUAL_INT16_ARRAY(expected.data(), submitted.data(), submitted.size());
+    TEST_ASSERT_EQUAL_INT16_ARRAY(expected.data(), accepted.data(), accepted.size());
+    TEST_ASSERT_EQUAL(ESP_ERR_TIMEOUT, g_mock_i2s_state.pcmWrites[1].result);
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.pcmWrites[1].acceptedBytes);
+    for (unsigned i = 0; i < 20; ++i) {
+        mockMillis += 100;
+        runtime.alert(34700);
+    }
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+    TEST_ASSERT_EQUAL_UINT(2, g_mock_i2s_state.pcmWrites.size());
+}
 
 void test_failed_mute_is_applied_before_first_pcm_without_another_user_request() {
     mock_queue_semaphore_take_result(pdFALSE);
@@ -1477,6 +1639,11 @@ int main() {
     std::filesystem::copy(std::filesystem::path(PROJECT_DIR) / "tools" / "freq_audio" / "mulaw",
                           audioRoot / "audio", std::filesystem::copy_options::recursive);
     UNITY_BEGIN();
+    RUN_TEST(test_parsed_full_phrase_emits_exact_stereo_pcm_once);
+    RUN_TEST(test_detector_zero_then_live_and_new_episode_preserve_exact_pcm);
+    RUN_TEST(test_local_speaker_zero_keeps_pcm_and_applies_codec_mute_at_every_write);
+    RUN_TEST(test_volume_preview_emits_only_ka_ahead_pcm);
+    RUN_TEST(test_failed_pcm_write_preserves_exact_submitted_prefix_without_retry);
     RUN_TEST(test_cancel_before_worker_dispatch_never_prepares_or_writes_pcm);
     RUN_TEST(test_cancel_during_each_startup_yield_prevents_pcm_and_finishes_cleanup);
     RUN_TEST(test_cancel_at_either_startup_retry_stops_remaining_attempts);

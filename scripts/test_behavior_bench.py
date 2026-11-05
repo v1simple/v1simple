@@ -3,10 +3,12 @@
 These checks exercise admission, durable intent, and recovery after independent
 camera/browser/replay failures. Pixel and firmware behavior need their own tests.
 """
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, nullcontext, redirect_stderr, redirect_stdout
 from copy import deepcopy
 import json
 import io
+import hashlib
+import os
 from pathlib import Path
 import runpy
 import sys
@@ -24,24 +26,31 @@ IDENTITY = {"git": "123abcd", "image": "abcdef123", "mode": "normal", "boot": 1,
 
 
 class Fixture:
-    def __init__(self, directory, failures=()):
+    def __init__(self, directory, failures=(), suite="colors"):
         self.directory = directory
+        self.suite = suite
         self.failures = set(failures)
         self.events = []
         self.config = snapshot()
+        self.documents = {}
+        if suite == "profiles":
+            self.config["backup"]["profiles"] = []
         self.initial = deepcopy(self.config)
         self.status_value = deepcopy(IDENTITY)
         self.runner = None
         owner = self
 
         class Http(bench.HttpDevice):
-            def request(self, endpoint, fields=None):
+            def request(self, endpoint, fields=None, *, timeout_s=None):
                 if fields is not None:
                     if endpoint == "/api/display/settings":
                         owner.events.append("restore_write")
                         if "restore" in owner.failures:
                             raise OSError("fixture restore response lost")
                         owner.config["display"].update(fields)
+                    elif endpoint == "/api/v1/profile/delete":
+                        owner.events.append("recovery_delete")
+                        owner.documents.pop(fields["name"])
                     elif endpoint != "/api/display/preview/clear":
                         raise AssertionError("Unplanned fixture write: " + endpoint)
                     return {"success": True}
@@ -49,10 +58,17 @@ class Fixture:
                 key = next(key for key, value in ENDPOINTS.items() if value == endpoint)
                 return deepcopy(owner.config[key])
 
+            def wait_profile_readable(self, name, **kwargs):
+                if name not in owner.documents:
+                    raise bench.DeviceHttpError("/api/v1/profile", 404, {"error": "not found"})
+                return deepcopy(owner.documents[name])
+
             def snapshot(self):
                 owner.events.append("snapshot")
                 if "snapshot" in owner.failures:
                     raise bench.Incomplete("fixture partial baseline")
+                if owner.suite == "profiles":
+                    owner.config["backup"]["profiles"] = [{"name": name} for name in owner.documents]
                 return super().snapshot()
 
         class Link:
@@ -66,7 +82,7 @@ class Fixture:
 
         class Device:
             def __init__(self, client):
-                pass
+                self.client = client
 
             def status(self):
                 return deepcopy(owner.status_value)
@@ -82,7 +98,10 @@ class Fixture:
                 owner.events.append("profiles_backup")
                 if "profiles_backup" in owner.failures:
                     raise bench.Incomplete("fixture partial USB backup")
-                return {}, profiles()
+                bundle = profiles()
+                bundle["profiles"] = [{**{key: doc[key] for key in ("schemaVersion", "name", "description", "detector", "inTheBox")},
+                                        "rawBytes": doc["settings"]["bytes"]} for doc in owner.documents.values()]
+                return json.dumps(bundle).encode(), bundle
 
         class Camera:
             def __init__(self, directory):
@@ -131,6 +150,52 @@ class Fixture:
                     return {"result": "INCOMPLETE"}
                 return {"result": "PASS"}
 
+            def prepare_profile_collision(self, document, catalog_names):
+                owner.events.append("collision_prepare")
+                assert set(catalog_names) == set(owner.documents)
+                return deepcopy(document)
+
+            def profile_create(self, document, catalog_names):
+                saved = bench.RecoveryJournal.load(owner.directory)
+                assert saved.value["profile_intents"][-1] == {"action": "create", "before": None, "after": document}
+                assert document["name"] not in owner.documents
+                owner.events.append("profile_create")
+                owner.documents[document["name"]] = deepcopy(document)
+                return {"result": "PASS", "browser_closed": True}
+
+            def profile_edit(self, before, after):
+                saved = bench.RecoveryJournal.load(owner.directory)
+                assert saved.value["profile_intents"][-1] == {"action": "edit", "before": before, "after": after}
+                assert owner.documents[before["name"]] == before
+                owner.events.append("profile_edit")
+                owner.documents[after["name"]] = deepcopy(after)
+                if "profile_foreign_edit" in owner.failures:
+                    owner.documents[after["name"]]["description"] = "external edit"
+                return {"result": "INCOMPLETE" if "profile_edit_lost" in owner.failures else "PASS", "browser_closed": True}
+
+            def profile_collision(self, token):
+                owner.events.append("profile_collision")
+                assert owner.documents[token["name"]]["description"] != token["description"]
+                return {"result": "PASS", "browser_closed": True}
+
+            def discard_profile_collision(self, token):
+                owner.events.append("collision_close")
+                if "collision_close" in owner.failures:
+                    raise RuntimeError("fixture stale page did not close")
+
+            def profile_reload(self, expected):
+                assert owner.documents[expected["name"]] == expected
+                owner.events.append("profile_reload")
+                return {"result": "PASS", "browser_closed": True}
+
+            def profile_delete(self, expected):
+                saved = bench.RecoveryJournal.load(owner.directory)
+                assert saved.value["profile_intents"][-1] == {"action": "delete", "before": expected, "after": None}
+                owner.events.append("profile_delete")
+                if "profile_delete_failed" not in owner.failures:
+                    del owner.documents[expected["name"]]
+                return {"result": "INCOMPLETE" if "profile_delete_failed" in owner.failures else "PASS", "browser_closed": True}
+
         self.Http, self.Link, self.Device, self.Camera, self.Browser = Http, Link, Device, Camera, Browser
 
     def colors(self, runner):
@@ -149,9 +214,9 @@ class Fixture:
         if "proven_failure" in self.failures:
             raise bench.BehaviorFailure("fixture proved contradiction")
 
-    def execute(self, *, command="run", analysis=None, base_url="http://localhost:18765", ssid="Fixture"):
+    def execute(self, *, command="run", analysis=None, audio_analysis=None, base_url="http://localhost:18765", ssid="Fixture"):
         args = SimpleNamespace(command=command, base_url=base_url, port=None,
-                               git=IDENTITY["git"], image=IDENTITY["image"], suite="colors",
+                               git=IDENTITY["git"], image=IDENTITY["image"], suite=self.suite,
                                tolerance=.35, ssid=ssid, headed=False)
         real_atomic = bench.atomic_json
         real_save = bench.RecoveryJournal.save
@@ -167,12 +232,28 @@ class Fixture:
             return real_save(journal, **updates)
 
         def analyze(_directory, *, tolerance, checks=None):
+            if self.suite in ("audio", "warning"):
+                self.events.append("display_analysis")
+                raise AssertionError("audio-only run used the display-suite analyzer")
             if checks is None:
                 checks = []
-            checks.extend([{"result": "PASS", "check": "modeled_pixels"}] if analysis is None else analysis)
+            checks.extend([{"result": "PASS", "check": name} for name in sorted(bench.required_checks(args.suite))]
+                          if analysis is None else analysis)
             if "analysis_late_failure" in self.failures:
                 raise bench.Incomplete("fixture later capture decode unavailable")
             return checks
+
+        def collect_audio(runner):
+            self.events.append("audio_collect")
+            runner.save_display({"freq": 0xF800}, "audio_fixture")
+            if "audio_collection" in self.failures:
+                raise bench.Incomplete("fixture microphone unavailable after setup")
+            return []
+
+        def analyze_audio(_directory):
+            self.events.append("audio_analysis")
+            return ([{"check": name, "result": "PASS"} for name in sorted(bench.required_checks("audio"))]
+                    if audio_analysis is None else audio_analysis)
 
         with ExitStack() as stack:
             for name, value in (("HttpDevice", self.Http), ("LoggedLink", self.Link),
@@ -183,8 +264,19 @@ class Fixture:
             stack.enter_context(patch.object(bench.RecoveryJournal, "save", save))
             stack.enter_context(patch.object(bench.Runner, "wait", lambda *_: None))
             stack.enter_context(patch.object(bench, "analyze", side_effect=analyze))
+            if self.suite == "audio":
+                stack.enter_context(patch("behavior_audio_runner.run_audio_cases", side_effect=collect_audio))
+                stack.enter_context(patch("behavior_audio_runner.analyze_audio_cases", side_effect=analyze_audio))
+            if self.suite == "warning":
+                stack.enter_context(patch.object(bench, "analyze_warning", side_effect=lambda *a, **kw:
+                    [{"check": name, "result": "PASS"} for name in bench.WARNING_CHECKS]))
             self.runner = bench.Runner(args, self.directory)
             self.runner.colors = MethodType(lambda runner: self.colors(runner), self.runner)
+            if self.suite == "audio":
+                for name in ("colors", "clearance", "profiles"):
+                    setattr(self.runner, name, Mock(side_effect=AssertionError("unselected suite ran")))
+            if self.suite == "warning":
+                self.runner.warning = MethodType(collect_audio, self.runner)
             return self.runner.execute()
 
 
@@ -376,6 +468,130 @@ class CoordinatorTests(unittest.TestCase):
         with patch.object(bench, "analyze", return_value=[]):
             self.assertEqual(bench.main(["analyze", "--out-dir", str(self.directory)]), 2)
 
+    def test_missing_or_duplicate_required_check_cannot_pass(self):
+        names = sorted(bench.required_checks("colors"))
+        for selected in (names[:-1], names + names[:1], ["invented"]):
+            with self.subTest(selected=selected), tempfile.TemporaryDirectory() as directory:
+                fixture = Fixture(Path(directory))
+                result = fixture.execute(analysis=[{"result": "PASS", "check": name} for name in selected])
+                self.assertEqual(result["result"], "INCOMPLETE")
+                self.assertEqual(result["restoration"], "verified")
+
+    def test_profile_campaign_uses_journal_before_each_mutation_and_reboots_before_reload(self):
+        fixture = Fixture(self.directory, suite="profiles")
+        result = fixture.execute()
+        self.assertEqual(result["result"], "PASS", result)
+        self.assertEqual({row["check"] for row in result["checks"]}, bench.required_checks("profiles"))
+        self.assertEqual(fixture.documents, {})
+        self.assertNotIn("camera_start", fixture.events)
+        self.assertLess(fixture.events.index("collision_close"), fixture.events.index("mode:normal"))
+        self.assertLess(fixture.events.index("mode:normal"), fixture.events.index("profile_reload"))
+        self.assertEqual(fixture.events.count("profile_delete"), 1)
+        self.assertNotIn("recovery_delete", fixture.events)
+
+    def test_profile_uncertain_edit_recovers_once_after_pages_close(self):
+        fixture = Fixture(self.directory, ("profile_edit_lost",), suite="profiles")
+        result = fixture.execute()
+        self.assertEqual(result["result"], "INCOMPLETE")
+        self.assertEqual(result["restoration"], "verified")
+        self.assertEqual(fixture.documents, {})
+        self.assertEqual(fixture.events.count("profile_edit"), 1)
+        self.assertEqual(fixture.events.count("recovery_delete"), 1)
+        self.assertLess(fixture.events.index("browser_close"), fixture.events.index("recovery_delete"))
+
+    def test_profile_external_edit_and_unresolved_delete_are_preserved_without_retry(self):
+        for failure in ("profile_foreign_edit", "profile_delete_failed", "collision_close"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                fixture = Fixture(Path(directory), [failure], suite="profiles")
+                result = fixture.execute()
+                self.assertNotEqual(result["result"], "PASS")
+                if failure == "collision_close":
+                    self.assertEqual(result["restoration"], "verified")
+                    self.assertLess(fixture.events.index("browser_close"), fixture.events.index("recovery_delete"))
+                else:
+                    self.assertEqual(result["restoration"], "unverified")
+                    self.assertEqual(len(fixture.documents), 1)
+                    self.assertNotIn("recovery_delete", fixture.events)
+
+    def test_unconfirmed_profile_browser_shutdown_blocks_device_recovery_writes(self):
+        fixture = Fixture(self.directory, ("profile_edit_lost", "browser_close"), suite="profiles")
+        result = fixture.execute()
+        self.assertEqual(result["result"], "INCOMPLETE")
+        self.assertEqual(result["restoration"], "unverified")
+        self.assertNotIn("recovery_delete", fixture.events)
+        self.assertEqual(len(fixture.documents), 1)
+        self.assertEqual(fixture.events[-1], "usb_close")
+
+    def test_recovery_receipts_distinguish_rejection_from_unknown_without_retry(self):
+        for fault, outcome in ((bench.DeviceHttpError("/api/v1/profile/delete", 400, {"error": "Invalid JSON"}), "rejected"),
+                               (TimeoutError("response lost"), "unknown"), (None, "responded")):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                runner = bench.Runner.__new__(bench.Runner)
+                runner.directory = Path(directory)
+                runner.http = SimpleNamespace(request=Mock(side_effect=fault, return_value={"success": True}))
+                runner.recovery_write("profile-delete", "/api/v1/profile/delete", {"name": "Temporary"})
+                runner.http.request.assert_called_once_with("/api/v1/profile/delete", {"name": "Temporary"})
+                files = list(runner.directory.glob("recovery-profile-delete-*.json"))
+                self.assertEqual(len(files), 1)
+                receipt = json.loads(files[0].read_text())
+                self.assertEqual(receipt["outcome"], outcome)
+                if outcome == "rejected":
+                    self.assertEqual(receipt["status"], 400)
+                    self.assertEqual(receipt["response"], {"error": "Invalid JSON"})
+                elif outcome == "unknown":
+                    self.assertEqual(receipt["exception_type"], "TimeoutError")
+                    self.assertNotIn("response", receipt)
+
+    def test_audio_suite_has_only_ten_named_acoustic_and_optical_requirements(self):
+        expected = {"audio_ka", "audio_ka_visual", "audio_detector_zero", "audio_detector_zero_visual",
+                    "audio_x", "audio_x_visual", "audio_speaker_zero", "audio_speaker_zero_visual",
+                    "audio_recovery", "audio_recovery_visual"}
+        self.assertEqual(bench.required_checks("audio"), expected)
+        self.assertTrue(expected <= bench.required_checks("acceptance"))
+
+    def test_warning_scope_preserves_defaults_and_restores_after_collection_failure(self):
+        self.assertEqual(bench.required_checks("warning"), set(bench.WARNING_CHECKS))
+        self.assertFalse(set(bench.WARNING_CHECKS) & bench.required_checks("all"))
+        fixture = Fixture(self.directory, suite="warning")
+        result = fixture.execute()
+        self.assertEqual(result["result"], "PASS", result)
+        self.assertEqual(fixture.config, fixture.initial)
+        self.assertIn("camera_start", fixture.events)
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(Path(temporary), ("audio_collection",), suite="warning")
+            result = fixture.execute()
+            self.assertEqual(result["result"], "INCOMPLETE")
+            self.assertEqual(result["restoration"], "verified")
+            self.assertEqual(fixture.config, fixture.initial)
+
+    def test_audio_only_runner_collects_with_camera_then_restores_before_analysis(self):
+        fixture = Fixture(self.directory, suite="audio")
+        result = fixture.execute()
+        self.assertEqual(result["result"], "PASS", result)
+        self.assertEqual(result["scope"], "audio")
+        self.assertEqual(len(result["checks"]), 10)
+        self.assertEqual(fixture.config, fixture.initial)
+        self.assertEqual(result["restoration"], "verified")
+        self.assertEqual(fixture.runner.plan["previews"], [])
+        self.assertEqual(fixture.runner.plan["replays"], [])
+        self.assertNotIn("display_analysis", fixture.events)
+        self.assertLess(fixture.events.index("camera_start"), fixture.events.index("audio_collect"))
+        self.assertLess(fixture.events.index("restore_write"), fixture.events.index("audio_analysis"))
+        self.assertLess(fixture.events.index("usb_close"), fixture.events.index("audio_analysis"))
+
+    def test_audio_incomplete_collection_restores_and_missing_checks_cannot_pass(self):
+        fixture = Fixture(self.directory, ("audio_collection",), suite="audio")
+        result = fixture.execute()
+        self.assertEqual(result["result"], "INCOMPLETE")
+        self.assertEqual(result["restoration"], "verified")
+        self.assertEqual(fixture.config, fixture.initial)
+        self.assertNotIn("audio_analysis", fixture.events)
+        for missing in ([], [{"check": "audio_ka", "result": "PASS"}]):
+            with tempfile.TemporaryDirectory() as directory:
+                result = Fixture(Path(directory), suite="audio").execute(audio_analysis=missing)
+                self.assertEqual(result["result"], "INCOMPLETE")
+                self.assertEqual(result["restoration"], "verified")
+
     def test_earlier_optical_failure_survives_later_analysis_exception(self):
         result = self.fixture("analysis_late_failure").execute(analysis=[{"result": "FAIL", "check": "early_pixels"}])
         self.assertEqual(result["result"], "FAIL")
@@ -397,7 +613,293 @@ def observation_plan(suite="all"):
             "capture_completed": True, "timing_tolerance_s": .35}
 
 
+class AcceptanceAdmissionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name).resolve()
+
+    def candidate(self):
+        root = self.directory / "repo"
+        (root / ".artifacts").mkdir(parents=True)
+        (root / "scripts").mkdir()
+        (root / "scripts/behavior_bench.py").write_text("fixture runner")
+        (root / "scripts/usb_profiles.py").write_text("fixture USB")
+        (root / ".artifacts/ci-gate-passed.sha").write_text("a" * 40)
+        retained = self.directory / "retained"
+        retained.mkdir()
+        elf = b"fixture exact ELF"
+        image = hashlib.sha256(elf).hexdigest()
+        binary = bytearray(208)
+        binary[0] = 0xE9
+        binary[176:208] = bytes.fromhex(image)
+        (retained / "firmware.bin").write_bytes(binary)
+        (retained / "firmware.elf").write_bytes(elf)
+        identity = {"head": "a" * 40, "image": image, "ci_result": "PASS", "ci_exit": 0,
+                    "files": {name: hashlib.sha256((retained / name).read_bytes()).hexdigest()
+                              for name in ("firmware.bin", "firmware.elf")}}
+        (retained / "identity.json").write_text(json.dumps(identity))
+        args = SimpleNamespace(candidate_manifest=None, firmware=str(retained / "firmware.bin"),
+                               git="a" * 7, image=image[:9])
+        return root, retained, identity, args
+
+    def test_audio_cli_requires_same_candidate_microphone_and_fixture_admission(self):
+        base = ["run", "--suite", "audio", "--git", IDENTITY["git"], "--image", IDENTITY["image"],
+                "--out-dir", str(self.directory / "new-audio")]
+        incomplete = ([], ["--firmware", "/fixture/firmware.bin"],
+                      ["--firmware", "/fixture/firmware.bin", "--microphone", "Fixture"],
+                      ["--firmware", "/fixture/firmware.bin", "--real-v1-off"])
+        for extra in incomplete:
+            with self.subTest(extra=extra), patch.object(bench, "Runner") as runner, \
+                    patch.object(bench, "qualify_candidate") as qualify, redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    bench.main(base + extra)
+                self.assertEqual(caught.exception.code, 2)
+                runner.assert_not_called()
+                qualify.assert_not_called()
+        self.assertFalse((self.directory / "new-audio").exists())
+
+    def test_audio_cli_admits_candidate_and_twelve_gb_before_starting_runner(self):
+        root = self.directory / "repo"
+        replay = root / "tools/v1replay/.build/v1replay"
+        replay.parent.mkdir(parents=True)
+        replay.write_bytes(b"fixture executable")
+        order = []
+        def qualify(*_):
+            order.append("candidate")
+        def start(args, directory):
+            order.append("runner")
+            self.assertEqual(args.suite, "audio")
+            self.assertEqual(args.microphone, "Fixture")
+            self.assertTrue(args.real_v1_off)
+            return SimpleNamespace(execute=lambda: {"result": "PASS", "restoration": "verified"})
+        with patch.object(bench, "ROOT", root), patch.object(bench, "qualify_candidate", side_effect=qualify), \
+                patch.object(bench, "require_space") as space, patch.object(bench, "Runner", side_effect=start), \
+                patch("behavior_audio.prepare_microphone_recorder", side_effect=lambda: order.append("recorder")), \
+                patch.object(bench, "DutLease", return_value=nullcontext()), patch.object(bench.signal, "signal"), \
+                redirect_stdout(io.StringIO()):
+            result = bench.main(["run", "--suite", "audio", "--git", IDENTITY["git"], "--image", IDENTITY["image"],
+                                 "--out-dir", str(self.directory / "audio"), "--firmware", "/fixture/firmware.bin",
+                                 "--microphone", "Fixture", "--real-v1-off"])
+        self.assertEqual(result, 0)
+        self.assertEqual(order, ["candidate", "recorder", "runner"])
+        self.assertEqual(space.call_args.args[1], 12_000_000_000)
+
+    def test_warning_cli_requires_candidate_and_fixture_but_never_microphone_preflight(self):
+        root = self.directory / "repo"
+        replay = root / "tools/v1replay/.build/v1replay"
+        replay.parent.mkdir(parents=True)
+        replay.write_bytes(b"fixture executable")
+        base = ["run", "--suite", "warning", "--git", IDENTITY["git"], "--image", IDENTITY["image"],
+                "--out-dir", str(self.directory / "warning")]
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            bench.main(base)
+        with patch.object(bench, "ROOT", root), patch.object(bench, "qualify_candidate") as candidate, \
+                patch.object(bench, "require_space") as space, patch.object(bench, "Runner") as runner, \
+                patch("behavior_audio.prepare_microphone_recorder") as microphone, \
+                patch.object(bench, "DutLease", return_value=nullcontext()), patch.object(bench.signal, "signal"), \
+                redirect_stdout(io.StringIO()):
+            runner.return_value.execute.return_value = {"result": "PASS", "restoration": "verified"}
+            self.assertEqual(bench.main(base + ["--firmware", "/fixture/firmware.bin", "--real-v1-off"]), 0)
+            candidate.assert_called_once()
+            microphone.assert_not_called()
+            self.assertEqual(space.call_args.args[1], 5_000_000_000)
+
+    def test_exact_candidate_is_separate_from_dirty_host_tool_identity(self):
+        root, _, identity, args = self.candidate()
+        with patch.object(bench, "ROOT", root), patch.object(bench.subprocess, "check_output", side_effect=["b" * 40, b" M scripts/behavior_bench.py"]):
+            receipt = bench.qualify_candidate(args, self.directory)
+        self.assertEqual(receipt["candidate"], identity)
+        self.assertEqual(receipt["host_head"], "b" * 40)
+        self.assertTrue(receipt["host_worktree_dirty"])
+        self.assertIn("scripts/usb_profiles.py", receipt["host_files"])
+
+    def test_wrong_ci_artifact_or_embedded_image_is_rejected_before_device(self):
+        for failure in ("ci", "artifact", "descriptor", "git", "image"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as subdirectory:
+                self.directory = Path(subdirectory)
+                root, retained, identity, args = self.candidate()
+                if failure == "ci":
+                    (root / ".artifacts/ci-gate-passed.sha").write_text("b" * 40)
+                elif failure == "artifact":
+                    (retained / "firmware.bin").write_bytes(b"corrupt")
+                elif failure == "descriptor":
+                    binary = bytearray((retained / "firmware.bin").read_bytes())
+                    binary[176] ^= 1
+                    (retained / "firmware.bin").write_bytes(binary)
+                    identity["files"]["firmware.bin"] = hashlib.sha256(binary).hexdigest()
+                    (retained / "identity.json").write_text(json.dumps(identity))
+                elif failure == "git":
+                    args.git = "b" * 7
+                else:
+                    args.image = "b" * 9
+                with patch.object(bench, "ROOT", root), patch.object(bench, "LoggedLink") as link:
+                    with self.assertRaises(bench.Incomplete):
+                        bench.qualify_candidate(args, self.directory)
+                    link.assert_not_called()
+
+    def test_shared_dut_lease_excludes_other_runs_and_does_not_inherit_radio_fd(self):
+        from run_window import V1_RADIO_LEASE_FD_ENV
+        path = self.directory / "dut.lock"
+        with patch.dict(os.environ, {V1_RADIO_LEASE_FD_ENV: "invalid-radio-descriptor"}):
+            with bench.DutLease(path):
+                with self.assertRaises(bench.Incomplete):
+                    with bench.DutLease(path):
+                        self.fail("second independent run acquired the DUT")
+            self.assertEqual(os.environ[V1_RADIO_LEASE_FD_ENV], "invalid-radio-descriptor")
+            with bench.DutLease(path):
+                pass
+
+    def test_cycle_completion_requires_full_unique_checks_and_verified_restore(self):
+        for failure in (None, "missing", "restore", "fail", "interrupt"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory).resolve()
+                calls = []
+                def factory(args, child):
+                    calls.append((child.name, args.campaign_baseline))
+                    number = len(calls)
+                    def execute():
+                        if number == 2 and failure == "interrupt":
+                            raise KeyboardInterrupt("fixture host stopped")
+                        checks = [{"check": name, "result": "PASS"} for name in bench.required_checks("profiles")]
+                        if number == 2 and failure == "missing":
+                            checks.pop()
+                        return {"result": "FAIL" if number == 2 and failure == "fail" else "PASS", "scope": "profiles",
+                                "restoration": "unverified" if number == 2 and failure == "restore" else "verified", "checks": checks}
+                    return SimpleNamespace(execute=execute)
+                args = SimpleNamespace(suite="profiles", cycles=3)
+                result = bench.run_cycles(args, path, factory)
+                self.assertEqual(result["result"], "PASS" if failure is None else "FAIL" if failure == "fail" else "INCOMPLETE")
+                self.assertEqual(len(calls), 3 if failure is None else 2)
+                self.assertIsNone(calls[0][1])
+                self.assertEqual(calls[1][1], str(path / "cycle-0001"))
+                manifest = json.loads((path / "campaign.json").read_text())
+                self.assertEqual(manifest["active_cycle"], None if failure is None else "cycle-0002")
+                self.assertFalse(result["full_hardware_coverage"])
+
+    def test_campaign_recovery_only_targets_interrupted_cycle_and_preserves_original_verdict(self):
+        (self.directory / "cycle-0002").mkdir()
+        original = {"schema": 1, "requested_cycles": 3, "active_cycle": "cycle-0002", "result": "INCOMPLETE"}
+        bench.atomic_json(self.directory / "campaign.json", original)
+        bench.atomic_json(self.directory / "result.json", original)
+        factory = Mock(return_value=SimpleNamespace(execute=lambda: {"result": "PASS", "restoration": "verified"}))
+        bench.restore_campaign(SimpleNamespace(command="restore"), self.directory, factory)
+        self.assertEqual(factory.call_args.args[1], self.directory / "cycle-0002")
+        self.assertEqual(json.loads((self.directory / "result.json").read_text()), original)
+        self.assertEqual(json.loads((self.directory / "campaign.json").read_text()), original)
+
+
+class WarningEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        from test_behavior_audio_runner import fixture
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        case = {"label": "warning", "phrase": "k", "band": "K", "frequency": 24150, "speaker": 0, "detector": 0}
+        base, proof, _, identity = fixture(self.directory, case)
+        destination = self.directory / "warning"
+        destination.mkdir()
+        for name in ("replay_scenario.json", "behavior_replay_result.json", "launch-intent.json"):
+            (destination / name).write_bytes((base / "replay" / name).read_bytes())
+        replay_path = destination / "behavior_replay_result.json"
+        replay = json.loads(replay_path.read_text())
+        for row in replay["events"]:
+            for key in ("hostMonotonicNs", "requestedHostMonotonicNs"):
+                if row.get(key, 0) >= 107_000_000_000:
+                    row[key] += 4_000_000_000
+        bench.atomic_json(replay_path, replay)
+        bench.atomic_json(destination / "warning-input.json", bench.warning_scenario())
+        command = json.loads((destination / "launch-intent.json").read_text())
+        command["command"].append("--quiet-after-complete")
+        bench.atomic_json(destination / "launch-intent.json", command)
+        target = f"replay-target-{proof['normal_before']['boot']}.json"
+        bench.atomic_json(self.directory / target, proof["target_capture"])
+        self.proof = {key: deepcopy(proof[key]) for key in ("normal_before", "normal_after", "idle", "tail", "admitted_target")}
+        self.proof.update(proof["configured"], target_file=target)
+        for key in ("release_before_ns", "release_after_ns"):
+            self.proof["idle"][key] += 4_000_000_000
+        for key in ("clear_accepted_ns", "idle_accepted_ns"):
+            self.proof["tail"][key] += 4_000_000_000
+        self.proof["tail"]["observed_until_ns"] = self.proof["tail"]["idle_accepted_ns"] + 30_100_000_000
+        self.plan = {"suite": "warning", "capture_completed": True, "identity": identity, "warning": self.proof}
+        self.resolved_band("k")
+
+    def resolved_band(self, band):
+        # Authored input uses "K"; the shipping Swift resolved evidence uses
+        # AlertBand.name ("k") in both samples and expected delivery rows.
+        path = self.directory / "warning/replay_scenario.json"
+        resolved = json.loads(path.read_text())
+        for row in resolved["samples"]:
+            row["alerts"][0]["band"] = band
+        bench.atomic_json(path, resolved)
+        raw = path.read_bytes()
+        sha = hashlib.sha256(raw).hexdigest()
+        replay_path = self.directory / "warning/behavior_replay_result.json"
+        replay = json.loads(replay_path.read_text())
+        for row in replay["events"]:
+            if row["state"] == "scenario_resolved":
+                row.update(sha256=sha, byteCount=len(raw))
+            elif row["state"] == "configured":
+                row["scenarioSha256"] = sha
+            elif row["state"] == "stimulus_requested":
+                row["expected"]["alerts"][0]["band"] = band
+        bench.atomic_json(replay_path, replay)
+        self.seal()
+
+    def seal(self):
+        names = ["warning/warning-input.json", "warning/replay_scenario.json", "warning/behavior_replay_result.json",
+                 "warning/launch-intent.json", self.proof["target_file"]]
+        self.proof["artifacts"] = {name: hashlib.sha256((self.directory / name).read_bytes()).hexdigest() for name in names}
+
+    def test_complete_warning_evidence_pins_first_zero_delay_and_quiet_tail(self):
+        proof = bench.warning_evidence(self.directory, self.plan)
+        self.assertEqual(proof["expected_onset_ns"], 120_100_000_000)
+        self.assertGreater(proof["tail"]["observed_until_ns"], proof["expected_onset_ns"] + 12_500_000_000)
+
+    def test_authored_uppercase_band_is_not_the_shipping_resolved_schema(self):
+        self.resolved_band("K")
+        with self.assertRaisesRegex(bench.Incomplete, "Warning resolved stimulus differs"):
+            bench.warning_evidence(self.directory, self.plan)
+
+    def test_incomplete_wrong_boot_hash_and_short_silence_are_rejected(self):
+        original = deepcopy(self.plan)
+        for mutation in (lambda: self.plan.update(capture_completed=False),
+                         lambda: self.proof["normal_after"].update(boot=99),
+                         lambda: self.proof["admitted_target"].update(session_generation=99),
+                         lambda: self.proof["idle"].update(release_before_ns=130_000_000_000),
+                         lambda: self.proof["tail"].update(observed_until_ns=120_000_000_000),
+                         lambda: self.proof["artifacts"].update({"warning/warning-input.json": "wrong"})):
+            self.plan = deepcopy(original)
+            self.proof = self.plan["warning"]
+            mutation()
+            with self.assertRaises(bench.Incomplete):
+                bench.warning_evidence(self.directory, self.plan)
+
+    def test_accepted_packet_or_disconnect_during_warning_silence_is_rejected(self):
+        path = self.directory / "warning/behavior_replay_result.json"
+        original = json.loads(path.read_text())
+        for row in ({"state": "notification_accepted", "characteristic": "B2CE", "payloadHex": "", "hostMonotonicNs": 125_000_000_000},
+                    {"state": "session_transport", "active": False, "observerHostMonotonicNs": 125_000_000_000}):
+            replay = deepcopy(original)
+            replay["events"].append(row)
+            bench.atomic_json(path, replay)
+            self.seal()
+            with self.assertRaises((bench.Incomplete, bench.CaptureError)):
+                bench.warning_evidence(self.directory, self.plan)
+
+
 class AnalysisTests(unittest.TestCase):
+    def test_cli_refuses_partial_acceptance_and_campaign_reanalysis(self):
+        for kind in ("acceptance", "profiles", "audio", "campaign"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory).resolve()
+                filename = "campaign.json" if kind == "campaign" else "observations.json"
+                (path / filename).write_text(json.dumps({"suite": kind}))
+                with patch.object(bench, "analyze") as analyze:
+                    with self.assertRaises(bench.Incomplete):
+                        bench.main(["analyze", "--out-dir", str(path)])
+                    analyze.assert_not_called()
+
     def test_cli_camera_evidence_error_exits_incomplete_without_masking_other_errors(self):
         import behavior_capture
         with tempfile.TemporaryDirectory() as directory:

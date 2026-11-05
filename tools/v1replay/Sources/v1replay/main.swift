@@ -199,6 +199,8 @@ func loadEncounter(path selectedPath: String? = nil) throws -> Encounter {
 
 func validateBenchOptions() throws {
     _ = try makeArrowBlinkProfile(benchDefault: true)
+    _ = try parseBenchIdleLeadSeconds(args.optionalString("idle-lead"),
+                                     hasExternalScenario: args.optionalString("scenario") != nil)
     let selectedScenarios = [
         args.bool("persistence-coverage"),
         args.bool("reader-qualification"),
@@ -266,6 +268,17 @@ func parseHandshakeNotificationHoldMilliseconds(
     return value
 }
 
+func parseBenchIdleLeadSeconds(_ raw: String?, hasExternalScenario: Bool) throws -> Double {
+    guard let raw else { return 0 }
+    guard hasExternalScenario else {
+        throw ReplayError.message("--idle-lead in bench mode requires an external --scenario")
+    }
+    guard let seconds = Double(raw), seconds.isFinite, (0...30).contains(seconds) else {
+        throw ReplayError.message("--idle-lead in bench mode must be 0 through 30 seconds")
+    }
+    return seconds
+}
+
 func parseCommandAckHoldMilliseconds(_ raw: String?, bench: Bool) throws -> Int? {
     guard let raw else { return nil }
     guard bench, let value = Int(raw), (0...10_000).contains(value) else {
@@ -328,6 +341,7 @@ func runHelp() {
                            maximum stress hold; second START releases (0...1999; default 0)
       --no-wait            start without waiting for a central to subscribe
       --idle-lead <sec>    idle frames before the encounter (default 3)
+                           external bench scenarios may explicitly request 0...30
       --idle-tail <sec>    idle frames after the encounter (default 3)
       --idle-hz <hz>       idle frame cadence (default 3)
 
@@ -705,7 +719,10 @@ func runPlay(idleOnly: Bool,
     playerOptions.requireStartAlertData = !args.bool("always-alerts")
     playerOptions.waitForSubscribe = !args.bool("no-wait")
     playerOptions.waitForAlertData = bench
-    playerOptions.idleLead = (idleOnly || bench) ? 0 : args.double("idle-lead", 3.0)
+    playerOptions.idleLead = bench
+        ? try parseBenchIdleLeadSeconds(args.optionalString("idle-lead"),
+                                        hasExternalScenario: args.optionalString("scenario") != nil)
+        : (idleOnly ? 0 : args.double("idle-lead", 3.0))
     playerOptions.idleTail = (idleOnly || bench) ? 0 : args.double("idle-tail", 3.0)
     playerOptions.idleHz = args.double("idle-hz", 3.0)
     playerOptions.header = informationHeader

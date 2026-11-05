@@ -71,6 +71,80 @@ class JournalTests(unittest.TestCase):
     def reload(self):
         return state.RecoveryJournal.load(self.directory)
 
+    def test_audio_intent_restores_only_owned_values_and_rejects_intervening_edits(self):
+        baseline = snapshot()
+        baseline["audio"] = {"voiceVolume": 31, "muteVoiceIfVolZero": False, "voiceAlertMode": 3}
+        directory = self.directory / "audio"
+        directory.mkdir()
+        journal = state.RecoveryJournal.create(directory, IDENTITY, baseline, profiles(), USB_IDENTITY)
+        journal.audio_intent(baseline["audio"], {"voiceVolume": 97})
+        recovered = state.RecoveryJournal.load(directory)
+        current = {**baseline["audio"], "voiceVolume": 97, "muteVoiceIfVolZero": True}
+        self.assertEqual(recovered.audio_restore_patch(current), {"voiceVolume": 31})
+        with self.assertRaises(state.Incomplete):
+            recovered.audio_intent(current, {"muteVoiceIfVolZero": False})
+        with self.assertRaises(state.Incomplete):
+            recovered.audio_restore_patch({**current, "voiceVolume": 55})
+        with self.assertRaises(state.Incomplete):
+            recovered.audio_intent(current, {"voiceVolume": 101})
+
+    def test_autopush_enable_recovery_keeps_slot_identity_and_separate_persistence(self):
+        slots = snapshot()["slots"]
+        self.journal.autopush_intent(slots, False)
+        changed = deepcopy(slots)
+        changed["enabled"] = False
+        self.journal.validate_persistence_change(changed, 0)
+        self.journal.persistence_intent(0, 3)
+        changed["slots"][0]["alertPersist"] = 3
+        self.assertEqual(self.reload().autopush_restore(changed), {"slot": 0, "enable": True})
+        self.assertEqual(self.reload().persistence_restore(changed), [(0, 0)])
+        changed["activeSlot"] = 1
+        with self.assertRaises(state.Incomplete):
+            self.reload().autopush_restore(changed)
+
+    def test_replay_metadata_requires_fresh_capture_and_keeps_other_differences(self):
+        capture = {"available": True, "address": "AA:BB:CC:DD:EE:FF", "provenance": {
+            "capturedBootId": 8, "captureTimedOut": False, "sessionGeneration": 1}}
+        with self.assertRaises(state.Incomplete):
+            self.journal.admit_replay_target(capture, 7)
+        self.journal.admit_replay_target(capture, 8)
+        changed = snapshot()
+        changed["backup"]["lastV1Address"] = capture["address"]
+        drift, metadata = self.reload().restoration_differences(changed)
+        self.assertEqual(drift, [])
+        self.assertEqual(metadata["observed"], capture["address"])
+        changed["backup"]["unrelatedSetting"] = 9
+        self.assertEqual(self.reload().restoration_differences(changed)[0], ["backup.unrelatedSetting"])
+        with self.assertRaises(state.Incomplete):
+            self.journal.admit_replay_target({**capture, "address": "AA:BB:CC:DD:EE:00"}, 8)
+
+    def test_profile_ownership_recovery_requires_exact_document_and_no_references(self):
+        import usb_profiles
+        baseline = snapshot()
+        baseline["backup"]["profiles"] = []
+        directory = self.directory / "profile"
+        directory.mkdir()
+        journal = state.RecoveryJournal.create(directory, IDENTITY, baseline, profiles(), USB_IDENTITY,
+                                               profile_documents={})
+        initial = {"schemaVersion": 4, "name": "bench-fixture", "description": "created",
+                   "settings": {"bytes": [255] * 6}, "detector": usb_profiles.default_detector(),
+                   "inTheBox": usb_profiles.default_in_the_box()}
+        edited = {**initial, "description": "edited"}
+        journal.profile_intent("create", None, initial)
+        journal.profile_intent("edit", initial, edited)
+        recovered = state.RecoveryJournal.load(directory)
+        self.assertEqual(recovered.owned_profile({initial["name"]: initial}, baseline["slots"]), initial["name"])
+        self.assertEqual(recovered.owned_profile({initial["name"]: edited}, baseline["slots"]), initial["name"])
+        with self.assertRaises(state.Incomplete):
+            recovered.owned_profile({initial["name"]: {**edited, "description": "someone else"}}, baseline["slots"])
+        slots = deepcopy(baseline["slots"])
+        slots["slots"][0]["profile"] = initial["name"]
+        with self.assertRaises(state.Incomplete):
+            recovered.owned_profile({initial["name"]: edited}, slots)
+        # A host loss before the edit committed leaves the initial owned document.
+        recovered.profile_intent("delete", initial, None)
+        self.assertEqual(state.RecoveryJournal.load(directory).value["profile_intents"][-1]["before"], initial)
+
     def test_baseline_is_private_durable_and_not_aliased(self):
         self.assertEqual(stat.S_IMODE(self.journal.path.stat().st_mode), 0o600)
         self.assertEqual(self.reload().value, self.journal.value)
@@ -328,6 +402,135 @@ class DeviceTests(unittest.TestCase):
             with patch.object(device.opener, "open", return_value=io.BytesIO(raw)):
                 with self.assertRaises(state.Incomplete):
                     device.request("/api/display/settings")
+
+    def test_profile_delete_encodes_the_shipping_json_contract_once(self):
+        device = state.HttpDevice("http://localhost:18765")
+        with patch.object(device.opener, "open", return_value=io.BytesIO(b'{"success":true}')) as opened:
+            self.assertEqual(device.request("/api/v1/profile/delete", {"name": "Road + Test"}), {"success": True})
+        self.assertEqual(opened.call_count, 1)
+        request = opened.call_args.args[0]
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("Content-type"), "application/json")
+        self.assertEqual(request.get_header("X-v1simple-request"), "maintenance-ui")
+        self.assertEqual(json.loads(request.data), {"name": "Road + Test"})
+        with patch.object(device.opener, "open") as opened:
+            for fields in ({}, {"name": ""}, {"name": "../other"}, {"name": "Road", "other": True}):
+                with self.assertRaises(ValueError):
+                    device.request("/api/v1/profile/delete", fields)
+            opened.assert_not_called()
+
+    def test_existing_setting_endpoints_keep_exact_form_encoding(self):
+        device = state.HttpDevice("http://localhost:18765")
+        for endpoint, fields, expected in (
+                ("/api/display/settings", {"freq": 42}, {"freq": ["42"]}),
+                ("/api/audio/settings", {"voiceVolume": 97}, {"voiceVolume": ["97"]}),
+                ("/api/autopush/activate", {"slot": 0, "enable": False}, {"slot": ["0"], "enable": ["false"]}),
+                ("/api/autopush/slot", {"slot": 0, "alertPersist": 3}, {"slot": ["0"], "alertPersist": ["3"]})):
+            with self.subTest(endpoint=endpoint), patch.object(device.opener, "open", return_value=io.BytesIO(b'{"success":true}')) as opened:
+                device.request(endpoint, fields)
+                self.assertEqual(opened.call_count, 1)
+                request = opened.call_args.args[0]
+                self.assertEqual(request.get_header("Content-type"), "application/x-www-form-urlencoded")
+                self.assertEqual(parse_qs(request.data.decode()), expected)
+
+    def test_delete_http_rejection_retains_actual_status_and_body_without_resend(self):
+        device = state.HttpDevice("http://localhost:18765")
+        error = urllib.error.HTTPError(device.base_url + "/api/v1/profile/delete", 400, "Bad Request", {},
+                                       io.BytesIO(b'{"error":"Invalid JSON"}'))
+        with patch.object(device.opener, "open", side_effect=error) as opened:
+            with self.assertRaises(state.DeviceHttpError) as caught:
+                device.request("/api/v1/profile/delete", {"name": "Road"})
+            self.assertEqual(opened.call_count, 1)
+        self.assertEqual(caught.exception.status, 400)
+        self.assertEqual(caught.exception.payload, {"error": "Invalid JSON"})
+
+
+class SnapshotReadinessTests(unittest.TestCase):
+    def setUp(self):
+        self.device = state.HttpDevice("http://localhost:18765")
+        self.clock, self.history = 0.0, []
+        self.actions = ["busy", "ready"]
+        self.failure_endpoint = state.ENDPOINTS["backup"]
+        self.failure_status = 503
+        self.failure_body = {"success": False, "error": "backup_snapshot_incomplete", "retryable": True}
+        self.addCleanup(patch.stopall)
+        patch.object(state.time, "monotonic", side_effect=lambda: self.clock).start()
+        patch.object(state.time, "sleep", side_effect=self.sleep).start()
+        patch.object(self.device.opener, "open", side_effect=self.open).start()
+
+    def sleep(self, seconds):
+        self.clock += seconds
+
+    def open(self, request, timeout):
+        path = urlsplit(request.full_url).path
+        self.history.append((request.get_method(), path, timeout, self.clock))
+        self.clock += .01
+        if path == self.failure_endpoint:
+            action = self.actions.pop(0) if len(self.actions) > 1 else self.actions[0]
+            if action == "busy":
+                raise urllib.error.HTTPError(request.full_url, self.failure_status, "fixture", {},
+                                               io.BytesIO(json.dumps(self.failure_body).encode()))
+            if action == "late":
+                self.clock += timeout
+            if action == "network":
+                raise TimeoutError("fixture transport timeout")
+        key = next(key for key, endpoint in state.ENDPOINTS.items() if endpoint == path)
+        return io.BytesIO(json.dumps(snapshot()[key]).encode())
+
+    def test_shipping_retryable_backup_then_ready_returns_complete_snapshot_with_gets_only(self):
+        self.assertEqual(self.device.snapshot(timeout_s=2), snapshot())
+        self.assertEqual([row[1] for row in self.history],
+                         [state.ENDPOINTS["backup"], *state.ENDPOINTS.values()])
+        self.assertTrue(all(row[0] == "GET" for row in self.history))
+        for _, _, budget, started in self.history:
+            self.assertLessEqual(budget, 2 - started)
+
+    def test_perpetual_retryable_backup_stops_at_one_fixed_deadline(self):
+        self.actions = ["busy"]
+        with self.assertRaisesRegex(state.Incomplete, "deadline"):
+            self.device.snapshot(timeout_s=.6)
+        self.assertAlmostEqual(self.clock, .6)
+        self.assertTrue(all(row[0:2] == ("GET", state.ENDPOINTS["backup"]) for row in self.history))
+
+    def test_other_status_body_endpoint_or_transport_failure_is_not_retried(self):
+        scenarios = (
+            (503, {**self.failure_body, "retryable": False}, "backup", "busy"),
+            (503, {**self.failure_body, "retryable": 1}, "backup", "busy"),
+            (503, {**self.failure_body, "success": 0}, "backup", "busy"),
+            (503, {"error": "backup_snapshot_incomplete"}, "backup", "busy"),
+            (503, {**self.failure_body, "error": "backup_snapshot_allocation_failed"}, "backup", "busy"),
+            (503, {**self.failure_body, "unknown": True}, "backup", "busy"),
+            (500, self.failure_body, "backup", "busy"),
+            (503, self.failure_body, "display", "busy"),
+            (503, self.failure_body, "backup", "network"),
+        )
+        for status, body, key, action in scenarios:
+            with self.subTest(status=status, body=body, endpoint=key, action=action):
+                self.history.clear()
+                self.clock = 0
+                self.failure_status, self.failure_body = status, body
+                self.failure_endpoint = state.ENDPOINTS[key]
+                self.actions = [action, "ready"]
+                with self.assertRaises((state.DeviceHttpError, TimeoutError)):
+                    self.device.snapshot(timeout_s=2)
+                self.assertEqual(sum(row[1] == self.failure_endpoint for row in self.history), 1)
+
+    def test_late_backup_or_late_final_snapshot_response_cannot_authorize_success(self):
+        for key in ("backup", "devices"):
+            with self.subTest(endpoint=key):
+                self.history.clear()
+                self.clock = 0
+                self.failure_endpoint = state.ENDPOINTS[key]
+                self.actions = ["late"]
+                with self.assertRaisesRegex(state.Incomplete, "deadline"):
+                    self.device.snapshot(timeout_s=2)
+
+    def test_direct_write_with_same_error_is_never_polled(self):
+        self.actions = ["busy", "ready"]
+        with self.assertRaises(state.DeviceHttpError):
+            self.device.request(state.ENDPOINTS["backup"], {})
+        self.assertEqual(len(self.history), 1)
+        self.assertEqual(self.history[0][0], "POST")
 
 
 class ReadinessTests(unittest.TestCase):

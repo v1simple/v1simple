@@ -1,4 +1,4 @@
-# Unattended display and settings bench
+# Unattended behavior bench
 
 `behavior-bench.sh` exercises the installed production firmware without flashing.
 It operates the actual maintenance website in Chrome, reads the saved settings
@@ -27,6 +27,67 @@ override them. `--suite colors` or `--suite clearance` runs one half. `--headed`
 makes the automated Chrome window visible. The complete run requires 12 GB free
 before recording; colors require 7 GB and clearance requires 5 GB. Capture also stops before disk
 space falls below 1 GB. Original movies are never deleted automatically.
+
+`--suite profiles` exercises the shipping website's New, description Edit,
+duplicate-name rejection from a naturally stale second page, reboot retention,
+and Delete. It saves every complete original profile before creating one uniquely
+named temporary profile. Cleanup deletes only an exact document owned by this run,
+and refuses deletion if that profile acquired a slot reference or an external edit.
+This suite uses 1 GB of free-space allowance and does not require a camera.
+
+`--suite acceptance` combines profiles, colors, clearance, and five externally
+recorded speaker cases: Ka speech, detector-zero silence, X speech, speaker-zero
+silence, and audible recovery. Every speaker case starts on a fresh normal boot;
+the camera independently checks the associated alert and its disappearance. The
+existing default `all` continues to mean colors plus clearance.
+
+`--suite audio` runs those same five speaker cases and their ten acoustic/optical
+checks on their own. It reuses the same continuous camera, original-state journal,
+fresh-boot sequence, and verified restoration as acceptance, without repeating
+profiles, color previews, or the separate clearance suite. It requires 12 GB free
+per cycle and the same candidate, microphone, and real-detector-off admission.
+
+`--suite warning` is a camera-only zero-detector-volume regression. It sends the
+fixed nine-second K encounter after seven seconds of connected idle, clears it,
+and holds the connection for 30 seconds
+without further notifications. Four checks require stable idle controls, the
+15-second warning deadline, repeated complete red `VOL 0` glyphs alternating with
+blank phases at the 250 ms cadence, and the original placeholder returning after
+the ten-second warning. It temporarily silences the speaker, restores all owned
+settings, and never starts a microphone recorder. It requires 5 GB, a qualified
+candidate, and `--real-v1-off`; `all` and `acceptance` keep their existing scope.
+
+For audio, acceptance, or warning, retain the qualified firmware, ELF, and their `identity.json`
+manifest together. The manifest must name the exact full commit, successful CI
+result and exit code, image identity, and SHA-256 of its files. The repository's
+existing exact-commit CI marker must match. The runner checks the application
+descriptor against the ELF and independently pins the USB-reported installed
+identity. It records the current host tools, dependencies, and executable hashes
+separately; modified host tools are not represented as CI-qualified firmware.
+
+```sh
+./behavior-bench.sh run --suite acceptance --cycles 2 \
+  --git <qualified-commit> --image <installed-image> \
+  --firmware <private-retained-candidate>/firmware.bin \
+  --microphone <named-microphone-input> --real-v1-off \
+  --out-dir <private-new-campaign-directory>
+```
+
+The real detector must remain off throughout emulator testing, and the named
+microphone must hear the DUT speaker. Acceptance reserves 24 GB per requested
+cycle. Each cycle restores and rechecks the original configuration before the
+next begins. A failure or incomplete cycle stops the campaign; no partly completed
+mutation phase is retried. One shared DUT lease covers serial reopen gaps and all
+cycles, preventing another behavior run from taking the device between phases.
+
+Audio capture uses the native macOS recorder with microphone permission already
+granted. It retains each source buffer's timestamp and sample count, the local
+WAV, and the capture-clock mapping. Missing samples, writer backpressure, early
+exit, or incomplete observation coverage stop qualification. Acoustic checks
+compare the shipped phrase and individual words, reject competing words or extra
+speech, and account for measured clock uncertainty and analysis resolution.
+Silence needs visible live alerts and audible controls before and after it; an
+unavailable or digitally flat microphone cannot pass a silence case.
 
 The colors suite checks two different custom frequency colors, band-color mode,
 all six primary and secondary meter colors, independent Save readback, and
@@ -70,6 +131,7 @@ After a killed host process or unplugged device, reconnect the same device and r
 
 This uses the durable recovery record and rechecks the saved firmware and USB
 identity and saved connection settings. It does not rerun the test.
+For a campaign, the same command targets only its recorded interrupted cycle.
 `restoration-result.json` reports recovery only; it never replaces the qualification
 verdict in `result.json`. To reread a complete capture without hardware:
 
@@ -77,9 +139,16 @@ verdict in `result.json`. To reread a complete capture without hardware:
 ./behavior-bench.sh analyze --out-dir <existing-private-run-directory>
 ```
 
-This suite does not qualify RF reception, audio, installation wiring, arbitrary
-phone browsers, every possible palette, or interrupted flash recovery. It adds
-repeatable physical evidence for the specific saved-color and stuck-alert risks.
+The report names its required cases and its exercised scope. Missing physical
+touch/BOOT actuation, controlled supply faults, real-detector Apply, and physical
+ALP/GPS/OBD fixtures remain explicitly unexercised; they cannot become a full
+hardware pass. Real-detector Apply is separate from this real-detector-off
+campaign. The acoustic checks use recorded sound against the shipped source clips;
+camera-only suites do not claim audio coverage. Offline `analyze` rereads individual
+display-only suites and does not replace the original qualification verdict. It
+refuses acceptance/profile/audio runs and campaigns rather than giving a partial pass.
+The separate warning suite supports offline `analyze` with its original declared
+timing allowance and verified camera/transport evidence.
 Keep release decisions tied to the exact firmware identity and the existing full
 CI/release checks; a host-tool test does not qualify a different installed image.
 
@@ -88,9 +157,10 @@ Host regression checks (no DUT):
 ```sh
 "$(./scripts/bench_python.sh --visual)" -m unittest discover -s scripts -p 'test_behavior_*.py'
 BEHAVIOR_BROWSER_LIVE_TESTS=1 "$(./scripts/bench_python.sh --browser)" \
-  scripts/test_behavior_browser.py
+  -m unittest discover -s scripts -p 'test_behavior_*.py'
 ```
 
-The second command uses an existing built web interface and Chrome against a local
-test server. It exercises real Save interactions, including ignored writes, failed
-initial reads, baseline drift, and a lost response after a committed write.
+The second command also uses an existing built web interface and Chrome against a
+local test server. It exercises real Display and profile storage interactions,
+including ignored writes, failed initial reads, baseline drift, stale-name
+collisions, and a lost response after a committed write.

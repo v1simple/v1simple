@@ -134,6 +134,16 @@ final class V1PlayerTimingTests: XCTestCase {
         }
     }
 
+    func testPausedExternalLeadStillStreamsIdleWithoutAuthoredAlerts() throws {
+        let result = try record("lead-paused")
+        let firstLive = try XCTUnwrap(result.packets.firstIndex { $0.sequence > 0 })
+        let lead = result.packets[..<firstLive]
+        XCTAssertGreaterThanOrEqual(lead.count, 2)
+        XCTAssertTrue(lead.allSatisfy { $0.phase == "idle lead-in" && $0.bytes[3] == 0x31 && $0.sequence == -1 })
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(result.times.first), 0.525)
+        XCTAssertEqual(result.offsets, [0.4, 0.6])
+    }
+
     func testIdleTailClearsLiveTableBeforeIdleDisplayAndPreservesTimelineEvidence() throws {
         for mode in ["tail", "zero-tail"] {
             let result = try record(mode)
@@ -296,14 +306,14 @@ final class V1Peripheral {
                                              direction: .front, isPriority: true)], sourceIndex: $0.offset)
         })
         var options = Player.Options()
-        options.idleLead = ["lead", "restart", "loop"].contains(mode) ? 0.1 : 0
+        options.idleLead = ["lead", "restart", "loop", "lead-paused"].contains(mode) ? 0.1 : 0
         options.idleTail = mode == "loop" || (tailMode && !["zero-tail", "quiet-zero-tail"].contains(mode)) ? 0.1 : 0
         options.idleHz = 20
         options.waitForAlertData = mode != "tail-no-start"
         options.sendAlerts = mode != "tail-display-only"
         options.speed = mode == "double" ? 2 : 1
         options.loop = mode == "loop"
-        options.startPaused = ["pause", "step"].contains(mode)
+        options.startPaused = ["pause", "step", "lead-paused"].contains(mode)
         options.quietAfterComplete = ["quiet-tail", "quiet-zero-tail"].contains(mode)
         let userBytes: [UInt8] = mode == "filter"
             ? [0x7F, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF]
@@ -326,7 +336,7 @@ final class V1Peripheral {
         var starts: [Double] = []
         var packets: [[String: Any]] = []
         let started = nowSeconds()
-        if tailMode || mode == "startup-gate" || mode == "filter" {
+        if tailMode || mode == "startup-gate" || mode == "filter" || mode == "lead-paused" {
             peripheral.capture = { bytes, sequence, ordinal in
                 let phase = player.snapshot.phase.rawValue
                 lock.lock()
@@ -361,11 +371,11 @@ final class V1Peripheral {
         }
         player.start()
         switch mode {
-        case "pause", "readiness":
+        case "pause", "lead-paused", "readiness":
             waitForTimeline(player)
             if mode == "readiness" { peripheral.setReady(false) }
             Thread.sleep(forTimeInterval: 0.15)
-            if mode == "pause" { player.togglePause() } else { peripheral.setReady(true) }
+            if mode != "readiness" { player.togglePause() } else { peripheral.setReady(true) }
         case "seek-during":
             waitForTimeline(player); player.seek(to: 1)
         case "step":

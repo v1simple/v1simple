@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <functional>
+#include <utility>
+#include <vector>
 #include <esp_err.h>
 #include <freertos/FreeRTOS.h>
 #include <driver/gpio.h>
@@ -22,12 +25,19 @@ struct i2s_std_config_t {
 #define I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(a, b) 0
 
 struct MockI2sState {
+    struct PcmWrite {
+        std::vector<uint8_t> submitted;
+        size_t acceptedBytes;
+        esp_err_t result;
+    };
     unsigned createCalls = 0;
     unsigned writeCalls = 0;
     size_t writtenBytes = 0;
     std::deque<esp_err_t> createResults;
     std::deque<esp_err_t> writeResults;
     std::function<void()> onWrite;
+    bool capturePcm = false;
+    std::vector<PcmWrite> pcmWrites;
 };
 inline MockI2sState g_mock_i2s_state{};
 
@@ -44,7 +54,13 @@ inline esp_err_t i2s_new_channel(const i2s_chan_config_t*, i2s_chan_handle_t* tx
 inline esp_err_t i2s_channel_init_std_mode(i2s_chan_handle_t, const i2s_std_config_t*) { return ESP_OK; }
 inline esp_err_t i2s_channel_enable(i2s_chan_handle_t) { return ESP_OK; }
 inline esp_err_t i2s_del_channel(i2s_chan_handle_t) { return ESP_OK; }
-inline esp_err_t i2s_channel_write(i2s_chan_handle_t, const void*, size_t size, size_t* written, TickType_t) {
+inline esp_err_t i2s_channel_write(i2s_chan_handle_t, const void* data, size_t size, size_t* written, TickType_t) {
+    const bool capture = g_mock_i2s_state.capturePcm;
+    std::vector<uint8_t> submitted;
+    if (capture) {
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        submitted.assign(bytes, bytes + size);
+    }
     ++g_mock_i2s_state.writeCalls;
     if (g_mock_i2s_state.onWrite) g_mock_i2s_state.onWrite();
     esp_err_t result = ESP_OK;
@@ -54,5 +70,8 @@ inline esp_err_t i2s_channel_write(i2s_chan_handle_t, const void*, size_t size, 
     }
     *written = result == ESP_OK ? size : 0;
     g_mock_i2s_state.writtenBytes += *written;
+    if (capture) {
+        g_mock_i2s_state.pcmWrites.push_back({std::move(submitted), *written, result});
+    }
     return result;
 }

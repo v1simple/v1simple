@@ -103,6 +103,147 @@ def takeover(rows, **kwargs):
                                     persistence_s=kwargs.pop("persistence_s", 3.), **kwargs)
 
 
+def warning_fixture(text="VOL 0", *, color=(235, 45, 15), x=488, y=248, scale=9.75):
+    image = fixture(idle=True)
+    image[230:375, 450:880] = 0
+    rows = {
+        "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100", "00000"),
+        "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110", "00000"),
+        "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111", "00000"),
+        "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110", "00000"),
+        "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110", "00000"),
+        " ": ("00000",) * 8,
+    }
+    for index, char in enumerate(text):
+        for row, bits in enumerate(rows[char]):
+            for column, bit in enumerate(bits):
+                if bit == "1":
+                    image[round(y + row * scale):round(y + (row+1) * scale),
+                          round(x + (index*6+column)*scale):round(x + (index*6+column+1)*scale)] = color
+    return image
+
+
+def warning_live_control(clear_s=15):
+    image = fixture(digits="24150")
+    image[330:380, 340:355] = (235, 45, 15)
+    observed = visual.observe_warning_frame(image, IDENTITY)
+    return [{"time_s": clear_s - 1.1 + index / 10, **deepcopy(observed)} for index in range(10)]
+
+
+class WarningVisualTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.on = visual.observe_warning_frame(warning_fixture(), IDENTITY)
+        cls.off = visual.observe_warning_frame(warning_fixture("     "), IDENTITY)
+        cls.idle = visual.observe_warning_frame(fixture(idle=True), IDENTITY)
+
+    def series(self, *, frozen=False, stuck=False, early=False, fast=False):
+        rows = []
+        for tick in range(-8, 126):
+            elapsed = tick / 10
+            if elapsed < (-1 if early else 0) or (elapsed >= 10 and not stuck):
+                value = self.idle
+            elif frozen:
+                value = self.off
+            else:
+                value = self.on if (round(elapsed * 1000) // (100 if fast else 250)) % 2 else self.off
+            rows.append({"time_s": 15 + elapsed, **deepcopy(value)})
+        reference = [{"time_s": 2 + index / 10, **deepcopy(self.idle)} for index in range(5)]
+        return rows, reference
+
+    def evaluate(self, rows, reference, *, clear=15, live=None):
+        return visual.evaluate_warning(rows, reference, onset_s=15, clear_idle_s=clear,
+                                       live_control=warning_live_control(clear) if live is None else live)
+
+    def test_full_glyph_identity_and_blank_are_distinct(self):
+        self.assertEqual(self.on["warning"]["text"], "VOL 0", self.on["warning"])
+        self.assertFalse(self.on["warning"]["blank"])
+        self.assertTrue(self.off["warning"]["blank"])
+        self.assertIsNone(self.off["warning"]["text"])
+        self.assertFalse(self.idle["warning"]["blank"])
+
+    def test_wrong_glyph_missing_letter_blob_and_wrong_color_cannot_be_warning(self):
+        blob = warning_fixture("     ")
+        blob[248:318, 488:780] = (235, 45, 15)
+        for image in (warning_fixture("VOL O"), warning_fixture("VOL 8"), warning_fixture(" OL 0"),
+                      warning_fixture(color=(15, 45, 235)), blob):
+            with self.subTest(image=image[250, 490].tolist()):
+                self.assertIsNone(visual.observe_warning_frame(image, IDENTITY)["warning"]["text"])
+
+    def test_default_delay_flash_and_expiry_pass(self):
+        rows, reference = self.series()
+        checks = self.evaluate(rows, reference)
+        self.assertEqual([row["result"] for row in checks], ["PASS"] * 4, checks)
+
+    def test_live_to_warning_transition_uses_the_existing_optical_allowance(self):
+        for delay in (.25, .45):
+            with self.subTest(delay=delay):
+                rows, reference = self.series()
+                for row in rows:
+                    elapsed = row["time_s"] - 15
+                    if 0 <= elapsed < delay:
+                        value = warning_live_control()[0]
+                    elif delay <= elapsed < 10 + delay:
+                        value = self.on if round((elapsed - delay) * 1000) // 250 % 2 else self.off
+                    else:
+                        value = self.idle
+                    row.update({key: deepcopy(value) for key, value in value.items() if key != "time_s"})
+                checks = self.evaluate(rows, reference)
+                if delay == .25:
+                    self.assertEqual([row["result"] for row in checks], ["PASS"] * 4, checks)
+                else:
+                    self.assertEqual(checks[0]["result"], "FAIL", checks)
+                    self.assertIn("an alert field remained during connected silence", checks[0]["failures"])
+
+    def test_original_first_off_freeze_fails_flash_and_expiry(self):
+        rows, reference = self.series(frozen=True, stuck=True)
+        checks = {row["check"]: row for row in self.evaluate(rows, reference)}
+        self.assertEqual(checks["warning_blink"]["result"], "FAIL")
+        self.assertEqual(checks["warning_expiry"]["result"], "FAIL")
+
+    def test_wrong_deadline_fast_flash_stuck_warning_and_camera_gap_cannot_pass(self):
+        for changes in ({"early": True}, {"fast": True}, {"stuck": True}):
+            rows, reference = self.series(**changes)
+            checks = self.evaluate(rows, reference, clear=13 if changes.get("early") else 15)
+            self.assertTrue(any(row["result"] != "PASS" for row in checks), checks)
+        rows, reference = self.series()
+        del rows[30:35]
+        self.assertTrue(any(row["result"] == "INCOMPLETE"
+                            for row in self.evaluate(rows, reference)))
+
+    def test_dark_controls_or_missing_reference_cannot_pass(self):
+        rows, reference = self.series()
+        for row in rows:
+            row["guards"] = {"counter": 0, "status": 0}
+        self.assertTrue(any(row["result"] != "PASS"
+                            for row in self.evaluate(rows, reference)))
+        self.assertTrue(all(row["result"] == "INCOMPLETE"
+                            for row in self.evaluate(rows, [])))
+
+    def test_accumulated_slow_or_fast_cadence_missing_early_frames_and_live_control_are_rejected(self):
+        for half in (.225, .300):
+            rows, reference = self.series()
+            for row in rows:
+                elapsed = row["time_s"] - 15
+                if 0 <= elapsed < 10:
+                    value = self.on if int(round(elapsed * 1000) / round(half * 1000)) % 2 else self.off
+                    row.update(deepcopy(value))
+            self.assertTrue(any(row["result"] == "FAIL" for row in self.evaluate(rows, reference)))
+        rows, reference = self.series()
+        self.assertTrue(any(row["result"] != "PASS" for row in self.evaluate(rows[12:], reference)))
+        self.assertTrue(any(row["result"] != "PASS" for row in self.evaluate(rows, reference, live=[])))
+
+    def test_extra_center_content_and_partially_occluded_controls_are_not_accepted(self):
+        image = warning_fixture()
+        image[330:370, 810:865] = (235, 45, 15)
+        self.assertIsNone(visual.observe_warning_frame(image, IDENTITY)["warning"]["text"])
+        rows, reference = self.series()
+        for row in rows:
+            if 15 <= row["time_s"] < 25:
+                row["warning_guard_grid"] = [value * .15 for value in row["warning_guard_grid"]]
+        self.assertTrue(any(row["result"] != "PASS" for row in self.evaluate(rows, reference)))
+
+
 class BehaviorVisualTests(unittest.TestCase):
     def test_observer_decodes_numeric_identity_and_individual_sentinel_cells(self):
         observed = observation(fixture(card=True))

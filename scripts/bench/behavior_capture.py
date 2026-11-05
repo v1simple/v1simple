@@ -437,22 +437,69 @@ def clearance_scenario() -> dict[str, Any]:
         for index in range(16)]}
 
 
+def warning_scenario() -> dict[str, Any]:
+    """The measured zero-volume encounter, followed by connected packet silence."""
+    return {"band": "K", "frequencyMHz": 24150, "samples": [
+        {"offsetSeconds": index / 3, "strength": 6, "direction": "FRONT", "muteState": "off"}
+        for index in range(28)]}
+
+
+def accepted_capture_replies(events: list[dict[str, Any]], detector_volume: int) -> dict[str, Any] | None:
+    """The paused audio lead must deliver the emulator's complete settings reply set.
+
+    This is transport evidence, not a DUT acknowledgement. The subsequent
+    maintenance capture independently requires a complete matching boot/session.
+    """
+    replies: dict[int, list[tuple[dict[str, Any], bytes]]] = {}
+    for event in events:
+        if event.get("state") != "notification_accepted" or event.get("characteristic") != "B2CE":
+            continue
+        try:
+            raw = bytes.fromhex(event.get("payloadHex", ""))
+        except (TypeError, ValueError):
+            continue
+        if (len(raw) >= 8 and raw[:3] == bytes.fromhex("AAD6EA") and raw[-1] == 0xAB
+                and raw[4] == len(raw)-6 and raw[-2] == sum(raw[:-2]) % 256
+                and type(event.get("hostMonotonicNs")) is int and event["hostMonotonicNs"] > 0):
+            replies.setdefault(raw[3], []).append((event, raw[5:-2]))
+    if not {0x02, 0x3D, 0x12, 0x23, 0x20, 0x17} <= replies.keys():
+        return None
+    version, volume, user, sections, maximum = [replies[key][-1] for key in (0x02, 0x3D, 0x12, 0x23, 0x20)]
+    if (version[1] != b"v4.1038" or volume[1] != bytes([detector_volume, 0, detector_volume, 0])
+            or len(user[1]) != 6 or len(sections[1]) != 10 or maximum[1] != b"\x01"):
+        return None
+    definitions = {raw[0] & 0x3F: event for event, raw in replies[0x17]
+                   if len(raw) == 5 and raw[0] & 0xC0 == 0x80}
+    if set(definitions) != {0, 1}:
+        return None
+    selected = [version[0], volume[0], user[0], sections[0], maximum[0], *definitions.values()]
+    return {"accepted_reply_sequences": [event["globalTxSequence"] for event in selected],
+            "latest_accepted_ns": max(event["hostMonotonicNs"] for event in selected),
+            "notification_acceptance_is_dut_ack": False}
+
+
 class ReplaySession:
     """One owned emulator, with bounded cleanup and optional same-link restart."""
 
     def __init__(self, executable: Path, out_dir: Path, scenario: str = "clearance", *,
+                 authored: dict[str, Any] | None = None, detector_volume: int = 4,
                  event_callback: Callable[[dict[str, Any]], None] | None = None,
                  lease_factory: Callable[..., Any] = V1RadioLease,
                  process_factory: Callable[..., Any] = subprocess.Popen,
                  clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep):
-        if scenario not in {"clearance", "persistence"}:
+        if scenario not in {"clearance", "persistence", "audio", "warning"}:
             raise ValueError("unknown behavior replay scenario")
+        if ((scenario in {"audio", "warning"}) != (authored is not None)
+                or type(detector_volume) is not int or not 0 <= detector_volume <= 9):
+            raise ValueError("audio replay requires an authored input and valid detector volume")
         self.executable, self.out_dir = Path(executable).resolve(), Path(out_dir).resolve()
         if any((ancestor / ".git").exists() for ancestor in (self.out_dir, *self.out_dir.parents)):
             raise ValueError("behavior replay evidence must be outside Git checkouts")
         self.out_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
         self.scenario, self.event_callback = scenario, event_callback
+        self.authored, self.detector_volume = authored, detector_volume
+        self._released = False
         self.lease_factory, self.process_factory = lease_factory, process_factory
         self.clock, self.sleep = clock, sleep
         self.lease = self.process = self.log_handle = None
@@ -481,8 +528,16 @@ class ReplaySession:
                 path = self.out_dir / "clearance-input.json"
                 _write_json(path, clearance_scenario())
                 command += ["--scenario", str(path)]
-            else:
+            elif self.scenario == "persistence":
                 command += ["--persistence-coverage"]
+            else:
+                path = self.out_dir / (self.scenario + "-input.json")
+                _write_json(path, self.authored)
+                command += ["--scenario", str(path), "--paused", "--idle-lead", "3",
+                            "--volume", f"{self.detector_volume},0"]
+            _write_json(self.out_dir / "launch-intent.json", {
+                "command": command, "executable_sha256": hashlib.sha256(self.executable.read_bytes()).hexdigest(),
+                "host_monotonic_ns": round(self.clock() * 1e9)})
             self.master_fd, slave_fd = pty.openpty()
             self.process = self.process_factory(command, cwd=self.executable.parent.parent,
                 stdin=slave_fd, stdout=self.log_handle, stderr=subprocess.STDOUT,
@@ -544,6 +599,66 @@ class ReplaySession:
                 return complete[self._completion_target - 1]
             self.sleep(.05)
         raise CaptureError("replay did not complete before its deadline")
+
+    def paused_ready(self) -> bool:
+        """Require the real START handshake and accepted idle pixels' stimulus."""
+        if self.scenario not in {"audio", "warning"} or self._released:
+            raise CaptureError("readiness requires the owned unreleased audio replay")
+        problem = self.health_problem()
+        if problem:
+            raise CaptureError(problem)
+        if any(event["state"] == "stimulus_requested" for event in self.events):
+            raise CaptureError("audio stimulus began before automatic release")
+        transports = [event for event in self.events if event["state"] == "session_transport"]
+        log = self.log_path.read_text(errors="replace")
+        return bool(transports and transports[-1].get("active") is True
+                    and "reqStartAlertData — alert table enabled" in log and "paused" in log
+                    and any(is_idle_notification(event) for event in self.events)
+                    and accepted_capture_replies(self.events, self.detector_volume) is not None)
+
+    def release_after_idle(self, seconds: float = 3, *, timeout_s: float = 120,
+                           pump: Callable[[], None] | None = None) -> dict[str, Any]:
+        """Automatically release once a continuous connected idle is observed."""
+        if not math.isfinite(seconds) or seconds < 3 or not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise ValueError("audio readiness requires at least three idle seconds and a bounded timeout")
+        deadline = self.clock() + timeout_s
+        while self.clock() < deadline:
+            if pump:
+                pump()
+            if self.paused_ready():
+                break
+            self.sleep(.05)
+        else:
+            raise CaptureError("audio replay did not reach paused handshake readiness")
+        ready = round(self.clock() * 1e9)
+        capture_replies = accepted_capture_replies(self.events, self.detector_volume)
+        event_index = len(self.events)
+        while self.clock() < ready / 1e9 + seconds:
+            if pump:
+                pump()
+            if not self.paused_ready() or any(event.get("state") == "session_transport"
+                    and event.get("active") is False for event in self.events[event_index:]):
+                raise CaptureError("audio connected-idle control lost transport")
+            self.sleep(.05)
+        if pump:
+            pump()
+        if not self.paused_ready() or any(event.get("state") == "session_transport"
+                and event.get("active") is False for event in self.events[event_index:]):
+            raise CaptureError("audio connected-idle control lost transport")
+        if self.master_fd is None:
+            raise CaptureError("audio replay has no owned input channel")
+        before = round(self.clock() * 1e9)
+        if self.scenario == "warning":
+            zero = [event["hostMonotonicNs"] for event in self.events if is_idle_notification(event)
+                    and bytes.fromhex(event["payloadHex"])[12] == 0]
+            if seconds < 7 or not zero or before >= min(zero) + 14_000_000_000:
+                raise CaptureError("warning replay could not release within its pre-warning idle window")
+        os.write(self.master_fd, b" ")
+        self._released = True
+        return {"idle_started_ns": ready, "release_before_ns": before,
+                "release_after_ns": round(self.clock() * 1e9),
+                "capture_replies": capture_replies,
+                "readiness": "accepted idle display and complete capture replies, active transport, parsed START log, paused timeline"}
 
     def hold_quiet(self, seconds: float = 6, *, pump: Callable[[], None] | None = None,
                    delivery_timeout_s: float = 2) -> dict[str, Any]:

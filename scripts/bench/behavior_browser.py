@@ -1,16 +1,18 @@
-"""One guarded browser Save through the shipping Display page.
+"""Guarded Display and profile operations through the shipping browser pages.
 
 The caller owns the recovery journal, USB identity, maintenance admission and
 independent device readback. This driver never retries a write, restores data,
-changes modes, or starts a preview. Playwright is imported only on entry.
+sends USB mode commands, or starts a preview. Playwright is imported on entry.
 """
 from __future__ import annotations
 
 import json
 import re
+import subprocess
 import time
+from copy import deepcopy
 from pathlib import Path
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 
 COLOR_CONTROLS = {
@@ -44,6 +46,288 @@ TERMINAL_MESSAGES = (
     SUCCESS_MESSAGE, "Failed to save colors", "Connection error",
     "Failed to load colors", "Failed to load quiet screen setting. Retry before changing it.",
 )
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _same_json(left, right):
+    return json.dumps(left, sort_keys=True, allow_nan=False) == json.dumps(right, sort_keys=True, allow_nan=False)
+
+
+def _unique_json(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("Duplicate JSON member")
+        value[key] = item
+    return value
+
+
+def _profile_document(value):
+    from usb_profiles import canonical_name, validate_detector, validate_in_the_box
+    if (not isinstance(value, dict) or set(value) != {
+            "schemaVersion", "name", "description", "settings", "detector", "inTheBox"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 4
+            or not canonical_name(value["name"]) or not isinstance(value["description"], str)
+            or len(value["description"].encode()) > 4096 or not isinstance(value["settings"], dict)):
+        raise ValueError("Complete version4 profile document required")
+    raw = value["settings"].get("bytes")
+    if (not isinstance(raw, list) or len(raw) != 6
+            or any(type(item) is not int or not 0 <= item <= 255 for item in raw)):
+        raise ValueError("Complete profile user bytes required")
+    validate_detector(value["detector"], 4)
+    validate_in_the_box(value["inTheBox"])
+    return deepcopy(value)
+
+
+def profile_storage_document(name: str, description: str) -> dict:
+    """The shipping New defaults, with an independent factory-byte expectation."""
+    if not isinstance(description, str) or description != description.strip():
+        raise ValueError("Temporary profile description must already be trimmed")
+    script = """
+import {createDefaultProfileSettings,createProfileDetectorConfiguration,toApiSettings,toApiDetectorConfiguration}
+ from './interface/src/lib/features/profiles/profileSettingsAdapter.js';
+import {createDefaultInTheBoxSettings,toApiInTheBoxSettings}
+ from './interface/src/lib/features/profiles/inTheBoxSettings.js';
+console.log(JSON.stringify({settings:toApiSettings(createDefaultProfileSettings()),
+ detector:toApiDetectorConfiguration(createProfileDetectorConfiguration()),
+ inTheBox:toApiInTheBoxSettings(createDefaultInTheBoxSettings())}));
+"""
+    defaults = json.loads(subprocess.check_output(
+        ["node", "--input-type=module", "-e", script], cwd=ROOT, text=True, timeout=15))
+    defaults["settings"]["bytes"] = [255] * 6
+    return _profile_document({"schemaVersion": 4, "name": name, "description": description, **defaults})
+
+
+def _profile_payload(document: dict, *, creating: bool) -> dict:
+    payload = _profile_document(document)
+    raw = payload["settings"].pop("bytes")
+    if creating:
+        payload["createOnly"] = True
+    else:
+        # Loading a saved profile supplies fromApiSettings.baseBytes so an
+        # intentional edit preserves bits which this UI does not expose.
+        payload["settings"]["baseBytes"] = raw
+    return payload
+
+
+class ProfileWriteGuard:
+    """Block all writes except one armed, exact profile request."""
+
+    def __init__(self, base_url):
+        self.base_url = normalize_base_url(base_url)
+        self.expected = None
+        self.forwarded = 0
+        self.blocked = []
+
+    def arm(self, path, payload):
+        if self.expected is not None or self.forwarded:
+            raise ValueError("Profile request already armed")
+        if path not in ("/api/v1/profile", "/api/v1/profile/delete"):
+            raise ValueError("Unsupported profile request")
+        self.expected = (path, deepcopy(payload))
+
+    def admit(self, method, url, headers, body):
+        parsed = urlsplit(url)
+        reason = None
+        if f"{parsed.scheme}://{parsed.netloc}" != self.base_url:
+            reason = "unexpected_origin"
+        elif method in ("GET", "HEAD"):
+            return True
+        elif method != "POST" or parsed.query or parsed.fragment:
+            reason = "unexpected_write"
+        elif self.expected is None:
+            reason = "unarmed_write"
+        elif self.forwarded:
+            reason = "duplicate_write"
+        elif parsed.path != self.expected[0] or headers.get("x-v1simple-request") != "maintenance-ui":
+            reason = "unexpected_write_contract"
+        else:
+            try:
+                content = headers.get("content-type", "").lower()
+                if not content.startswith("application/json"):
+                    raise ValueError("encoding")
+                value = json.loads(body or "", object_pairs_hook=_unique_json,
+                                   parse_constant=lambda _: (_ for _ in ()).throw(ValueError("constant")))
+                if not _same_json(value, self.expected[1]):
+                    raise ValueError("payload")
+            except (ValueError, TypeError):
+                reason = "unexpected_write_payload"
+        if reason:
+            self.blocked.append(reason)
+            return False
+        self.forwarded = 1
+        return True
+
+
+class _ProfilePage:
+    """One real page and one write; retained only for the stale-catalog witness."""
+
+    def __init__(self, driver, label):
+        if driver._browser is None:
+            raise RuntimeError("BrowserDriver must be entered")
+        self.driver, self.label = driver, label
+        self.guard = ProfileWriteGuard(driver.base_url)
+        self.context = driver._browser.new_context(service_workers="block", viewport={"width": 1280, "height": 1000})
+        self.page = self.context.new_page()
+        self.page.set_default_timeout(driver.timeout_ms)
+        self.responses, self.errors, self.pending_responses = [], [], []
+        self.finished_requests, self.failed_requests = set(), set()
+        self.closed = False
+        self.context.route("**/*", self._route)
+        self.page.on("response", self._response)
+        self.page.on("pageerror", lambda error: self.errors.append(type(error).__name__))
+        self.page.on("requestfailed", self._request_failed)
+        self.page.on("requestfinished", lambda request: self.finished_requests.add(request))
+
+    def _route(self, route):
+        request = route.request
+        if self.guard.admit(request.method, request.url, request.headers, request.post_data):
+            route.continue_()
+        else:
+            route.abort("blockedbyclient")
+
+    def _response(self, response):
+        path = urlsplit(response.url).path
+        if path not in ("/api/status", "/api/v1/profiles", "/api/v1/profile", "/api/v1/profile/delete"):
+            return
+        item = {"path": path, "method": response.request.method, "status": response.status}
+        self.responses.append(item)
+        # A successful save need not consume its response body. Record its
+        # authoritative status without waiting for an unused browser body.
+        if response.request.method == "POST" and path in ("/api/v1/profile", "/api/v1/profile/delete") and response.status == 200:
+            return
+        # Never make nested synchronous Playwright calls from event callbacks,
+        # or read a body before the browser has completed that request.
+        self.pending_responses.append((response, item))
+
+    def drain_responses(self):
+        pending, self.pending_responses = self.pending_responses, []
+        for response, item in pending:
+            if response.request in self.failed_requests:
+                item["body_unreadable"] = True
+                continue
+            if response.request not in self.finished_requests:
+                self.pending_responses.append((response, item))
+                continue
+            try:
+                item["body"] = response.json()
+            except Exception:
+                item["body_unreadable"] = True
+
+    def response_json(self, response):
+        deadline = time.monotonic() + self.driver.timeout_ms / 1000
+        while response.request not in self.finished_requests:
+            if response.request in self.failed_requests or time.monotonic() >= deadline:
+                raise TimeoutError("Profile response body did not complete")
+            self.page.wait_for_timeout(50)
+        self.drain_responses()
+        return response.json()
+
+    def _request_failed(self, request):
+        self.failed_requests.add(request)
+
+    def open(self, catalog_names=None):
+        from playwright.sync_api import expect
+        self.page.goto(self.driver.base_url + "/profiles", wait_until="domcontentloaded")
+        expect(self.page.get_by_role("button", name="New Profile", exact=True).first).to_be_enabled()
+        deadline = time.monotonic() + self.driver.timeout_ms / 1000
+        while time.monotonic() < deadline:
+            self.drain_responses()
+            catalogs = [x for x in self.responses if x["path"] == "/api/v1/profiles" and x["method"] == "GET"]
+            maintenance = [x for x in self.responses if x["path"] == "/api/status" and x.get("body", {}).get("maintenanceBoot") is True]
+            if catalogs and catalogs[-1].get("body", {}).get("hasMore") is False and maintenance:
+                if any(x["status"] != 200 or x.get("body", {}).get("schemaVersion") != 4 for x in catalogs):
+                    raise ValueError("Profile catalog read failed")
+                rows = [row for x in catalogs for row in x["body"]["profiles"]]
+                names = [row["name"] for row in rows]
+                if (len(names) != len(set(names)) or catalogs[-1]["body"]["total"] != len(names)
+                        or (catalog_names is not None and set(names) != set(catalog_names))):
+                    raise ValueError("Complete profile catalog differs")
+                self.catalog_names = names
+                self.require_clean()
+                return
+            self.page.wait_for_timeout(50)
+        raise TimeoutError("Complete profile catalog or maintenance observation missing")
+
+    def require_clean(self):
+        if self.guard.blocked or self.errors:
+            raise ValueError("Browser profile contract failed")
+
+    def row(self, name):
+        from playwright.sync_api import expect
+        summary = self.page.get_by_text(re.compile(r"^Browse saved profiles \(")).first
+        if summary.is_visible() and summary.locator("xpath=ancestor::details").get_attribute("open") is None:
+            summary.click()
+        row = self.page.locator(".surface-panel").filter(has=self.page.locator(".font-medium").filter(
+            has_text=re.compile("^" + re.escape(name) + "$")))
+        expect(row).to_have_count(1)
+        return row
+
+    def edit(self, document):
+        from playwright.sync_api import expect
+        self.row(document["name"]).get_by_role("button", name="Edit", exact=True).click()
+        editor = self.page.locator("#profile-editor")
+        expect(editor.get_by_text("Editing profile: " + document["name"], exact=True)).to_be_visible()
+        self.drain_responses()
+        if not any(x["path"] == "/api/v1/profile" and x["status"] == 200 and
+                   _same_json(x.get("body"), document) for x in self.responses):
+            raise ValueError("Loaded profile differs from complete expected document")
+        expect(editor.get_by_label("Description", exact=True)).to_have_value(document["description"])
+        self.require_clean()
+        return editor
+
+    def draft(self, document):
+        from playwright.sync_api import expect
+        if any(name.lower() == document["name"].lower() for name in self.catalog_names):
+            raise ValueError("Temporary profile already exists")
+        self.page.get_by_role("button", name="New Profile", exact=True).first.click()
+        self.page.locator("#profile-editor").get_by_label("Description", exact=True).fill(document["description"])
+        self.page.get_by_role("button", name="Save as Profile", exact=True).click()
+        dialog = self.page.get_by_role("dialog", name="Save Profile")
+        dialog.get_by_label("Profile Name", exact=True).fill(document["name"])
+        expect(dialog.locator("#profile-description")).to_have_value(document["description"])
+        return dialog
+
+    def read_profile(self, name, *, absent=False):
+        deadline = time.monotonic() + self.driver.timeout_ms / 1000
+        while time.monotonic() < deadline:
+            reply = self.context.request.get(self.driver.base_url + "/api/v1/profile?" + urlencode({"name": name}),
+                                             timeout=max(1, min(5000, int((deadline-time.monotonic())*1000))),
+                                             max_redirects=0)
+            try:
+                if reply.status == 404 and absent:
+                    return None
+                value = reply.json()
+                if reply.status == 409 and value == {"error": "Profile storage busy; retry"}:
+                    self.page.wait_for_timeout(100)
+                    continue
+                if reply.status != 200 or absent:
+                    raise ValueError("Profile readback status differs")
+                return _profile_document(value)
+            finally:
+                reply.dispose()
+        raise TimeoutError("Profile readback deadline")
+
+    def send(self, button, path, payload):
+        from behavior_state import atomic_json
+        self.require_clean()
+        atomic_json(self.driver.artifact_dir / f"{self.label}-intent.json",
+                    {"path": path, "payload": payload, "outcome": "UNKNOWN"})
+        self.guard.arm(path, payload)
+        with self.page.expect_response(lambda r: r.request.method == "POST" and
+                                       r.url == self.driver.base_url + path) as pending:
+            button.click()
+        response = pending.value
+        self.drain_responses()
+        self.require_clean()
+        if self.guard.forwarded != 1:
+            raise ValueError("Expected exactly one forwarded profile request")
+        return response
+
+    def close(self):
+        if not self.closed:
+            self.context.close()
+            self.closed = True
 
 
 def normalize_base_url(base_url: str) -> str:
@@ -135,7 +419,7 @@ class SaveWriteGuard:
 
 
 class BrowserDriver:
-    """Fresh isolated page per Save; no shared user profile and no write retry."""
+    """Isolated shipping pages; no shared user profile and no write retry."""
 
     def __init__(self, base_url: str, artifact_dir: Path | str, *, timeout_ms: int = 30000,
                  headless: bool = True, channel: str | None = "chrome",
@@ -148,6 +432,7 @@ class BrowserDriver:
         self.channel, self.executable_path = channel, executable_path
         self._playwright = self._browser = None
         self._operation = 0
+        self._profile_collisions = {}
 
     def __enter__(self):
         from playwright.sync_api import sync_playwright
@@ -174,6 +459,183 @@ class BrowserDriver:
             if self._playwright:
                 self._playwright.stop()
             self._browser = self._playwright = None
+            self._profile_collisions.clear()
+
+    def _profile_page(self, label):
+        self._operation += 1
+        return _ProfilePage(self, f"profile-{self._operation:03d}-{label}-{time.time_ns()}")
+
+    def _profile_finish(self, session, result, *, close=True):
+        from behavior_state import atomic_json
+        session.drain_responses()
+        result["post_count"] = session.guard.forwarded
+        posts = [x for x in session.responses if x["method"] == "POST"]
+        result["post_status"] = posts[-1]["status"] if posts else None
+        result["mutation_outcome"] = ("not_sent" if not session.guard.forwarded else
+            "confirmed" if result["post_status"] == 200 else
+            "rejected" if result["post_status"] and result["post_status"] >= 400 else "possibly_committed")
+        result["blocked_requests"] = session.guard.blocked
+        result["browser_errors"] = session.errors
+        if session.guard.blocked or session.errors:
+            result.update(result="FAIL", reason="browser_profile_contract_failed")
+        try:
+            session.page.screenshot(path=str(self.artifact_dir / f"{session.label}.png"),
+                                    timeout=2000, full_page=True)
+            result["screenshot"] = f"{session.label}.png"
+        except Exception:
+            result["screenshot_unavailable"] = True
+        if close:
+            try:
+                session.close()
+            except Exception:
+                result["browser_close_error"] = True
+                if result["result"] == "PASS":
+                    result.update(result="INCOMPLETE", reason="browser_close_unconfirmed")
+        result["browser_closed"] = session.closed
+        atomic_json(self.artifact_dir / f"{session.label}-responses.json", session.responses)
+        atomic_json(self.artifact_dir / f"{session.label}.json", result)
+        return result
+
+    def _profile_run(self, label, document, action, *, session=None):
+        session = session or self._profile_page(label)
+        result = {"result": "INCOMPLETE", "reason": "profile_operation_incomplete", "readback": None}
+        try:
+            action(session, result)
+        except Exception as error:
+            result["exception_type"] = type(error).__name__
+            if session.guard.forwarded:
+                try:
+                    result["readback"] = session.read_profile(document["name"], absent=label == "delete")
+                except Exception:
+                    result["readback_error"] = True
+        return self._profile_finish(session, result)
+
+    def prepare_profile_collision(self, document, catalog_names):
+        """Keep one naturally stale New dialog open before another page creates it."""
+        document = _profile_document(document)
+        if not _same_json(document, profile_storage_document(document["name"], document["description"])):
+            raise ValueError("New-profile automation supports the shipping defaults only")
+        session = self._profile_page("stale")
+        try:
+            session.open(catalog_names)
+            session.draft(document)
+        except Exception as error:
+            self._profile_finish(session, {"result": "INCOMPLETE", "reason": "stale_draft_not_ready",
+                                          "exception_type": type(error).__name__})
+            raise
+        token = session.label
+        self._profile_collisions[token] = (session, document)
+        return token
+
+    def discard_profile_collision(self, token):
+        value = self._profile_collisions.pop(token, None)
+        if value is not None:
+            value[0].close()
+
+    def profile_create(self, document, catalog_names):
+        document = _profile_document(document)
+        if not _same_json(document, profile_storage_document(document["name"], document["description"])):
+            raise ValueError("New-profile automation supports the shipping defaults only")
+
+        def action(session, result):
+            from playwright.sync_api import expect
+            session.open(catalog_names)
+            dialog = session.draft(document)
+            response = session.send(dialog.get_by_role("button", name="Save", exact=True),
+                                    "/api/v1/profile", _profile_payload(document, creating=True))
+            if response.status != 200:
+                result.update(result="FAIL", reason="profile_create_rejected")
+                return
+            expect(session.page.get_by_text(f'Profile "{document["name"]}" saved', exact=True)).to_be_visible()
+            result["readback"] = session.read_profile(document["name"])
+            result.update(result="PASS" if _same_json(result["readback"], document) else "FAIL",
+                          reason="profile_create_readback")
+        return self._profile_run("create", document, action)
+
+    def profile_edit(self, before_document, after_document):
+        before, after = _profile_document(before_document), _profile_document(after_document)
+        if not _same_json({**before, "description": after["description"]}, after):
+            raise ValueError("Profile edit automation supports description changes only")
+
+        def action(session, result):
+            from playwright.sync_api import expect
+            session.open()
+            editor = session.edit(before)
+            editor.get_by_label("Description", exact=True).fill(after["description"])
+            response = session.send(editor.get_by_role("button", name="Save Profile", exact=True),
+                                    "/api/v1/profile", _profile_payload(after, creating=False))
+            if response.status != 200:
+                result.update(result="FAIL", reason="profile_edit_rejected")
+                return
+            expect(session.page.get_by_text(f'Profile "{after["name"]}" saved', exact=True)).to_be_visible()
+            result["readback"] = session.read_profile(after["name"])
+            result.update(result="PASS" if _same_json(result["readback"], after) else "FAIL",
+                          reason="profile_edit_readback")
+        return self._profile_run("edit", after, action)
+
+    def profile_collision(self, token):
+        session, document = self._profile_collisions.pop(token)
+
+        def action(session, result):
+            from playwright.sync_api import expect
+            session.drain_responses()
+            for item in session.responses:
+                if item["path"] == "/api/v1/profiles" and any(
+                        row["name"].lower() == document["name"].lower()
+                        for row in item.get("body", {}).get("profiles", [])):
+                    raise ValueError("Stale page observed the occupied name")
+            dialog = session.page.get_by_role("dialog", name="Save Profile")
+            response = session.send(dialog.get_by_role("button", name="Save", exact=True),
+                                    "/api/v1/profile", _profile_payload(document, creating=True))
+            body = session.response_json(response) if response.status == 409 else None
+            # The shipping error response also includes a companion message.
+            # Only the canonical collision error establishes this scenario.
+            if not isinstance(body, dict) or body.get("error") != "Profile already exists":
+                result.update(result="FAIL", reason="occupied_profile_not_rejected")
+                return
+            expect(session.page.get_by_text("Failed to save: Profile already exists", exact=True)).to_be_visible()
+            expect(dialog).to_be_visible()
+            expect(dialog.get_by_label("Profile Name", exact=True)).to_have_value(document["name"])
+            expect(dialog.locator("#profile-description")).to_have_value(document["description"])
+            result["readback"] = session.read_profile(document["name"])
+            result.update(result="PASS", reason="occupied_create_rejected_draft_retained")
+        return self._profile_run("collision", document, action, session=session)
+
+    def profile_reload(self, expected_document):
+        document = _profile_document(expected_document)
+
+        def action(session, result):
+            session.open()
+            session.edit(document)
+            result["readback"] = session.read_profile(document["name"])
+            result.update(result="PASS" if _same_json(result["readback"], document) else "FAIL",
+                          reason="fresh_page_profile_readback")
+        return self._profile_run("reload", document, action)
+
+    def profile_delete(self, expected_document):
+        document = _profile_document(expected_document)
+
+        def action(session, result):
+            session.open()
+            editor = session.edit(document)
+            editor.get_by_role("button", name="Cancel", exact=True).click()
+            if not _same_json(session.read_profile(document["name"]), document):
+                raise ValueError("Owned profile changed before delete")
+            confirmations = []
+
+            def confirm(dialog):
+                accepted = dialog.type == "confirm" and dialog.message == f'Delete profile "{document["name"]}"?'
+                confirmations.append(accepted)
+                dialog.accept() if accepted else dialog.dismiss()
+            session.page.once("dialog", confirm)
+            response = session.send(session.row(document["name"]).get_by_role("button", name="Delete", exact=True),
+                                    "/api/v1/profile/delete", {"name": document["name"]})
+            if response.status != 200 or confirmations != [True]:
+                result.update(result="FAIL", reason="profile_delete_not_confirmed")
+                return
+            result["readback"] = session.read_profile(document["name"], absent=True)
+            result.update(result="PASS", reason="owned_profile_deleted")
+        return self._profile_run("delete", document, action)
 
     def save_display(self, patch: dict, expected_before: dict) -> dict:
         """Click Save once; return evidence even when its response is uncertain.

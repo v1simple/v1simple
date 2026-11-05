@@ -91,6 +91,10 @@ run_camera_recorder_checks() {
   "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-timing
   "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-writer
   "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-raw-frames
+  recorder="$ROOT_DIR/scripts/bench/audio_recorder.swift"
+  "${xcrun_driver[@]}" swiftc -warnings-as-errors -module-cache-path "$module_cache" \
+    -typecheck "$recorder"
+  "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test
 }
 
 run_peripheral_lifecycle_checks() {
@@ -207,11 +211,11 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   run_step "v1replay bench executable build" ./tools/v1replay/scripts/build.sh
   run_step "v1replay Swift package tests" run_v1replay_swift_tests
   run_step "v1replay peripheral lifecycle regression suite" run_peripheral_lifecycle_checks
-  run_step "Native camera recorder checks" run_camera_recorder_checks
+  run_step "Native camera and microphone recorder checks" run_camera_recorder_checks
 else
   echo -e "${YELLOW}[skip] v1replay bench executable build requires macOS CoreBluetooth${NC}"
   echo -e "${YELLOW}[skip] v1replay Swift package tests require macOS CoreBluetooth${NC}"
-  echo -e "${YELLOW}[skip] Native camera recorder checks require macOS AVFoundation${NC}"
+  echo -e "${YELLOW}[skip] Native camera and microphone recorder checks require macOS AVFoundation${NC}"
 fi
 
 section "Native Tests"

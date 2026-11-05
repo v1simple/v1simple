@@ -26,6 +26,12 @@ ENDPOINTS = {
     "slots": "/api/autopush/slots", "device": "/api/device/settings",
     "devices": "/api/v1/devices",
 }
+AUDIO_BOOLEANS = frozenset(("voiceDirectionEnabled", "announceBogeyCount", "muteVoiceIfVolZero",
+    "announceSecondaryAlerts", "secondaryLaser", "secondaryKa", "secondaryK", "secondaryX",
+    "alertVolumeFadeEnabled", "speedMuteEnabled", "speedMuteVoice", "stealthEnabled"))
+AUDIO_RANGES = {"voiceAlertMode": (0, 3), "voiceVolume": (0, 100),
+    "alertVolumeFadeDelaySec": (1, 10), "alertVolumeFadeVolume": (1, 9),
+    "speedMuteThresholdMph": (5, 60), "speedMuteHysteresisMph": (1, 10), "speedMuteVolume": (0, 9)}
 
 
 class Incomplete(RuntimeError):
@@ -42,6 +48,9 @@ class DeviceHttpError(Incomplete):
     def __init__(self, endpoint: str, status: int, payload: object):
         self.status = status
         self.profile_storage_busy = status == 409 and payload == {"error": "Profile storage busy; retry"}
+        self.backup_snapshot_incomplete = (status == 503 and isinstance(payload, dict)
+            and payload.get("success") is False and payload.get("retryable") is True and payload == {
+                "error": "backup_snapshot_incomplete", "success": False, "retryable": True})
         self.payload = {}
         if isinstance(payload, dict):
             for key in ("error", "message", "success", "retryable"):
@@ -82,6 +91,35 @@ def atomic_json(path: Path, value: object) -> None:
 def digest(value: object) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
                                     allow_nan=False).encode()).hexdigest()
+
+
+def validate_audio_patch(patch: object, baseline: dict) -> None:
+    if (not isinstance(patch, dict) or not patch
+            or not patch.keys() <= AUDIO_BOOLEANS | AUDIO_RANGES.keys()
+            or not patch.keys() <= baseline.keys()):
+        raise Incomplete("Unsupported audio recovery fields")
+    for key, value in patch.items():
+        valid = (type(value) is bool if key in AUDIO_BOOLEANS else
+                 type(value) is int and AUDIO_RANGES[key][0] <= value <= AUDIO_RANGES[key][1])
+        original = baseline[key]
+        original_valid = (type(original) is bool if key in AUDIO_BOOLEANS else
+                          type(original) is int and AUDIO_RANGES[key][0] <= original <= AUDIO_RANGES[key][1])
+        if not valid or not original_valid:
+            raise Incomplete("Invalid audio recovery value: " + key)
+
+
+def validate_profile_document(value: object) -> None:
+    from usb_profiles import canonical_name, validate_detector, validate_in_the_box
+    if (not isinstance(value, dict) or value.get("schemaVersion") != 4
+            or not canonical_name(value.get("name")) or not isinstance(value.get("description"), str)
+            or not isinstance(value.get("settings"), dict)):
+        raise Incomplete("Invalid complete profile document")
+    raw = value["settings"].get("bytes")
+    if (not isinstance(raw, list) or len(raw) != 6
+            or any(type(item) is not int or not 0 <= item <= 255 for item in raw)):
+        raise Incomplete("Invalid profile settings bytes")
+    validate_detector(value.get("detector"), 4)
+    validate_in_the_box(value.get("inTheBox"))
 
 
 def differences(left, right, prefix="") -> list[str]:
@@ -214,10 +252,17 @@ class HttpDevice:
         headers = {"Cache-Control": "no-store"}
         body = None
         if fields is not None:
-            headers.update({"X-V1Simple-Request": "maintenance-ui",
-                            "Content-Type": "application/x-www-form-urlencoded"})
-            body = urllib.parse.urlencode({k: str(v).lower() if type(v) is bool else str(v)
-                                          for k, v in fields.items()}).encode()
+            headers["X-V1Simple-Request"] = "maintenance-ui"
+            if endpoint == "/api/v1/profile/delete":
+                from usb_profiles import canonical_name
+                if not isinstance(fields, dict) or set(fields) != {"name"} or not canonical_name(fields["name"]):
+                    raise ValueError("Profile deletion requires one canonical name")
+                headers["Content-Type"] = "application/json"
+                body = json.dumps(fields, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+            else:
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+                body = urllib.parse.urlencode({k: str(v).lower() if type(v) is bool else str(v)
+                                              for k, v in fields.items()}).encode()
         req = urllib.request.Request(self.base_url + endpoint, data=body, headers=headers)
         try:
             with self.opener.open(req, timeout=timeout) as response:
@@ -238,8 +283,28 @@ class HttpDevice:
             raise DeviceHttpError(endpoint, status, value)
         return value
 
-    def snapshot(self) -> dict:
-        value = {key: self.request(endpoint) for key, endpoint in ENDPOINTS.items()}
+    def snapshot(self, *, timeout_s: float = 30) -> dict:
+        """One bounded complete read; poll only the explicit backup-not-ready GET."""
+        if type(timeout_s) not in (int, float) or not 0 < timeout_s <= 60:
+            raise ValueError("Invalid snapshot read budget")
+        deadline, value = time.monotonic() + timeout_s, {}
+        for key, endpoint in ENDPOINTS.items():
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise Incomplete("Configuration snapshot deadline exceeded")
+                try:
+                    value[key] = self.request(endpoint, timeout_s=remaining)
+                except DeviceHttpError as exc:
+                    if key != "backup" or not exc.backup_snapshot_incomplete:
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(min(.25, remaining))
+                    continue
+                if time.monotonic() >= deadline:
+                    raise Incomplete("Configuration snapshot response exceeded the read deadline")
+                break
         validate_snapshot(value)
         return value
 
@@ -340,7 +405,7 @@ class RecoveryJournal:
 
     @classmethod
     def create(cls, directory: Path, identity: dict, baseline: dict, profiles: dict, usb_identity,
-               *, connection: dict | None = None) -> "RecoveryJournal":
+               *, connection: dict | None = None, profile_documents: dict | None = None) -> "RecoveryJournal":
         value = deepcopy({"schema": 1, "identity": identity, "usb_identity": usb_identity,
                  "baseline": baseline, "profiles": profiles,
                  "baseline_digest": digest({"baseline": baseline, "profiles": profiles}),
@@ -348,6 +413,10 @@ class RecoveryJournal:
                  "restoration": "not_needed", "stage": "backed_up"})
         if connection is not None:
             value["connection"] = deepcopy(connection)
+        if profile_documents is not None:
+            value["profile_documents"] = deepcopy(profile_documents)
+            value["baseline_digest"] = digest({"baseline": baseline, "profiles": profiles,
+                                               "profile_documents": profile_documents})
         validate_journal(value)
         path = Path(directory) / "recovery.json"
         if path.exists():
@@ -415,7 +484,8 @@ class RecoveryJournal:
         validate_journal(self.value)
         validate_slots(current)
         baseline = self.value["baseline"]["slots"]
-        if (current.get("activeSlot") != baseline["activeSlot"] or current.get("enabled") != baseline["enabled"]
+        if (current.get("activeSlot") != baseline["activeSlot"]
+                or current.get("enabled") not in [baseline["enabled"], *self.value.get("autopush_intents", [])]
                 or len(current.get("slots", [])) != 3):
             raise Incomplete("Slot identity changed during the test")
         allowed = {slot: [baseline["slots"][slot]["alertPersist"]] for slot in slots}
@@ -440,6 +510,105 @@ class RecoveryJournal:
         baseline = self._persistence_owned_values(current, slots)
         return [(slot, baseline["slots"][slot]["alertPersist"]) for slot in slots
                 if current["slots"][slot]["alertPersist"] != baseline["slots"][slot]["alertPersist"]]
+
+    def audio_restore_patch(self, current: dict) -> dict:
+        validate_journal(self.value)
+        original = self.value["baseline"]["audio"]
+        intents = self.value.get("audio_intents", [])
+        keys = {key for patch in intents for key in patch}
+        for key in keys:
+            allowed = [original[key], *(patch[key] for patch in intents if key in patch)]
+            if key not in current or type(current[key]) is not type(original[key]) or current[key] not in allowed:
+                raise Incomplete("An audio field has an unowned value; refusing overwrite")
+        return {key: original[key] for key in keys if current[key] != original[key]}
+
+    def audio_intent(self, current: dict, patch: dict) -> None:
+        original = self.value["baseline"]["audio"]
+        validate_audio_patch(patch, original)
+        self.audio_restore_patch(current)
+        owned = {key for prior in self.value.get("audio_intents", []) for key in prior}
+        if any(current.get(key) != original[key] or type(current.get(key)) is not type(original[key])
+               for key in patch.keys() - owned):
+            raise Incomplete("A new audio field changed before ownership was recorded")
+        self.save(audio_intents=[*self.value.get("audio_intents", []), deepcopy(patch)],
+                  restoration="required", stage="audio_write_pending")
+
+    def autopush_restore(self, current: dict) -> dict:
+        validate_journal(self.value)
+        validate_slots(current)
+        original = self.value["baseline"]["slots"]
+        # Persistence is separately owned; every other slot field must remain exact.
+        comparable = deepcopy(current)
+        comparable["enabled"] = original["enabled"]
+        for index, row in enumerate(comparable["slots"]):
+            row["alertPersist"] = original["slots"][index]["alertPersist"]
+        if comparable != original:
+            raise Incomplete("Slot identity changed before AutoPush restoration")
+        intents = self.value.get("autopush_intents", [])
+        if current["enabled"] not in [original["enabled"], *intents]:
+            raise Incomplete("AutoPush has an unowned value")
+        if intents and current["enabled"] != original["enabled"]:
+            return {"slot": original["activeSlot"], "enable": original["enabled"]}
+        return {}
+
+    def autopush_intent(self, current: dict, enabled: bool) -> None:
+        if type(enabled) is not bool:
+            raise Incomplete("Invalid AutoPush intent")
+        self.autopush_restore(current)
+        self.save(autopush_intents=[*self.value.get("autopush_intents", []), enabled],
+                  restoration="required", stage="autopush_write_pending")
+
+    def profile_intent(self, action: str, before: dict | None, after: dict | None) -> None:
+        intent = {"action": action, "before": deepcopy(before), "after": deepcopy(after)}
+        self.save(profile_intents=[*self.value.get("profile_intents", []), intent],
+                  restoration="required", stage="profile_write_pending")
+
+    def owned_profile(self, documents: dict, slots: dict) -> str | None:
+        """Return only a positively owned temporary document eligible for deletion."""
+        validate_journal(self.value)
+        intents = self.value.get("profile_intents", [])
+        if not intents:
+            return None
+        validate_slots(slots)
+        name = intents[0]["after"]["name"]
+        if any(row["profile"].lower() == name.lower() for row in slots["slots"]):
+            raise Incomplete("Temporary profile acquired a slot reference; refusing deletion")
+        if name not in documents:
+            if any(key.lower() == name.lower() for key in documents):
+                raise Incomplete("Temporary profile name changed; refusing deletion")
+            return None
+        allowed = [row[key] for row in intents for key in ("before", "after") if row[key] is not None]
+        if documents[name] not in allowed:
+            raise Incomplete("Temporary profile has unowned content; refusing deletion")
+        return name
+
+    def admit_replay_target(self, capture: dict, normal_boot: int) -> None:
+        provenance = capture.get("provenance", {})
+        address = capture.get("address")
+        if (capture.get("available") is not True or provenance.get("capturedBootId") != normal_boot
+                or provenance.get("captureTimedOut") is not False
+                or type(provenance.get("sessionGeneration")) is not int or provenance["sessionGeneration"] <= 0
+                or not isinstance(address, str) or not re.fullmatch(r"[0-9A-F]{2}(?::[0-9A-F]{2}){5}", address)):
+            raise Incomplete("Replay target lacks a fresh complete detector capture")
+        if "replay_target" in self.value and self.value["replay_target"]["address"] != address:
+            raise Incomplete("Controlled replay target identity changed")
+        self.save(replay_target={"address": address, "captured_boot": normal_boot,
+                                "session_generation": provenance["sessionGeneration"]})
+
+    def restoration_differences(self, current: dict) -> tuple[list[str], dict | None]:
+        """Keep expected runtime identity metadata explicit, never hide unrelated drift."""
+        original = self.value["baseline"]
+        expected = deepcopy(original)
+        metadata = None
+        if "replay_target" in self.value:
+            address = self.value["replay_target"]["address"]
+            observed = current["backup"].get("lastV1Address")
+            prior = original["backup"].get("lastV1Address")
+            if observed == address and observed != prior:
+                expected["backup"]["lastV1Address"] = address
+                metadata = {"original": prior, "observed": observed,
+                            "disposition": "last-connected identity from the admitted controlled replay"}
+        return differences(semantic_snapshot(expected), semantic_snapshot(current)), metadata
 
 
 def validate_persistence_intent(intent: object) -> None:
@@ -488,7 +657,19 @@ def validate_journal(value: object) -> None:
         validate_bundle(value["profiles"])
     except (ProfileError, TypeError, ValueError, KeyError) as exc:
         raise Incomplete("Invalid complete USB profile backup") from exc
-    if digest({"baseline": value["baseline"], "profiles": value["profiles"]}) != value["baseline_digest"]:
+    protected = {"baseline": value["baseline"], "profiles": value["profiles"]}
+    if "profile_documents" in value:
+        documents = value["profile_documents"]
+        if (not isinstance(documents, dict)
+                or set(documents) != {row["name"] for row in value["baseline"]["backup"]["profiles"]}
+                or set(documents) != {row["name"] for row in value["profiles"]["profiles"]}):
+            raise Incomplete("Incomplete original profile documents")
+        for name, document in documents.items():
+            validate_profile_document(document)
+            if document["name"] != name:
+                raise Incomplete("Original profile document identity mismatch")
+        protected["profile_documents"] = documents
+    if digest(protected) != value["baseline_digest"]:
         raise Incomplete("Recovery baseline integrity mismatch")
     if not isinstance(value["display_intents"], list) or not isinstance(value["persistence_intents"], list):
         raise Incomplete("Invalid recovery intent lists")
@@ -499,6 +680,50 @@ def validate_journal(value: object) -> None:
             raise Incomplete("Invalid display recovery intent") from exc
     for intent in value["persistence_intents"]:
         validate_persistence_intent(intent)
+    for key in ("audio_intents", "autopush_intents", "profile_intents"):
+        if key in value and not isinstance(value[key], list):
+            raise Incomplete("Invalid recovery intent list: " + key)
+    for patch in value.get("audio_intents", []):
+        validate_audio_patch(patch, value["baseline"]["audio"])
+    if any(type(enabled) is not bool for enabled in value.get("autopush_intents", [])):
+        raise Incomplete("Invalid AutoPush recovery intent")
+    previous, name = None, None
+    for index, intent in enumerate(value.get("profile_intents", [])):
+        if (not isinstance(intent, dict) or set(intent) != {"action", "before", "after"}
+                or intent["action"] not in ("create", "edit", "delete")):
+            raise Incomplete("Invalid temporary profile intent")
+        before, after, action = intent["before"], intent["after"], intent["action"]
+        if "profile_documents" not in value:
+            raise Incomplete("Complete original documents are required before profile writes")
+        for document in (before, after):
+            if document is not None:
+                validate_profile_document(document)
+        if index == 0:
+            if action != "create" or before is not None or after is None:
+                raise Incomplete("Temporary profile must begin with create-only intent")
+            name = after["name"]
+            if name.lower() in {key.lower() for key in value["profile_documents"]}:
+                raise Incomplete("An original profile cannot become temporary test data")
+        elif action == "create" or (action == "edit" and before != previous):
+            raise Incomplete("Temporary profile intent does not follow its prior exact document")
+        elif action == "delete":
+            known = [row[key] for row in value["profile_intents"][:index]
+                     for key in ("before", "after") if row[key] is not None]
+            if before not in known or previous is None:
+                raise Incomplete("Temporary deletion lacks exact owned content")
+        if (action == "edit" and (before is None or after is None)
+                or action == "delete" and (before is None or after is not None)
+                or any(document is not None and document["name"] != name for document in (before, after))):
+            raise Incomplete("Temporary profile identity or transition changed")
+        previous = after
+    if "replay_target" in value:
+        target = value["replay_target"]
+        if (not isinstance(target, dict) or set(target) != {"address", "captured_boot", "session_generation"}
+                or not isinstance(target["address"], str)
+                or not re.fullmatch(r"[0-9A-F]{2}(?::[0-9A-F]{2}){5}", target["address"])
+                or any(type(target[key]) is not int or target[key] <= 0
+                       for key in ("captured_boot", "session_generation"))):
+            raise Incomplete("Invalid admitted replay target")
     if (value["restoration"] not in ("not_needed", "required", "verified", "unverified")
             or not isinstance(value["stage"], str) or not value["stage"]):
         raise Incomplete("Invalid recovery stage")

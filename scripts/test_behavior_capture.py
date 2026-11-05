@@ -265,6 +265,48 @@ class CaptureTests(unittest.TestCase):
         self.assertIn("--persistence-coverage", replay.process.command)
         self.assertNotIn("--scenario", replay.process.command)
 
+    def test_warning_reuses_owned_paused_transport_with_exact_failed_encounter(self):
+        authored = subject.warning_scenario()
+        self.assertEqual(len(authored["samples"]), 28)
+        self.assertEqual(authored["samples"][-1]["offsetSeconds"], 9)
+        session = subject.ReplaySession(self.executable, self.root / "warning", "warning", authored=authored,
+            detector_volume=0, lease_factory=lambda: self.lease, process_factory=Process,
+            clock=self.clock, sleep=self.clock.sleep)
+        self.sessions.append(session)
+        session.start()
+        command = session.process.command
+        self.assertIn("--quiet-after-complete", command)
+        self.assertIn("--paused", command)
+        self.assertEqual(command[command.index("--volume") + 1], "0,0")
+        self.assertEqual(json.loads((session.out_dir / "warning-input.json").read_text()), authored)
+        self.assertFalse(session.paused_ready())
+
+    def test_warning_release_requires_seven_idle_seconds_before_the_warning_deadline(self):
+        from test_behavior_audio_runner import capture_replies, notification, packet
+        for delayed in (False, True):
+            with self.subTest(delayed=delayed):
+                clock = Clock()
+                session = subject.ReplaySession(self.executable, self.root / ("delayed" if delayed else "prompt"),
+                    "warning", authored=subject.warning_scenario(), detector_volume=0,
+                    lease_factory=Lease, process_factory=Process, clock=clock, sleep=clock.sleep)
+                self.sessions.append(session)
+                session.start()
+                session.process.output.write("paused\nreqStartAlertData — alert table enabled\n".encode())
+                raw = packet([0xAA, 0xD8, 0xEA, 0x31, 9, 0x77, 0x77, 0, 0, 0, 0xC, 4, 0])
+                session.process.feed({"state": "session_transport", "active": True}, notification(raw, 1_000_000_000, 1),
+                                     *capture_replies(0, 1_000_000_000))
+                if delayed:
+                    clock.now = 8
+                with mock.patch.object(subject.os, "write", return_value=1) as write:
+                    if delayed:
+                        with self.assertRaisesRegex(subject.CaptureError, "pre-warning"):
+                            session.release_after_idle(7, timeout_s=1)
+                        write.assert_not_called()
+                    else:
+                        record = session.release_after_idle(7, timeout_s=1)
+                        write.assert_called_once()
+                        self.assertGreaterEqual(record["release_before_ns"] - record["idle_started_ns"], 7_000_000_000)
+
     def test_replay_refuses_evidence_under_git_checkout(self):
         (self.root / ".git").write_text("gitdir: nowhere")
         with self.assertRaisesRegex(ValueError, "outside Git"):

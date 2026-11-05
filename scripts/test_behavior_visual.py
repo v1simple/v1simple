@@ -8,7 +8,7 @@ import colorsys
 import unittest
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from bench import behavior_visual as visual
 from bench.read_replay_fields import READER_REFERENCE_CROP
@@ -103,7 +103,7 @@ def takeover(rows, **kwargs):
                                     persistence_s=kwargs.pop("persistence_s", 3.), **kwargs)
 
 
-def warning_fixture(text="VOL 0", *, color=(235, 45, 15), x=488, y=248, scale=9.75):
+def warning_fixture(text="VOL 0", *, color=(235, 45, 15), x=488, y=248, scale=9.75, spread=0):
     image = fixture(idle=True)
     image[230:375, 450:880] = 0
     rows = {
@@ -120,6 +120,9 @@ def warning_fixture(text="VOL 0", *, color=(235, 45, 15), x=488, y=248, scale=9.
                 if bit == "1":
                     image[round(y + row * scale):round(y + (row+1) * scale),
                           round(x + (index*6+column)*scale):round(x + (index*6+column+1)*scale)] = color
+    if spread:
+        image[230:375, 450:880] = np.asarray(Image.fromarray(image[230:375, 450:880]).filter(
+            ImageFilter.GaussianBlur(spread)))
     return image
 
 
@@ -169,6 +172,34 @@ class WarningVisualTests(unittest.TestCase):
                       warning_fixture(color=(15, 45, 235)), blob):
             with self.subTest(image=image[250, 490].tolist()):
                 self.assertIsNone(visual.observe_warning_frame(image, IDENTITY)["warning"]["text"])
+
+    def test_bright_stroke_spread_keeps_complete_identity_and_rejects_extra_content(self):
+        image = warning_fixture(spread=2.5)
+        observed = visual.observe_warning_frame(image, IDENTITY)
+        self.assertEqual(observed["warning"]["text"], "VOL 0", observed["warning"])
+        self.assertEqual(observed["warning"]["cell_errors"], 0)
+        for text in ("VOL O", "VOL 8", " OL 0"):
+            with self.subTest(text=text):
+                self.assertIsNone(visual.observe_warning_frame(warning_fixture(text, spread=2.5),
+                                                              IDENTITY)["warning"]["text"])
+        for source in (warning_fixture(), image):
+            for bounds in ((475, 254, 482, 310), (662, 250, 669, 315), (810, 330, 865, 370),
+                           (830, 330, 855, 340), (774, 314, 799, 324)):
+                with self.subTest(bounds=bounds):
+                    changed = source.copy()
+                    left, top, right, bottom = bounds
+                    changed[top:bottom, left:right] = (235, 45, 15)
+                    self.assertIsNone(visual.observe_warning_frame(changed, IDENTITY)["warning"]["text"])
+
+    def test_unreadable_neighbor_cannot_prove_a_short_visible_half_cycle(self):
+        rows, reference = self.series()
+        for row in rows:
+            if abs(row["time_s"] - 15.8) < .001:
+                row["warning"] = {"text": None, "blank": False, "lit_pixels": 9000}
+        checks = self.evaluate(rows, reference)
+        blink = next(row for row in checks if row["check"] == "warning_blink")
+        self.assertEqual(blink["result"], "INCOMPLETE", checks)
+        self.assertEqual(blink["failures"], [])
 
     def test_default_delay_flash_and_expiry_pass(self):
         rows, reference = self.series()

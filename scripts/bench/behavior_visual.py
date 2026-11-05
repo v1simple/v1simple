@@ -195,12 +195,18 @@ def observe_warning_frame(rgb, registration):
             # Require the rest of the center to stay empty as well. Glyph-cell
             # centers alone cannot exclude an extra word or colored remnant.
             allowed = np.zeros(lit.shape, dtype=bool)
+            nominal = np.zeros_like(allowed)
             for row, column in zip(*np.where(wanted)):
                 x0, x1 = round(x + column*scale) - 450, round(x + (column+1)*scale) - 450
                 y0, y1 = round(y + row*scale) - 230, round(y + (row+1)*scale) - 230
-                allowed[max(0, y0-2):min(len(allowed), y1+2), max(0, x0-2):min(allowed.shape[1], x1+2)] = True
+                nominal[max(0, y0-2):min(len(nominal), y1+2), max(0, x0-2):min(nominal.shape[1], x1+2)] = True
+                # Saturated optical edges spread beyond the fitted font cells.
+                # Bound that fringe below half a cell; full foreground and
+                # background cell identity above must still agree.
+                allowed[max(0, y0-4):min(len(allowed), y1+4), max(0, x0-4):min(allowed.shape[1], x1+4)] = True
             extra = int((lit & ~allowed).sum())
-            if extra > max(50, int(allowed.sum() * .025)):
+            # Optical spread must not increase the unrelated-content budget.
+            if extra > max(50, int(nominal.sum() * .025)):
                 continue
             result["warning"].update(text="VOL 0", cell_errors=int(errors[index]),
                                      fitted_geometry=list(positions[index]), extra_lit_pixels=extra)
@@ -282,8 +288,10 @@ def evaluate_warning(samples, idle_reference, *, onset_s, tolerance_s=.35,
     if (not any(row["warning_state"] == "unreadable" for row in active)
             and (not 30 <= len(groups) <= 44 or not {"on", "off"} <= {row["state"] for row in groups})):
         failures[names[2]].append("warning did not repeatedly alternate complete VOL 0 glyphs with blank phases")
-    for group in groups[1:-1]:
-        if group["state"] in ("on", "off") and not .08 <= group["end"] - group["start"] <= .31:
+    for previous, group, following in zip(groups, groups[1:], groups[2:]):
+        # Unreadable frames cannot locate either edge of a visible half-cycle.
+        if (all(item["state"] in ("on", "off") for item in (previous, group, following))
+                and not .08 <= group["end"] - group["start"] <= .31):
             failures[names[2]].append("warning half-cycle differs from the 250 ms cadence")
     if len(groups) >= 3 and all(group["state"] in ("on", "off") for group in groups):
         # Infer cadence across many transitions; individual 0.1 s samples do

@@ -63,6 +63,17 @@ and detector-only retirement, callbacks delayed at queue admission, and fresh
 traffic after reconnect. It does not serialize NimBLE's final notification call
 with a concurrent reconnect or establish physical radio scheduling.
 
+The notification consumer addresses the owning phone handle rather than
+broadcasting. If a notification is refused, it retains that head in order and
+yields to the next main-loop iteration. Only failed notifications are retried,
+and only while their original enqueue age is under 100 ms; a retry cannot renew
+that age. Expiry drops the failed notification using the existing loss policy,
+and retirement of either session discards it before another attempt. This is a
+local recovery budget, not an external app's request timeout or a delivery
+acknowledgment. It never resends a detector-setting command. The allocation suite
+covers refusal/recovery, ordered short and long notifications, recipient
+identity, bounded expiry including clock wrap, and retirement while retrying.
+
 A successfully forwarded `reqStopAlertData` retires the current detailed-stream
 start, including raw and indexed long-characteristic phone writes. While the
 same phone session owns that explicit stop, local requests do not undo it. A

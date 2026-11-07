@@ -41,6 +41,13 @@ enum NIMBLE_PROPERTY : uint32_t {
     WRITE = 1 << 3,
 };
 
+struct MockNotifyAttempt {
+    std::string uuid;
+    std::vector<uint8_t> data;
+    uint16_t connHandle;
+    bool accepted;
+};
+
 struct MockNimBLEState {
     uint32_t createServerCalls = 0;
     uint32_t createServiceCalls = 0;
@@ -61,6 +68,8 @@ struct MockNimBLEState {
     const void* scanCallbacks = nullptr;
     std::string lastNotifyUuid;
     std::vector<uint8_t> lastNotifyData;
+    uint16_t lastNotifyConnHandle = BLE_HS_CONN_HANDLE_NONE;
+    std::vector<MockNotifyAttempt> notifyAttempts;
     std::string deviceName;
     std::string advertisementName;
     std::string scanResponseName;
@@ -370,14 +379,17 @@ public:
         : uuid_(uuid ? uuid : "") {}
 
     void setCallbacks(NimBLECharacteristicCallbacks* callbacks) { callbacks_ = callbacks; }
-    bool notify(const uint8_t* data, size_t size) {
+    bool notify(const uint8_t* data, size_t size, uint16_t connHandle = BLE_HS_CONN_HANDLE_NONE) {
         g_mock_nimble_state.characteristicNotifyCalls++;
         g_mock_nimble_state.lastNotifyUuid = uuid_;
+        g_mock_nimble_state.lastNotifyConnHandle = connHandle;
         if (data && size > 0) {
             g_mock_nimble_state.lastNotifyData.assign(data, data + size);
         } else {
             g_mock_nimble_state.lastNotifyData.clear();
         }
+        g_mock_nimble_state.notifyAttempts.push_back(
+            {uuid_, g_mock_nimble_state.lastNotifyData, connHandle, notifyResult_});
         return notifyResult_;
     }
     bool writeValue(const uint8_t*, size_t, bool) { return writeValueResult_; }

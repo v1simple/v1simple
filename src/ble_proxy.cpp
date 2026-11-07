@@ -86,6 +86,14 @@ uint32_t V1BLEClient::phoneSessionForConnection(uint16_t connHandle) {
     return generation;
 }
 
+uint16_t V1BLEClient::phoneConnectionForSession(uint32_t generation) {
+    taskENTER_CRITICAL(&proxyCallbackEventMux_);
+    const uint16_t handle = acceptsPhoneSession(generation)
+        ? proxyPhoneConnectionHandle_ : BLE_HS_CONN_HANDLE_NONE;
+    taskEXIT_CRITICAL(&proxyCallbackEventMux_);
+    return handle;
+}
+
 bool V1BLEClient::popProxyCallbackEvent(ProxyCallbackEvent& event) {
     taskENTER_CRITICAL(&proxyCallbackEventMux_);
     if (proxyCallbackEventQueueCount_ == 0) {
@@ -666,6 +674,7 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
     pkt.tsMs = static_cast<uint32_t>(millis());
     pkt.sessionGeneration = sessionGeneration;
     pkt.phoneSessionGeneration = phoneSessionGeneration;
+    pkt.notifyRetryPending = false;
     proxyQueueHead_ = (proxyQueueHead_ + 1) % PROXY_QUEUE_SIZE;
     proxyQueueCount_++;
     if (bleNotifyMutex_) {
@@ -701,15 +710,32 @@ int V1BLEClient::processProxyQueue() {
 
         // A retained response belongs to the detector and phone present at
         // ingress. Reconnect must not replay it to a later session.
-        if (targetChar && sessionPublicationGate_.accepts(pkt.sessionGeneration) &&
-            acceptsPhoneSession(pkt.phoneSessionGeneration)) {
-            if (targetChar->notify(pkt.data, pkt.length)) {
+        const uint16_t phoneHandle = phoneConnectionForSession(pkt.phoneSessionGeneration);
+        const bool retryExpired = pkt.notifyRetryPending &&
+            static_cast<uint32_t>(millis() - pkt.tsMs) >= PROXY_NOTIFY_RETRY_MAX_AGE_MS;
+        bool notifyFailed = false;
+        if (targetChar && !retryExpired && phoneHandle != BLE_HS_CONN_HANDLE_NONE &&
+            sessionPublicationGate_.accepts(pkt.sessionGeneration) && acceptsPhoneSession(pkt.phoneSessionGeneration)) {
+            // Target the owning phone: a failed broadcast can follow a successful
+            // send to another peer, making a broadcast retry unsafe.
+            if (targetChar->notify(pkt.data, pkt.length, phoneHandle)) {
                 sent++;
+            } else {
+                notifyFailed = true;
+                if (static_cast<uint32_t>(millis() - pkt.tsMs) < PROXY_NOTIFY_RETRY_MAX_AGE_MS) {
+                    // Yield to the main loop without losing or reordering this
+                    // notification. Keep its original age so recovery stays bounded.
+                    pkt.notifyRetryPending = true;
+                    break;
+                }
             }
         }
 
         proxyQueueTail_ = (proxyQueueTail_ + 1) % PROXY_QUEUE_SIZE;
         proxyQueueCount_--;
+        if (notifyFailed) {
+            break;
+        }
     }
 
     return sent;
@@ -758,6 +784,7 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
     pkt.charUUID = sourceCharUUID;
     pkt.sessionGeneration = sessionGeneration;
     pkt.phoneSessionGeneration = phoneSessionGeneration;
+    pkt.notifyRetryPending = false;
     phone2v1QueueHead_ = (phone2v1QueueHead_ + 1) % PHONE_CMD_QUEUE_SIZE;
     phone2v1QueueCount_++;
     xSemaphoreGive(phoneCmdMutex_);

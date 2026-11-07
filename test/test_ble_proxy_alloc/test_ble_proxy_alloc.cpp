@@ -1345,8 +1345,243 @@ void test_proxy_long_queue_retires_with_new_detector_generation_only() { notific
 void test_proxy_short_admission_retires_with_new_detector_generation_only() { notificationDetectorOnlyBoundary(false, true, true); }
 void test_proxy_long_admission_retires_with_new_detector_generation_only() { notificationDetectorOnlyBoundary(true, true, true); }
 
+// Notification refusal is injected before acceptance by the NimBLE double.
+// The production queue and session owners must retain order, target one phone,
+// and stop retrying within the local 100 ms recovery budget.
+struct NotificationRetryFixture : NotificationSessionFixture {
+    static constexpr uint16_t PHONE_HANDLE = 17;
+
+    NotificationRetryFixture() {
+        phoneCallbacks.onDisconnect(client.pServer_, phone, 19);
+        client.drainProxyCallbackEvents();
+        phone.setConnHandle(PHONE_HANDLE);
+        phoneCallbacks.onConnect(client.pServer_, phone);
+        client.drainProxyCallbackEvents();
+        g_mock_nimble_state.notifyAttempts.clear();
+        g_mock_nimble_state.characteristicNotifyCalls = 0;
+    }
+
+    void enqueueBytes(const std::vector<uint8_t>& bytes, bool longChannel = false) {
+        V1BLEClient::notifyCallback(longChannel ? &longInput : &shortInput,
+                                   const_cast<uint8_t*>(bytes.data()), bytes.size(), true);
+    }
+};
+
+static std::vector<uint8_t> notificationSettingsReply(uint8_t firstByte = 0xFF) {
+    std::vector<uint8_t> packet{0xAA, 0xD6, 0xEA, 0x12, 0x07,
+                                firstByte, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0xAB};
+    uint8_t sum = 0;
+    for (size_t i = 0; i < packet.size() - 2; ++i) sum += packet[i];
+    packet[packet.size() - 2] = sum;
+    return packet;
+}
+
+static void assertNotificationAttempt(size_t index, const std::vector<uint8_t>& bytes,
+                                      bool accepted, bool longChannel = false,
+                                      uint16_t handle = NotificationRetryFixture::PHONE_HANDLE) {
+    TEST_ASSERT_TRUE(index < g_mock_nimble_state.notifyAttempts.size());
+    const auto& attempt = g_mock_nimble_state.notifyAttempts[index];
+    TEST_ASSERT_EQUAL_STRING(longChannel ? V1_DISPLAY_DATA_LONG_UUID : V1_DISPLAY_DATA_UUID,
+                             attempt.uuid.c_str());
+    TEST_ASSERT_EQUAL_UINT16(handle, attempt.connHandle);
+    TEST_ASSERT_EQUAL(accepted, attempt.accepted);
+    TEST_ASSERT_EQUAL_UINT32(bytes.size(), attempt.data.size());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(bytes.data(), attempt.data.data(), bytes.size());
+}
+
+void test_proxy_refused_settings_reply_recovers_once_for_its_phone() {
+    NotificationRetryFixture f;
+    mockMillis = 1000;
+    const auto reply = notificationSettingsReply();
+    f.enqueueBytes(reply);
+    f.client.pProxyNotifyChar_->setNotifyResult(false);
+
+    TEST_ASSERT_EQUAL_INT(0, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, f.client.proxyQueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_nimble_state.notifyAttempts.size());
+    assertNotificationAttempt(0, reply, false);
+
+    mockMillis = 1010;
+    f.client.pProxyNotifyChar_->setNotifyResult(true);
+    TEST_ASSERT_EQUAL_INT(1, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(0, f.client.proxyQueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_nimble_state.notifyAttempts.size());
+    assertNotificationAttempt(1, reply, true);
+    TEST_ASSERT_EQUAL_INT(0, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_nimble_state.notifyAttempts.size());
+}
+
+void test_proxy_failed_head_preserves_short_and_long_notification_order() {
+    NotificationRetryFixture f;
+    const auto reply = notificationSettingsReply();
+    // Opaque indexed pieces are forwarded without modifying their framing.
+    const std::vector<uint8_t> first{0x12, 0xAA, 0xD6, 0xEA, 0x23};
+    const std::vector<uint8_t> last{0x22, 0x01, 0xBE, 0xAB};
+    f.enqueueBytes(reply);
+    f.enqueueBytes(first, true);
+    f.enqueueBytes(last, true);
+    f.client.pProxyNotifyChar_->setNotifyResult(false);
+
+    TEST_ASSERT_EQUAL_INT(0, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(3, f.client.proxyQueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_nimble_state.notifyAttempts.size());
+    assertNotificationAttempt(0, reply, false);
+
+    f.client.pProxyNotifyChar_->setNotifyResult(true);
+    f.client.pProxyNotifyLongChar_->setNotifyResult(false);
+    TEST_ASSERT_EQUAL_INT(1, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(2, f.client.proxyQueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(3, g_mock_nimble_state.notifyAttempts.size());
+    assertNotificationAttempt(1, reply, true);
+    assertNotificationAttempt(2, first, false, true);
+
+    f.client.pProxyNotifyLongChar_->setNotifyResult(true);
+    TEST_ASSERT_EQUAL_INT(2, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(5, g_mock_nimble_state.notifyAttempts.size());
+    assertNotificationAttempt(3, first, true, true);
+    assertNotificationAttempt(4, last, true, true);
+    TEST_ASSERT_EQUAL_INT(0, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(5, g_mock_nimble_state.notifyAttempts.size());
+}
+
+static void notificationRetryBudget(uint32_t start, bool recoverBeforeBoundary) {
+    NotificationRetryFixture f;
+    const auto oldReply = notificationSettingsReply();
+    mockMillis = start;
+    f.enqueueBytes(oldReply);
+    // A late first failure must not restart the budget from the failed attempt.
+    mockMillis = static_cast<uint32_t>(start + 80);
+    f.client.pProxyNotifyChar_->setNotifyResult(false);
+    TEST_ASSERT_EQUAL_INT(0, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, f.client.proxyQueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_nimble_state.notifyAttempts.size());
+
+    mockMillis = static_cast<uint32_t>(start + 99);
+    f.client.pProxyNotifyChar_->setNotifyResult(recoverBeforeBoundary);
+    TEST_ASSERT_EQUAL_INT(recoverBeforeBoundary ? 1 : 0, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_nimble_state.notifyAttempts.size());
+    assertNotificationAttempt(1, oldReply, recoverBeforeBoundary);
+
+    mockMillis = static_cast<uint32_t>(start + 100);
+    f.client.pProxyNotifyChar_->setNotifyResult(true);
+    // Expired work must not block a fresh response already queued behind it.
+    const auto freshReply = notificationSettingsReply(0xFE);
+    f.enqueueBytes(freshReply);
+    TEST_ASSERT_EQUAL_INT(1, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(0, f.client.proxyQueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(3, g_mock_nimble_state.notifyAttempts.size());
+    assertNotificationAttempt(2, freshReply, true);
+    TEST_ASSERT_EQUAL_INT(0, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(3, g_mock_nimble_state.notifyAttempts.size());
+}
+
+void test_proxy_notification_retry_recovers_before_original_age_deadline() {
+    notificationRetryBudget(1000, true);
+}
+void test_proxy_notification_retry_expires_at_original_age_deadline() {
+    notificationRetryBudget(1000, false);
+}
+void test_proxy_notification_retry_recovers_across_clock_wrap() {
+    notificationRetryBudget(UINT32_MAX - 50, true);
+}
+void test_proxy_notification_retry_expires_across_clock_wrap() {
+    notificationRetryBudget(UINT32_MAX - 50, false);
+}
+
+void test_proxy_notification_initial_delivery_keeps_existing_age_behavior() {
+    NotificationRetryFixture f;
+    const auto reply = notificationSettingsReply();
+    mockMillis = 1000;
+    f.enqueueBytes(reply);
+    mockMillis = 1200;
+    TEST_ASSERT_EQUAL_INT(1, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_nimble_state.notifyAttempts.size());
+    assertNotificationAttempt(0, reply, true);
+}
+
+void test_proxy_old_initial_notification_failure_drops_then_yields() {
+    NotificationRetryFixture f;
+    const auto oldReply = notificationSettingsReply();
+    mockMillis = 1000;
+    f.enqueueBytes(oldReply);
+    mockMillis = 1100;
+    const auto freshReply = notificationSettingsReply(0xFE);
+    f.enqueueBytes(freshReply);
+    f.client.pProxyNotifyChar_->setNotifyResult(false);
+
+    // The first attempt is preserved, but its old age leaves no retry budget.
+    TEST_ASSERT_EQUAL_INT(0, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, f.client.proxyQueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_nimble_state.notifyAttempts.size());
+    assertNotificationAttempt(0, oldReply, false);
+    f.client.pProxyNotifyChar_->setNotifyResult(true);
+    TEST_ASSERT_EQUAL_INT(1, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_nimble_state.notifyAttempts.size());
+    assertNotificationAttempt(1, freshReply, true);
+}
+
+static void notificationRefusalRetiresWithOwner(unsigned boundary) {
+    NotificationRetryFixture f;
+    const auto oldReply = notificationSettingsReply();
+    f.enqueueBytes(oldReply);
+    f.client.pProxyNotifyChar_->setNotifyResult(false);
+    TEST_ASSERT_EQUAL_INT(0, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, f.client.proxyQueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_nimble_state.notifyAttempts.size());
+
+    if (boundary == 0) {
+        // Exercise immediate callback retirement before deferred state cleanup.
+        f.phoneCallbacks.onDisconnect(f.client.pServer_, f.phone, 19);
+    } else if (boundary == 1) {
+        retireDetectorWithoutPhoneEvent(f, false);
+    } else {
+        TEST_ASSERT_TRUE(f.client.setProxyRuntimeEnabled(false));
+    }
+    f.client.pProxyNotifyChar_->setNotifyResult(true);
+    TEST_ASSERT_EQUAL_INT(0, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(0, f.client.proxyQueueCount_);
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_nimble_state.notifyAttempts.size());
+
+    if (boundary == 1) {
+        f.reconnectDetector();
+    } else {
+        if (boundary == 2) TEST_ASSERT_TRUE(f.client.setProxyRuntimeEnabled(true));
+        f.phone.setConnHandle(23);
+        f.phoneCallbacks.onConnect(f.client.pServer_, f.phone);
+        f.client.drainProxyCallbackEvents();
+    }
+    const auto freshReply = notificationSettingsReply(0xFE);
+    f.enqueueBytes(freshReply);
+    TEST_ASSERT_EQUAL_INT(1, f.client.processProxyQueue());
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_nimble_state.notifyAttempts.size());
+    // Detector reconnect helper opens the fixture's default phone connection.
+    assertNotificationAttempt(1, freshReply, true, false,
+                              boundary == 1 ? NimBLEConnInfo().getConnHandle() : 23);
+}
+
+void test_proxy_refused_notification_retires_on_phone_disconnect() {
+    notificationRefusalRetiresWithOwner(0);
+}
+void test_proxy_refused_notification_retires_on_detector_disconnect() {
+    notificationRefusalRetiresWithOwner(1);
+}
+void test_proxy_refused_notification_retires_on_disable() {
+    notificationRefusalRetiresWithOwner(2);
+}
+
 int main(int argc, char** argv) {
     UNITY_BEGIN();
+    RUN_TEST(test_proxy_refused_settings_reply_recovers_once_for_its_phone);
+    RUN_TEST(test_proxy_failed_head_preserves_short_and_long_notification_order);
+    RUN_TEST(test_proxy_notification_retry_recovers_before_original_age_deadline);
+    RUN_TEST(test_proxy_notification_retry_expires_at_original_age_deadline);
+    RUN_TEST(test_proxy_notification_retry_recovers_across_clock_wrap);
+    RUN_TEST(test_proxy_notification_retry_expires_across_clock_wrap);
+    RUN_TEST(test_proxy_notification_initial_delivery_keeps_existing_age_behavior);
+    RUN_TEST(test_proxy_old_initial_notification_failure_drops_then_yields);
+    RUN_TEST(test_proxy_refused_notification_retires_on_phone_disconnect);
+    RUN_TEST(test_proxy_refused_notification_retires_on_detector_disconnect);
+    RUN_TEST(test_proxy_refused_notification_retires_on_disable);
     RUN_TEST(test_proxy_short_same_session_delivery);
     RUN_TEST(test_proxy_long_same_session_delivery);
     RUN_TEST(test_proxy_short_queue_retires_with_phone);

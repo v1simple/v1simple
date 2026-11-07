@@ -574,6 +574,8 @@ class V1BLEClient {
 
     static constexpr size_t PROXY_QUEUE_SIZE = 8;   // Small queue, drop-oldest on overflow
     static constexpr size_t PROXY_PACKET_MAX = 512; // Max packet size for proxy (handles full V1 packets)
+    // Local recovery budget from enqueue, not an external client's request deadline.
+    static constexpr uint32_t PROXY_NOTIFY_RETRY_MAX_AGE_MS = 100;
     struct ProxyPacket {
         uint8_t data[PROXY_PACKET_MAX];
         size_t length;
@@ -581,6 +583,7 @@ class V1BLEClient {
         uint32_t tsMs;
         uint32_t sessionGeneration; // Both queue directions belong to one V1 connection.
         uint32_t phoneSessionGeneration; // And to one phone connection.
+        bool notifyRetryPending;
     };
     ProxyPacket* proxyQueue_ = nullptr;
 
@@ -603,6 +606,7 @@ class V1BLEClient {
         return generation != 0 && proxyPhoneSessionGeneration_.load(std::memory_order_acquire) == generation;
     }
     uint32_t phoneSessionForConnection(uint16_t connHandle);
+    uint16_t phoneConnectionForSession(uint32_t generation);
     std::atomic<size_t> phone2v1QueueHead_{0};
     std::atomic<size_t> phone2v1QueueTail_{0};
     std::atomic<size_t> phone2v1QueueCount_{0};

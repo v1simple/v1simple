@@ -19,7 +19,9 @@ bool exactSettingsStringCopy(const String& source, String& destination) {
     return destination.length() == source.length() && destination == source;
 }
 
-bool deviceSettingsSnapshotStringsMatch(const V1Settings& source, const V1Settings& snapshot) {
+// Arduino String copies can fail silently. A rollback snapshot must be complete
+// before any live field changes, including updates that only change scalars.
+bool settingsSnapshotStringsMatch(const V1Settings& source, const V1Settings& snapshot) {
     if (source.apSSID != snapshot.apSSID || source.apPassword != snapshot.apPassword ||
         source.wifiClientSSID != snapshot.wifiClientSSID || source.proxyName != snapshot.proxyName ||
         source.lastV1Address != snapshot.lastV1Address || source.obdSavedAddress != snapshot.obdSavedAddress ||
@@ -61,7 +63,7 @@ void SettingsManager::noteDisplayConfigurationMutation() {
     }
 }
 
-SettingsPersistResult SettingsManager::finishSettingsMutation(const V1Settings& before, bool changed,
+SettingsPersistResult SettingsManager::finishSettingsMutation(V1Settings& before, bool changed,
                                                                SettingsPersistMode persistMode) {
     if (!changed) {
         SettingsPersistResult result;
@@ -79,7 +81,9 @@ SettingsPersistResult SettingsManager::finishSettingsMutation(const V1Settings& 
     }
     SettingsPersistResult result = persistSettingsByMode(*this, persistMode);
     if (!result.success && persistMode != SettingsPersistMode::Deferred) {
-        settings_ = before;
+        // The validated snapshot already owns its strings; rollback must not
+        // need another allocation while recovering from a failed save.
+        settings_ = std::move(before);
         // A failed immediate save leaves any earlier deferred mutation in
         // this snapshot. Preserve its pending/retry state and original due time.
     }
@@ -88,14 +92,16 @@ SettingsPersistResult SettingsManager::finishSettingsMutation(const V1Settings& 
 
 SettingsPersistResult SettingsManager::setActiveSlot(int slot, SettingsPersistMode persistMode) {
     if (!ensureSettingsLoaded()) return {};
-    const V1Settings before = settings_;
+    V1Settings before = settings_;
+    if (!settingsSnapshotStringsMatch(settings_, before)) return {};
     const bool changed = assignIfChanged(settings_.activeSlot, std::max(0, std::min(2, slot)));
     return finishSettingsMutation(before, changed, persistMode);
 }
 
 SettingsPersistResult SettingsManager::setStealthEnabled(bool enabled, SettingsPersistMode persistMode) {
     if (!ensureSettingsLoaded()) return {};
-    const V1Settings before = settings_;
+    V1Settings before = settings_;
+    if (!settingsSnapshotStringsMatch(settings_, before)) return {};
     const bool changed = assignIfChanged(settings_.stealthEnabled, enabled);
     return finishSettingsMutation(before, changed, persistMode);
 }
@@ -245,7 +251,8 @@ AutoPushPersistResult SettingsManager::applyAutoPushSlotUpdatePersisted(const Au
 SettingsPersistResult SettingsManager::applyAutoPushStateUpdate(const AutoPushStateUpdate& update,
                                                                 SettingsPersistMode persistMode) {
     if (!ensureSettingsLoaded()) return {};
-    const V1Settings before = settings_;
+    V1Settings before = settings_;
+    if (!settingsSnapshotStringsMatch(settings_, before)) return {};
     bool changed = false;
 
     if (update.hasActiveSlot) {
@@ -262,7 +269,8 @@ SettingsPersistResult SettingsManager::applyAutoPushStateUpdate(const AutoPushSt
 SettingsPersistResult
 SettingsManager::applyWifiStaPriorityUpdates(const std::vector<WifiStaPriorityUpdate>& updates) {
     if (!ensureSettingsLoaded()) return {};
-    const V1Settings before = settings_;
+    V1Settings before = settings_;
+    if (!settingsSnapshotStringsMatch(settings_, before)) return {};
     bool seenSlots[kWifiStaSlotCount] = {};
     bool seenPriorities[kWifiStaSlotCount] = {};
     bool changed = false;
@@ -273,7 +281,7 @@ SettingsManager::applyWifiStaPriorityUpdates(const std::vector<WifiStaPriorityUp
     for (const WifiStaPriorityUpdate& update : updates) {
         if (update.index >= kWifiStaSlotCount || update.priority >= kWifiStaSlotCount || seenSlots[update.index] ||
             seenPriorities[update.priority] || !settings_.wifiStaSlots[update.index].isConfigured()) {
-            settings_ = before;
+            settings_ = std::move(before);
             return SettingsPersistResult{};
         }
         seenSlots[update.index] = true;
@@ -288,7 +296,7 @@ SettingsManager::applyWifiStaPriorityUpdates(const std::vector<WifiStaPriorityUp
             continue;
         }
         if (slot.priority >= kWifiStaSlotCount || finalPriorities[slot.priority]) {
-            settings_ = before;
+            settings_ = std::move(before);
             return SettingsPersistResult{};
         }
         finalPriorities[slot.priority] = true;
@@ -341,7 +349,7 @@ SettingsPersistResult SettingsManager::applyDeviceSettingsUpdate(const DeviceSet
     }
 
     V1Settings before = settings_;
-    if (!deviceSettingsSnapshotStringsMatch(settings_, before)) return {};
+    if (!settingsSnapshotStringsMatch(settings_, before)) return {};
     bool changed = false;
 
     if (update.hasApCredentials) {
@@ -390,22 +398,14 @@ SettingsPersistResult SettingsManager::applyDeviceSettingsUpdate(const DeviceSet
     if (update.hasGpsBaud) {
         changed |= assignIfChanged(settings_.gpsBaud, sanitizeGpsBaudValue(update.gpsBaud));
     }
-    if (!changed) {
-        SettingsPersistResult result;
-        result.success = true;
-        return result;
-    }
-    SettingsPersistResult result = persistSettingsByMode(*this, persistMode);
-    if (!result.success && persistMode != SettingsPersistMode::Deferred) {
-        settings_ = std::move(before);
-    }
-    return result;
+    return finishSettingsMutation(before, changed, persistMode);
 }
 
 SettingsPersistResult SettingsManager::applyAudioSettingsUpdate(const AudioSettingsUpdate& update,
                                                                 SettingsPersistMode persistMode) {
     if (!ensureSettingsLoaded()) return {};
-    const V1Settings before = settings_;
+    V1Settings before = settings_;
+    if (!settingsSnapshotStringsMatch(settings_, before)) return {};
     bool changed = false;
 
     if (update.hasVoiceAlertMode) {
@@ -474,7 +474,8 @@ SettingsPersistResult SettingsManager::applyAudioSettingsUpdate(const AudioSetti
 SettingsPersistResult SettingsManager::applyDisplaySettingsUpdate(const DisplaySettingsUpdate& update,
                                                                   SettingsPersistMode persistMode) {
     if (!ensureSettingsLoaded()) return {};
-    const V1Settings before = settings_;
+    V1Settings before = settings_;
+    if (!settingsSnapshotStringsMatch(settings_, before)) return {};
     bool changed = false;
 
     // Partial updates reject black by retaining the current color.
@@ -508,7 +509,8 @@ SettingsPersistResult SettingsManager::applyDisplaySettingsUpdate(const DisplayS
 
 SettingsPersistResult SettingsManager::resetDisplaySettings(SettingsPersistMode persistMode) {
     if (!ensureSettingsLoaded()) return {};
-    const V1Settings before = settings_;
+    V1Settings before = settings_;
+    if (!settingsSnapshotStringsMatch(settings_, before)) return {};
     DisplaySettingsContract::forEachScalar([&](const auto& field) {
         if (field.resetTheme) settings_.*(field.value) = field.defaultValue;
     });
@@ -522,7 +524,8 @@ SettingsPersistResult SettingsManager::resetDisplaySettings(SettingsPersistMode 
 SettingsPersistResult SettingsManager::applyObdSettingsUpdate(const ObdSettingsUpdate& update,
                                                               SettingsPersistMode persistMode) {
     if (!ensureSettingsLoaded()) return {};
-    const V1Settings before = settings_;
+    V1Settings before = settings_;
+    if (!settingsSnapshotStringsMatch(settings_, before)) return {};
     bool changed = false;
 
     if (update.resetSavedNameOnAddressChange && update.hasSavedAddress &&

@@ -54,6 +54,7 @@ SettingsManager settings(storage, profiles);
 #include "../mocks/display.h"
 #include "../mocks/runtime_presentation_source.h"
 #include "../../src/modules/touch/touch_ui_module.cpp"
+#include "../../src/modules/wifi/wifi_audio_api_service.cpp"
 
 // The real touch/settings path runs below; only audio and physical display/I2C
 // interfaces are substituted. Persistence failures use the Preferences boundary.
@@ -80,6 +81,9 @@ std::string readFileToString(fs::FS& fs, const char* path) {
 }
 
 void resetRuntimeState() {
+    mockStringCopyAssignmentsBeforeFailure = -1;
+    mockStringCopyConstructorFailureSource = nullptr;
+    mockStringCopyConstructorFailures = 0;
     mock_preferences::reset();
     mock_nvs::reset();
     mock_reset_heap_caps();
@@ -143,6 +147,8 @@ void setUp() {
 }
 
 void tearDown() {
+    mockStringCopyAssignmentsBeforeFailure = -1;
+    mockStringCopyConstructorFailureSource = nullptr;
     std::filesystem::remove_all(g_tempRoot);
     resetDeferredSettingsBackupStateForTest();
 }
@@ -756,10 +762,382 @@ void test_display_configuration_revision_saturates_instead_of_reusing_a_value() 
     TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, manager.displayConfigurationRevision());
 }
 
+namespace {
+
+constexpr const char* kSavedApSsid = "SavedAccessPointForRollback";
+constexpr const char* kSavedApPassword = "SavedPasswordForRollback123";
+
+void assertSavedApCredentials(const V1Settings& value) {
+    TEST_ASSERT_EQUAL_STRING(kSavedApSsid, value.apSSID.c_str());
+    TEST_ASSERT_EQUAL_STRING(kSavedApPassword, value.apPassword.c_str());
+}
+
+void seedSavedApCredentials(SettingsManager& manager) {
+    DeviceSettingsUpdate update;
+    update.hasApCredentials = true;
+    update.apSSID = kSavedApSsid;
+    update.apPassword = kSavedApPassword;
+    TEST_ASSERT_TRUE(manager.applyDeviceSettingsUpdate(
+        update, SettingsPersistMode::ImmediateNvsDeferredBackup).success);
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    assertSavedApCredentials(reloaded.get());
+}
+
+void assertAudioSavePreservesCredentials(bool failCopy, bool failPersist) {
+    SettingsManager manager(storage, profiles);
+    seedSavedApCredentials(manager);
+    const uint8_t originalVolume = manager.get().voiceVolume;
+    WifiAudioApiService::Runtime runtime;
+    runtime.ctx = &manager;
+    runtime.getSettings = [](void* ctx) -> const V1Settings& {
+        return static_cast<SettingsManager*>(ctx)->get();
+    };
+    runtime.applySettingsUpdate = [](const AudioSettingsUpdate& update, void* ctx) {
+        return static_cast<SettingsManager*>(ctx)->applyAudioSettingsUpdate(
+            update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+    };
+    WebServer server;
+    server.setArg("voiceVolume", "43");
+    if (failCopy) mockStringCopyConstructorFailureSource = &manager.get().apSSID;
+    if (failPersist) mock_preferences::set_fail_writes_for_key(kNvsVoiceVolume);
+    WifiAudioApiService::handleApiSave(server, runtime);
+    mockStringCopyConstructorFailureSource = nullptr;
+    mock_preferences::set_fail_writes_for_key(nullptr);
+
+    TEST_ASSERT_EQUAL_UINT(failCopy ? 1u : 0u, mockStringCopyConstructorFailures);
+    TEST_ASSERT_EQUAL_INT(failCopy || failPersist ? 500 : 200, server.lastStatusCode);
+    assertSavedApCredentials(manager.get());
+    TEST_ASSERT_EQUAL_UINT8(failCopy || failPersist ? originalVolume : 43, manager.get().voiceVolume);
+    SettingsManager afterFirst(storage, profiles);
+    afterFirst.load();
+    assertSavedApCredentials(afterFirst.get());
+    TEST_ASSERT_EQUAL_UINT8(failCopy || failPersist ? originalVolume : 43, afterFirst.get().voiceVolume);
+
+    server.setArg("voiceVolume", "44");
+    WifiAudioApiService::handleApiSave(server, runtime);
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    SettingsManager afterHealthySave(storage, profiles);
+    afterHealthySave.load();
+    assertSavedApCredentials(manager.get());
+    assertSavedApCredentials(afterHealthySave.get());
+    TEST_ASSERT_EQUAL_UINT8(44, afterHealthySave.get().voiceVolume);
+}
+
+enum class SnapshotOwner { ActiveSlot, Stealth, AutoPush, WifiPriority, Audio, Display, DisplayReset, Obd, Device };
+constexpr SnapshotOwner kSnapshotOwners[] = {
+    SnapshotOwner::ActiveSlot, SnapshotOwner::Stealth, SnapshotOwner::AutoPush,
+    SnapshotOwner::WifiPriority, SnapshotOwner::Audio, SnapshotOwner::Display,
+    SnapshotOwner::DisplayReset, SnapshotOwner::Obd, SnapshotOwner::Device,
+};
+
+SettingsPersistResult mutateSnapshotOwner(SettingsManager& manager, SnapshotOwner owner,
+                                         SettingsPersistMode mode = SettingsPersistMode::ImmediateNvsDeferredBackup) {
+    switch (owner) {
+        case SnapshotOwner::ActiveSlot: return manager.setActiveSlot(1, mode);
+        case SnapshotOwner::Stealth: return manager.setStealthEnabled(true, mode);
+        case SnapshotOwner::AutoPush: {
+            AutoPushStateUpdate update;
+            update.hasActiveSlot = true;
+            update.activeSlot = 1;
+            return manager.applyAutoPushStateUpdate(update, mode);
+        }
+        case SnapshotOwner::WifiPriority: return manager.applyWifiStaPriorityUpdates({{0, 1}, {1, 0}});
+        case SnapshotOwner::Audio: {
+            AudioSettingsUpdate update;
+            update.hasVoiceVolume = true;
+            update.voiceVolume = 43;
+            return manager.applyAudioSettingsUpdate(update, mode);
+        }
+        case SnapshotOwner::Display: {
+            DisplaySettingsUpdate update;
+            update.hasColorBogey = true;
+            update.colorBogey = 0x4321;
+            return manager.applyDisplaySettingsUpdate(update, mode);
+        }
+        case SnapshotOwner::DisplayReset: return manager.resetDisplaySettings(mode);
+        case SnapshotOwner::Obd: {
+            ObdSettingsUpdate update;
+            update.hasMinRssi = true;
+            update.minRssi = -65;
+            return manager.applyObdSettingsUpdate(update, mode);
+        }
+        case SnapshotOwner::Device: {
+            DeviceSettingsUpdate update;
+            update.hasAutoPowerOffMinutes = true;
+            update.autoPowerOffMinutes = 37;
+            return manager.applyDeviceSettingsUpdate(update, mode);
+        }
+    }
+    return {};
+}
+
+std::vector<const String*> snapshotStrings(const V1Settings& value) {
+    std::vector<const String*> fields = {
+        &value.apSSID, &value.apPassword, &value.wifiClientSSID, &value.proxyName,
+        &value.lastV1Address, &value.obdSavedAddress, &value.obdSavedName,
+        &value.slot0Name, &value.slot1Name, &value.slot2Name,
+        &value.slot0_default.profileName, &value.slot1_highway.profileName, &value.slot2_comfort.profileName,
+    };
+    for (const auto& slot : value.wifiStaSlots) {
+        fields.push_back(&slot.ssid);
+        fields.push_back(&slot.label);
+    }
+    return fields;
+}
+
+void seedSnapshotSettings(SettingsManager& manager, bool everyString = false) {
+    auto& value = manager.mutableSettings();
+    value.apSSID = kSavedApSsid;
+    value.apPassword = kSavedApPassword;
+    value.colorBogey = 0x1234;
+    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        auto& slot = value.wifiStaSlots[index];
+        slot.ssid = String("SavedNetworkForTest") + String(static_cast<unsigned>(index));
+        slot.label = String("SavedNetworkLabel") + String(static_cast<unsigned>(index));
+        slot.priority = static_cast<uint8_t>(index);
+    }
+    value.refreshWifiClientAliasFromSlots();
+    if (everyString) {
+        value.proxyName = "SavedProxyNameForTest";
+        value.lastV1Address = "AA:BB:CC:DD:EE:FF";
+        value.obdSavedAddress = "11:22:33:44:55:66";
+        value.obdSavedName = "SavedAdapterNameForTest";
+        for (int index = 0; index < 3; ++index) {
+            auto slot = value.autoPushSlotView(index);
+            slot.name = String("SavedSlotNameTest") + String(index);
+            slot.config.profileName = String("SavedProfileForTest") + String(index);
+        }
+    }
+}
+
+void assertSnapshotState(const V1Settings& expected, const V1Settings& actual) {
+    const auto expectedStrings = snapshotStrings(expected);
+    const auto actualStrings = snapshotStrings(actual);
+    for (size_t index = 0; index < expectedStrings.size(); ++index) {
+        TEST_ASSERT_EQUAL_STRING(expectedStrings[index]->c_str(), actualStrings[index]->c_str());
+    }
+    TEST_ASSERT_EQUAL(expected.activeSlot, actual.activeSlot);
+    TEST_ASSERT_EQUAL(expected.stealthEnabled, actual.stealthEnabled);
+    TEST_ASSERT_EQUAL(expected.autoPushEnabled, actual.autoPushEnabled);
+    TEST_ASSERT_EQUAL(expected.voiceVolume, actual.voiceVolume);
+    TEST_ASSERT_EQUAL(expected.obdMinRssi, actual.obdMinRssi);
+    TEST_ASSERT_EQUAL(expected.autoPowerOffMinutes, actual.autoPowerOffMinutes);
+    DisplaySettingsContract::forEachScalar([&](const auto& field) {
+        TEST_ASSERT_EQUAL(expected.*(field.value), actual.*(field.value));
+    });
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(expected.colorBars, actual.colorBars, SIGNAL_BAR_COLOR_COUNT);
+    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        TEST_ASSERT_EQUAL(expected.wifiStaSlots[index].priority, actual.wifiStaSlots[index].priority);
+    }
+}
+
+void assertOwnerRejectsEveryIncompleteSnapshot(SnapshotOwner owner) {
+    SettingsManager manager(storage, profiles);
+    seedSnapshotSettings(manager, true);
+    const V1Settings before = manager.get();
+    unsigned writes = 0;
+    mock_preferences::afterWrite() = [&](const char*) { ++writes; };
+    for (const String* field : snapshotStrings(manager.get())) {
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT(14, field->length());
+        mockStringCopyConstructorFailureSource = field;
+        mockStringCopyConstructorFailures = 0;
+        const auto result = mutateSnapshotOwner(manager, owner);
+        mockStringCopyConstructorFailureSource = nullptr;
+        TEST_ASSERT_EQUAL_UINT(1, mockStringCopyConstructorFailures);
+        TEST_ASSERT_FALSE(result.success);
+        TEST_ASSERT_FALSE(result.changed);
+        assertSnapshotState(before, manager.get());
+        TEST_ASSERT_FALSE(manager.deferredPersistPending());
+        TEST_ASSERT_EQUAL_UINT32(0, manager.displayConfigurationRevision());
+        TEST_ASSERT_EQUAL_UINT32(1, manager.backupRevision());
+        TEST_ASSERT_EQUAL_UINT(0, writes);
+    }
+    mock_preferences::afterWrite() = {};
+}
+
+} // namespace
+
+void test_string_constructor_fault_is_targeted_once_and_propagates_invalid_state() {
+    String source(kSavedApSsid);
+    String equalValue(kSavedApSsid);
+    mockStringCopyConstructorFailureSource = &source;
+    const String unrelated(equalValue);
+    TEST_ASSERT_EQUAL_STRING(kSavedApSsid, unrelated.c_str());
+    const String failed(source);
+    TEST_ASSERT_EQUAL_UINT(1, mockStringCopyConstructorFailures);
+    TEST_ASSERT_EQUAL_UINT(0, failed.length());
+    TEST_ASSERT_NULL(failed.c_str());
+    const String copiedInvalid(failed);
+    TEST_ASSERT_NULL(copiedInvalid.c_str());
+    String assignedInvalid("Previously valid");
+    assignedInvalid = failed;
+    TEST_ASSERT_NULL(assignedInvalid.c_str());
+    const String nextCopy(source);
+    TEST_ASSERT_EQUAL_STRING(kSavedApSsid, nextCopy.c_str());
+    const String validEmpty("");
+    TEST_ASSERT_NOT_NULL(validEmpty.c_str());
+    String small("Inline");
+    mockStringCopyConstructorFailureSource = &small;
+    const String inlineCopy(small);
+    TEST_ASSERT_EQUAL_STRING("Inline", inlineCopy.c_str());
+    TEST_ASSERT_EQUAL_UINT(1, mockStringCopyConstructorFailures);
+    mockStringCopyConstructorFailureSource = nullptr;
+}
+
+void test_audio_http_healthy_save_preserves_credentials() { assertAudioSavePreservesCredentials(false, false); }
+void test_audio_http_nvs_failure_preserves_credentials() { assertAudioSavePreservesCredentials(false, true); }
+void test_audio_http_snapshot_failure_preserves_credentials() { assertAudioSavePreservesCredentials(true, false); }
+void test_audio_http_snapshot_and_nvs_failure_preserve_credentials() { assertAudioSavePreservesCredentials(true, true); }
+void test_active_slot_rejects_incomplete_snapshot() { assertOwnerRejectsEveryIncompleteSnapshot(SnapshotOwner::ActiveSlot); }
+void test_stealth_rejects_incomplete_snapshot() { assertOwnerRejectsEveryIncompleteSnapshot(SnapshotOwner::Stealth); }
+void test_autopush_rejects_incomplete_snapshot() { assertOwnerRejectsEveryIncompleteSnapshot(SnapshotOwner::AutoPush); }
+void test_wifi_priority_rejects_incomplete_snapshot() { assertOwnerRejectsEveryIncompleteSnapshot(SnapshotOwner::WifiPriority); }
+void test_audio_rejects_incomplete_snapshot() { assertOwnerRejectsEveryIncompleteSnapshot(SnapshotOwner::Audio); }
+void test_display_rejects_incomplete_snapshot() { assertOwnerRejectsEveryIncompleteSnapshot(SnapshotOwner::Display); }
+void test_display_reset_rejects_incomplete_snapshot() { assertOwnerRejectsEveryIncompleteSnapshot(SnapshotOwner::DisplayReset); }
+void test_obd_rejects_incomplete_snapshot() { assertOwnerRejectsEveryIncompleteSnapshot(SnapshotOwner::Obd); }
+void test_device_rejects_incomplete_snapshot() { assertOwnerRejectsEveryIncompleteSnapshot(SnapshotOwner::Device); }
+
+void test_snapshot_failure_rejects_each_persist_mode() {
+    for (const auto owner : kSnapshotOwners) {
+        for (const auto mode : {SettingsPersistMode::Immediate, SettingsPersistMode::ImmediateNvsDeferredBackup,
+                                SettingsPersistMode::Deferred}) {
+            if (owner == SnapshotOwner::WifiPriority && mode != SettingsPersistMode::Immediate) continue;
+            resetRuntimeState();
+            SettingsManager manager(storage, profiles);
+            seedSnapshotSettings(manager);
+            const V1Settings before = manager.get();
+            mockStringCopyConstructorFailureSource = &manager.get().apSSID;
+            const auto result = mutateSnapshotOwner(manager, owner, mode);
+            TEST_ASSERT_EQUAL_UINT(1, mockStringCopyConstructorFailures);
+            TEST_ASSERT_FALSE(result.success);
+            TEST_ASSERT_FALSE(result.changed);
+            assertSnapshotState(before, manager.get());
+            TEST_ASSERT_FALSE(manager.deferredPersistPending());
+            TEST_ASSERT_EQUAL_UINT32(0, manager.displayConfigurationRevision());
+        }
+    }
+}
+
+void test_settings_nvs_failure_moves_rollback_and_healthy_retry_persists() {
+    for (const auto owner : kSnapshotOwners) {
+        resetRuntimeState();
+        SettingsManager manager(storage, profiles);
+        seedSnapshotSettings(manager);
+        TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+        const V1Settings before = manager.get();
+        // Arm only after the final field of the second failed NVS write. The
+        // remaining fault proves rollback makes no String copy assignments;
+        // it does not assert that a real assignment must allocate.
+        unsigned writeAttempts = 0;
+        mock_preferences::afterWrite() = [&](const char* key) {
+            if (std::strcmp(key, kNvsGpsBaud) == 0 && ++writeAttempts == 2) {
+                mockStringCopyAssignmentsBeforeFailure = 0;
+            }
+        };
+        mock_preferences::set_fail_writes_for_key(kNvsVoiceVolume);
+        const auto rejected = mutateSnapshotOwner(manager, owner);
+        const int remainingAssignmentFault = mockStringCopyAssignmentsBeforeFailure;
+        mockStringCopyAssignmentsBeforeFailure = -1;
+        mock_preferences::afterWrite() = {};
+        mock_preferences::set_fail_writes_for_key(nullptr);
+        TEST_ASSERT_FALSE(rejected.success);
+        TEST_ASSERT_TRUE(rejected.changed);
+        TEST_ASSERT_EQUAL_UINT(2, writeAttempts);
+        TEST_ASSERT_EQUAL_INT(0, remainingAssignmentFault);
+        assertSnapshotState(before, manager.get());
+        SettingsManager beforeRetry(storage, profiles);
+        beforeRetry.load();
+        assertSnapshotState(before, beforeRetry.get());
+
+        const auto accepted = mutateSnapshotOwner(manager, owner);
+        TEST_ASSERT_TRUE(accepted.success);
+        TEST_ASSERT_TRUE(accepted.changed);
+        SettingsManager reloaded(storage, profiles);
+        reloaded.load();
+        assertSnapshotState(manager.get(), reloaded.get());
+        assertSavedApCredentials(reloaded.get());
+    }
+}
+
+void test_rejected_settings_mutation_preserves_prior_deferred_retry() {
+    for (const auto owner : kSnapshotOwners) {
+        for (const bool failSnapshot : {false, true}) {
+            resetRuntimeState();
+            SettingsManager manager(storage, profiles);
+            seedSnapshotSettings(manager);
+            TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+            DeviceSettingsUpdate prior;
+            prior.hasProxyName = true;
+            prior.proxyName = "PendingProxyNameForTest";
+            TEST_ASSERT_TRUE(manager.applyDeviceSettingsUpdate(prior, SettingsPersistMode::Deferred).success);
+            mock_preferences::set_fail_writes_for_key(kNvsVoiceVolume);
+            manager.serviceDeferredPersist(manager.deferredPersistNextAttemptAtMs());
+            TEST_ASSERT_TRUE(manager.deferredPersistRetryScheduled());
+            const auto due = manager.deferredPersistNextAttemptAtMs();
+            const auto revision = manager.backupRevision();
+            const V1Settings before = manager.get();
+            if (failSnapshot) mockStringCopyConstructorFailureSource = &manager.get().apSSID;
+            TEST_ASSERT_FALSE(mutateSnapshotOwner(manager, owner).success);
+            mockStringCopyConstructorFailureSource = nullptr;
+            mock_preferences::set_fail_writes_for_key(nullptr);
+            TEST_ASSERT_EQUAL_UINT(failSnapshot ? 1u : 0u, mockStringCopyConstructorFailures);
+            assertSnapshotState(before, manager.get());
+            TEST_ASSERT_TRUE(manager.deferredPersistPending());
+            TEST_ASSERT_TRUE(manager.deferredPersistRetryScheduled());
+            TEST_ASSERT_EQUAL_UINT32(due, manager.deferredPersistNextAttemptAtMs());
+            TEST_ASSERT_EQUAL_UINT32(revision, manager.backupRevision());
+            manager.serviceDeferredPersist(due);
+            TEST_ASSERT_FALSE(manager.deferredPersistPending());
+            SettingsManager reloaded(storage, profiles);
+            reloaded.load();
+            assertSnapshotState(before, reloaded.get());
+        }
+    }
+}
+
+void test_wifi_priority_validation_rolls_back_without_string_copy_assignment() {
+    const std::vector<WifiStaPriorityUpdate> rejectedUpdates[] = {
+        {{0, 1}, {0, 2}}, // Reject the second duplicate slot after changing the first.
+        {{0, 1}},         // Reject a final priority collision with untouched slot 1.
+    };
+    for (const auto& updates : rejectedUpdates) {
+        SettingsManager manager(storage, profiles);
+        seedSnapshotSettings(manager);
+        const V1Settings before = manager.get();
+        mockStringCopyAssignmentsBeforeFailure = 0;
+        const auto result = manager.applyWifiStaPriorityUpdates(updates);
+        const int remainingAssignmentFault = mockStringCopyAssignmentsBeforeFailure;
+        mockStringCopyAssignmentsBeforeFailure = -1;
+        TEST_ASSERT_FALSE(result.success);
+        TEST_ASSERT_EQUAL_INT(0, remainingAssignmentFault);
+        assertSnapshotState(before, manager.get());
+    }
+}
+
 #include "device_delete_read_tests.h"
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_string_constructor_fault_is_targeted_once_and_propagates_invalid_state);
+    RUN_TEST(test_audio_http_healthy_save_preserves_credentials);
+    RUN_TEST(test_audio_http_nvs_failure_preserves_credentials);
+    RUN_TEST(test_audio_http_snapshot_failure_preserves_credentials);
+    RUN_TEST(test_audio_http_snapshot_and_nvs_failure_preserve_credentials);
+    RUN_TEST(test_active_slot_rejects_incomplete_snapshot);
+    RUN_TEST(test_stealth_rejects_incomplete_snapshot);
+    RUN_TEST(test_autopush_rejects_incomplete_snapshot);
+    RUN_TEST(test_wifi_priority_rejects_incomplete_snapshot);
+    RUN_TEST(test_audio_rejects_incomplete_snapshot);
+    RUN_TEST(test_display_rejects_incomplete_snapshot);
+    RUN_TEST(test_display_reset_rejects_incomplete_snapshot);
+    RUN_TEST(test_obd_rejects_incomplete_snapshot);
+    RUN_TEST(test_device_rejects_incomplete_snapshot);
+    RUN_TEST(test_snapshot_failure_rejects_each_persist_mode);
+    RUN_TEST(test_settings_nvs_failure_moves_rollback_and_healthy_retry_persists);
+    RUN_TEST(test_rejected_settings_mutation_preserves_prior_deferred_retry);
+    RUN_TEST(test_wifi_priority_validation_rolls_back_without_string_copy_assignment);
     RUN_TEST(test_device_delete_ready_read_failure_preserves_prior_acknowledged_intent);
     RUN_TEST(test_device_delete_ready_read_failure_on_fresh_boot_retries_without_loss);
     RUN_TEST(test_device_delete_healthy_lookup_finishes_prior_intent_before_next_delete);

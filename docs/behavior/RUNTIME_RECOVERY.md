@@ -146,6 +146,16 @@ without a mode field remain compatible when that field is proven absent.
 `test_settings_persistence` covers these paths through retry and fresh-manager
 reload with bounded NVS faults, including the three-read-fault HTTP regression.
 
+Settings mutations in `settings_setters.cpp` validate every String in the
+rollback snapshot before changing live values, including scalar-only updates.
+`finishSettingsMutation` moves the validated snapshot back after a failed
+immediate save without another allocation; an earlier deferred mutation retains
+its pending state and original retry time. WiFi priority validation uses the
+same snapshot protection on early rejection. `test_settings_deferred_persist`
+covers all generic mutation owners and the audio HTTP save through NVS and fresh
+load, with modeled String-copy and storage-write failures. Rejected saves and
+later successful saves must preserve unrelated configuration.
+
 The pinned NimBLE NVS initializer publishes a complete-load result. Normal
 boot stops before bond migration, backup, proxy advertising or client creation
 if any bond, subscription or peer-identity table could not be read. The existing

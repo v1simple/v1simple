@@ -246,7 +246,7 @@ class SettingsManager {
     static bool markBackupRevisionCompleted(uint32_t revision);
     static bool markDeferredBackupRevisionCompleted(uint32_t revision, void* context);
     void clearDeferredPersistState();
-    SettingsPersistResult finishSettingsMutation(const V1Settings& before, bool changed,
+    SettingsPersistResult finishSettingsMutation(V1Settings& before, bool changed,
                                                   SettingsPersistMode persistMode);
     void noteDisplayConfigurationMutation();
     bool ensureSettingsLoaded();

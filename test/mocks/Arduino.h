@@ -20,20 +20,38 @@ typedef bool boolean;
 // A negative value leaves copies unchanged; zero fails the next copy assignment.
 inline int mockStringCopyAssignmentsBeforeFailure = -1;
 
+class String;
+// Target one copy construction without affecting equal-valued strings elsewhere.
+// ESP32 String keeps fewer than 14 bytes inline; only a longer copy can fail
+// allocation. Failed reserve invalidates the new String (null c_str()) without
+// throwing; copying that invalid value must keep it invalid.
+inline const String* mockStringCopyConstructorFailureSource = nullptr;
+inline unsigned mockStringCopyConstructorFailures = 0;
+
 // String class stub (minimal implementation)
 class String {
 public:
     String() : data_("") {}
-    String(const String&) = default;
+    String(const String& other) : valid_(other.valid_), read_pos_(other.read_pos_) {
+        if (&other == mockStringCopyConstructorFailureSource && other.length() >= 14) {
+            mockStringCopyConstructorFailureSource = nullptr;
+            ++mockStringCopyConstructorFailures;
+            valid_ = false;
+        } else {
+            data_ = other.data_;
+        }
+    }
     String(String&&) = default;
     String& operator=(String&&) = default;
     String& operator=(const String& other) {
         if (mockStringCopyAssignmentsBeforeFailure == 0) {
             mockStringCopyAssignmentsBeforeFailure = -1;
             data_.clear();
+            valid_ = false;
         } else {
             if (mockStringCopyAssignmentsBeforeFailure > 0) --mockStringCopyAssignmentsBeforeFailure;
             data_ = other.data_;
+            valid_ = other.valid_;
         }
         return *this;
     }
@@ -51,7 +69,7 @@ public:
         data_ = buf;
     }
     
-    const char* c_str() const { return data_.c_str(); }
+    const char* c_str() const { return valid_ ? data_.c_str() : nullptr; }
     size_t length() const { return data_.length(); }
     bool isEmpty() const { return data_.empty(); }
     void reserve(size_t capacity) { data_.reserve(capacity); }
@@ -205,6 +223,7 @@ public:
     
 private:
     std::string data_;
+    bool valid_ = true;
     mutable size_t read_pos_ = 0;
 };
 

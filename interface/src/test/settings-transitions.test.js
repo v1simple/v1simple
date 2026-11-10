@@ -191,13 +191,20 @@ describe('same-session editable draft during pending save', () => {
         }
         await settle(pending, jsonResponse({ success: true }));
         await screen.findByRole('heading', { name: 'SUBMITTED' });
-        expect(screen.getByLabelText('Slot name')).toHaveValue(field === 'name' ? 'Later' : 'Submitted');
+        // Only the later edited field remains a draft; the unchanged submitted
+        // name takes its canonical uppercase representation from readback.
+        expect(screen.getByLabelText('Slot name')).toHaveValue(field === 'name' ? 'Later' : 'SUBMITTED');
+        expect(sent.get('name')).toBe('SUBMITTED');
         if (field === 'color picker') {
             expect(screen.getByRole('slider', { name: /^Red/ })).toHaveValue('80');
             await fireEvent.click(screen.getByRole('button', { name: 'Apply', exact: true }));
             expect(screen.getByLabelText('Slot name')).toBeInTheDocument();
+            const color = screen.getByRole('button', { name: 'Choose SUBMITTED color' })
+                .closest('.field-control').querySelector('input[type="text"]');
+            expect(color).toHaveValue('500A');
+            await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
+            await waitFor(() => expect(sent.get('color')).toBe(String(0x500a)));
         }
-        expect(sent.get('name')).toBe('SUBMITTED');
     });
     it.each(['SSID', 'Label', 'Password', 'Priority', 'scan'])('WiFi %s save preserves a later unsent draft', async (kind) => {
         const pending = deferred();

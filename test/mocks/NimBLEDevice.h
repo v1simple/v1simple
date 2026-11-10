@@ -390,7 +390,9 @@ public:
         }
         g_mock_nimble_state.notifyAttempts.push_back(
             {uuid_, g_mock_nimble_state.lastNotifyData, connHandle, notifyResult_});
-        return notifyResult_;
+        const bool accepted = notifyResult_;
+        if (notifyHook_) notifyHook_();
+        return accepted;
     }
     bool writeValue(const uint8_t*, size_t, bool) { return writeValueResult_; }
     NimBLEAttValue getValue() const {
@@ -403,11 +405,13 @@ public:
     NimBLEUUID getUUID() const { return NimBLEUUID(uuid_.c_str()); }
     void setValue(const uint8_t* data, size_t size) { value_.assign(data, size); }
     void setNotifyResult(bool ok) { notifyResult_ = ok; }
+    void setNotifyHook(std::function<void()> hook) { notifyHook_ = std::move(hook); }
     void setWriteValueResult(bool ok) { writeValueResult_ = ok; }
 
 private:
     std::string uuid_;
     NimBLECharacteristicCallbacks* callbacks_ = nullptr;
+    std::function<void()> notifyHook_;
     std::function<void()> getValueEntryHook_;
     NimBLEAttValue value_;
     bool notifyResult_ = true;

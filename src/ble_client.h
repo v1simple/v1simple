@@ -569,6 +569,8 @@ class V1BLEClient {
     String proxyName_;
 
     SemaphoreHandle_t bleMutex_ = nullptr;
+    // Main-loop transport/release ownership only; notification callbacks never
+    // wait for transport while admitting data to the short ring critical section.
     SemaphoreHandle_t bleNotifyMutex_ = nullptr;
     SemaphoreHandle_t phoneCmdMutex_ = nullptr;
 
@@ -586,13 +588,16 @@ class V1BLEClient {
         bool notifyRetryPending;
     };
     ProxyPacket* proxyQueue_ = nullptr;
+    portMUX_TYPE proxyQueueMux_ = portMUX_INITIALIZER_UNLOCKED;
+    // Distinguishes a copied head from a slot evicted/reused during notify().
+    uint64_t proxyQueueTailRevision_ = 0; // Protected by proxyQueueMux_.
 
     static constexpr size_t PHONE_CMD_QUEUE_SIZE = 16; // Small burst-tolerant queue for phone commands
     static constexpr size_t MAX_PHONE_CMDS_PER_LOOP = 4;
     ProxyPacket* phone2v1Queue_ = nullptr;
     bool proxyQueuesInPsram_ = false;
     // Closes queue admission before runtime teardown. The main loop retries
-    // release until both callback-owned queue mutexes can be acquired.
+    // release until callback leases and main-loop/command ownership have ended.
     std::atomic<bool> proxyQueueReleasePending_{false};
     // Fences callbacks that began before a disable/re-enable allocation cycle.
     std::atomic<uint32_t> proxyQueueEpoch_{0};

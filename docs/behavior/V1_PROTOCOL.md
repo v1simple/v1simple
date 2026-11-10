@@ -58,6 +58,12 @@ NimBLE transport, clocks, and locks remain host doubles.
 Detector-to-phone notifications also retain both session generations from
 callback entry through the proxy queue. Admission rechecks them after acquiring
 the queue lock, and the consumer discards entries from either retired session.
+The short ring critical section protects only packet copies and indices;
+Bluetooth sending does not hold it. A detector reply arriving during an outgoing
+notification can therefore enter the queue. The consumer sends a snapshot and
+only finalizes the same retained head, so overflow during a send cannot remove
+a newer packet. Each loop processes at most eight entries, including when
+callbacks refill the ring during transport.
 `test_ble_proxy_alloc` exercises both notification characteristics, phone-only
 and detector-only retirement, callbacks delayed at queue admission, and fresh
 traffic after reconnect. It does not serialize NimBLE's final notification call

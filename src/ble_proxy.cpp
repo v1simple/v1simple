@@ -647,17 +647,14 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
         return;
     }
 
-    // Protect queue operations from concurrent access (BLE callback vs main loop)
-    if (bleNotifyMutex_ && xSemaphoreTake(bleNotifyMutex_, 0) != pdTRUE) {
-        // Queue busy – drop to avoid blocking in callback path
-        return;
-    }
-
+    // Only bounded queue copies/indices share this critical section. Transport
+    // can wait on the BLE host, so callback admission must never share its mutex.
+    const uint32_t receivedMs = static_cast<uint32_t>(millis());
+    taskENTER_CRITICAL(&proxyQueueMux_);
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) ||
         proxyQueueEpoch_.load(std::memory_order_acquire) != queueEpoch || !proxyQueue_ ||
         !sessionPublicationGate_.accepts(sessionGeneration) || !acceptsPhoneSession(phoneSessionGeneration)) {
-        if (bleNotifyMutex_)
-            xSemaphoreGive(bleNotifyMutex_);
+        taskEXIT_CRITICAL(&proxyQueueMux_);
         return;
     }
 
@@ -665,21 +662,20 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
     if (proxyQueueCount_ >= PROXY_QUEUE_SIZE) {
         proxyQueueTail_ = (proxyQueueTail_ + 1) % PROXY_QUEUE_SIZE;
         proxyQueueCount_--;
+        ++proxyQueueTailRevision_;
     }
 
     ProxyPacket& pkt = proxyQueue_[proxyQueueHead_];
     memcpy(pkt.data, data, length);
     pkt.length = length;
     pkt.charUUID = sourceCharUUID;
-    pkt.tsMs = static_cast<uint32_t>(millis());
+    pkt.tsMs = receivedMs;
     pkt.sessionGeneration = sessionGeneration;
     pkt.phoneSessionGeneration = phoneSessionGeneration;
     pkt.notifyRetryPending = false;
     proxyQueueHead_ = (proxyQueueHead_ + 1) % PROXY_QUEUE_SIZE;
     proxyQueueCount_++;
-    if (bleNotifyMutex_) {
-        xSemaphoreGive(bleNotifyMutex_);
-    }
+    taskEXIT_CRITICAL(&proxyQueueMux_);
 }
 
 int V1BLEClient::processProxyQueue() {
@@ -688,7 +684,8 @@ int V1BLEClient::processProxyQueue() {
         return 0;
     }
 
-    // HOT PATH: try-lock only, skip if busy (another iteration will process)
+    // Pin storage and exclude another consumer while transport runs. The BLE
+    // callback uses only proxyQueueMux_, never this transport/lifetime mutex.
     SemaphoreGuard lock(bleNotifyMutex_, 0);
     if (!lock.locked()) {
         return 0; // Skip this cycle, try again next loop (counter incremented in SemaphoreGuard)
@@ -699,8 +696,18 @@ int V1BLEClient::processProxyQueue() {
 
     int sent = 0;
 
-    while (proxyQueueCount_ > 0) {
-        ProxyPacket& pkt = proxyQueue_[proxyQueueTail_];
+    // Callbacks can replenish the ring during notify; keep each loop bounded.
+    for (size_t visited = 0; visited < PROXY_QUEUE_SIZE; ++visited) {
+        ProxyPacket pkt;
+        uint64_t tailRevision = 0;
+        taskENTER_CRITICAL(&proxyQueueMux_);
+        if (proxyQueueReleasePending_.load(std::memory_order_acquire) || proxyQueueCount_ == 0) {
+            taskEXIT_CRITICAL(&proxyQueueMux_);
+            break;
+        }
+        pkt = proxyQueue_[proxyQueueTail_];
+        tailRevision = proxyQueueTailRevision_;
+        taskEXIT_CRITICAL(&proxyQueueMux_);
         NimBLECharacteristic* targetChar = nullptr;
         if (pkt.charUUID == V1_SHORT_UUID_DISPLAY_LONG && pProxyNotifyLongChar_) {
             targetChar = pProxyNotifyLongChar_;
@@ -714,6 +721,7 @@ int V1BLEClient::processProxyQueue() {
         const bool retryExpired = pkt.notifyRetryPending &&
             static_cast<uint32_t>(millis() - pkt.tsMs) >= PROXY_NOTIFY_RETRY_MAX_AGE_MS;
         bool notifyFailed = false;
+        bool retainHead = false;
         if (targetChar && !retryExpired && phoneHandle != BLE_HS_CONN_HANDLE_NONE &&
             sessionPublicationGate_.accepts(pkt.sessionGeneration) && acceptsPhoneSession(pkt.phoneSessionGeneration)) {
             // Target the owning phone: a failed broadcast can follow a successful
@@ -725,14 +733,24 @@ int V1BLEClient::processProxyQueue() {
                 if (static_cast<uint32_t>(millis() - pkt.tsMs) < PROXY_NOTIFY_RETRY_MAX_AGE_MS) {
                     // Yield to the main loop without losing or reordering this
                     // notification. Keep its original age so recovery stays bounded.
-                    pkt.notifyRetryPending = true;
-                    break;
+                    retainHead = true;
                 }
             }
         }
 
-        proxyQueueTail_ = (proxyQueueTail_ + 1) % PROXY_QUEUE_SIZE;
-        proxyQueueCount_--;
+        taskENTER_CRITICAL(&proxyQueueMux_);
+        // The producer may have evicted this head, even wrapped to the same
+        // slot. Never pop or mark a newer notification on its behalf.
+        if (proxyQueueCount_ > 0 && proxyQueueTailRevision_ == tailRevision) {
+            if (retainHead) {
+                proxyQueue_[proxyQueueTail_].notifyRetryPending = true;
+            } else {
+                proxyQueueTail_ = (proxyQueueTail_ + 1) % PROXY_QUEUE_SIZE;
+                proxyQueueCount_--;
+                ++proxyQueueTailRevision_;
+            }
+        }
+        taskEXIT_CRITICAL(&proxyQueueMux_);
         if (notifyFailed) {
             break;
         }

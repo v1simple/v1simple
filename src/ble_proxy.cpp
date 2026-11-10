@@ -450,7 +450,7 @@ bool V1BLEClient::allocateProxyQueues() {
 }
 
 void V1BLEClient::releaseProxyQueues() {
-    // Close admission before attempting either lock. A callback that already
+    // Close admission before acquiring queue ownership. A callback that already
     // passed its first gate rechecks this state after acquiring its queue lock.
     proxyEpochObserver_.close();
     proxyQueueReleasePending_.store(true, std::memory_order_release);
@@ -479,39 +479,29 @@ bool V1BLEClient::tryFinalizeProxyQueueRelease() {
         return true;
     }
 
-    // Sole nested order for proxy storage ownership: notify queue, then phone
-    // command queue. Hot callback paths never hold both locks. A failed take
-    // leaves both buffers and all indices untouched for the next loop retry.
+    // Pin main-loop transport after closing callback admission. Detach the
+    // phone ring under its copy lock; free storage only after leaving it.
+    // A failed transport take leaves both buffers untouched for a loop retry.
     bool notifyLocked = false;
-    bool phoneLocked = false;
     if (bleNotifyMutex_) {
         if (xSemaphoreTake(bleNotifyMutex_, 0) != pdTRUE) {
             return false;
         }
         notifyLocked = true;
     }
-    if (phoneCmdMutex_) {
-        if (xSemaphoreTake(phoneCmdMutex_, 0) != pdTRUE) {
-            if (notifyLocked) {
-                xSemaphoreGive(bleNotifyMutex_);
-            }
-            return false;
-        }
-        phoneLocked = true;
-    }
-
     ProxyPacket* const proxyQueue = proxyQueue_;
-    ProxyPacket* const phoneQueue = phone2v1Queue_;
     proxyQueue_ = nullptr;
-    phone2v1Queue_ = nullptr;
-
     proxyQueuesInPsram_ = false;
     proxyQueueHead_ = 0;
     proxyQueueTail_ = 0;
     proxyQueueCount_ = 0;
+    taskENTER_CRITICAL(&phoneQueueMux_);
+    ProxyPacket* const phoneQueue = phone2v1Queue_;
+    phone2v1Queue_ = nullptr;
     phone2v1QueueHead_ = 0;
     phone2v1QueueTail_ = 0;
     phone2v1QueueCount_ = 0;
+    taskEXIT_CRITICAL(&phoneQueueMux_);
 
     if (proxyQueue) {
         heap_caps_free(proxyQueue);
@@ -521,9 +511,6 @@ bool V1BLEClient::tryFinalizeProxyQueueRelease() {
     }
     proxyQueueReleasePending_.store(false, std::memory_order_release);
 
-    if (phoneLocked) {
-        xSemaphoreGive(phoneCmdMutex_);
-    }
     if (notifyLocked) {
         xSemaphoreGive(bleNotifyMutex_);
     }
@@ -776,17 +763,18 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
         return false;
     }
 
-    if (!phoneCmdMutex_ || xSemaphoreTake(phoneCmdMutex_, 0) != pdTRUE) {
-        return false;
-    }
+    // The void callback cannot report backpressure to the peer. Serialize
+    // only the bounded ring work, rather than dropping on a
+    // consumer's zero-wait mutex. No transport or allocation occurs here.
+    taskENTER_CRITICAL(&phoneQueueMux_);
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch) ||
         !connected_.load(std::memory_order_acquire) || !sessionPublicationGate_.accepts(sessionGeneration) ||
         !acceptsPhoneSession(phoneSessionGeneration)) {
-        xSemaphoreGive(phoneCmdMutex_);
+        taskEXIT_CRITICAL(&phoneQueueMux_);
         return false;
     }
     if (!phone2v1Queue_) {
-        xSemaphoreGive(phoneCmdMutex_);
+        taskEXIT_CRITICAL(&phoneQueueMux_);
         return false;
     }
 
@@ -805,7 +793,7 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
     pkt.notifyRetryPending = false;
     phone2v1QueueHead_ = (phone2v1QueueHead_ + 1) % PHONE_CMD_QUEUE_SIZE;
     phone2v1QueueCount_++;
-    xSemaphoreGive(phoneCmdMutex_);
+    taskEXIT_CRITICAL(&phoneQueueMux_);
     return true;
 }
 
@@ -847,10 +835,11 @@ int V1BLEClient::processPhoneCommandQueue() {
         pktCopy.phoneSessionGeneration = pendingPkt.phoneSessionGeneration;
         charUUID = pendingCharUUID;
         hasPacket = true;
-    } else if (phoneCmdMutex_ && xSemaphoreTake(phoneCmdMutex_, 0) == pdTRUE) {
+    } else {
+        taskENTER_CRITICAL(&phoneQueueMux_);
         // Discard retired sessions under the queue lock before selecting the
         // next command. At most PHONE_CMD_QUEUE_SIZE entries can be visited.
-        while (phone2v1QueueCount_ > 0) {
+        while (phone2v1Queue_ && phone2v1QueueCount_ > 0) {
             ProxyPacket& pkt = phone2v1Queue_[phone2v1QueueTail_];
             phone2v1QueueTail_ = (phone2v1QueueTail_ + 1) % PHONE_CMD_QUEUE_SIZE;
             phone2v1QueueCount_--;
@@ -867,7 +856,7 @@ int V1BLEClient::processPhoneCommandQueue() {
             hasPacket = true;
             break;
         }
-        xSemaphoreGive(phoneCmdMutex_);
+        taskEXIT_CRITICAL(&phoneQueueMux_);
     }
 
     if (!hasPacket) {
@@ -928,16 +917,15 @@ int V1BLEClient::processPhoneCommandQueue() {
                     }
                 };
                 inspect(pktCopy);
-                if (phoneCmdMutex_ && xSemaphoreTake(phoneCmdMutex_, 0) == pdTRUE) {
-                    for (size_t n = 0; n < phone2v1QueueCount_ && !boundary; ++n) {
-                        const ProxyPacket& queued = phone2v1Queue_[(phone2v1QueueTail_ + n) % PHONE_CMD_QUEUE_SIZE];
-                        if (queued.sessionGeneration != pktCopy.sessionGeneration ||
-                            queued.phoneSessionGeneration != pktCopy.phoneSessionGeneration) continue;
-                        if (queued.charUUID == V1_SHORT_UUID_COMMAND_LONG) inspect(queued);
-                        else otherCommandQueued = true;
-                    }
-                    xSemaphoreGive(phoneCmdMutex_);
+                taskENTER_CRITICAL(&phoneQueueMux_);
+                for (size_t n = 0; phone2v1Queue_ && n < phone2v1QueueCount_ && !boundary; ++n) {
+                    const ProxyPacket& queued = phone2v1Queue_[(phone2v1QueueTail_ + n) % PHONE_CMD_QUEUE_SIZE];
+                    if (queued.sessionGeneration != pktCopy.sessionGeneration ||
+                        queued.phoneSessionGeneration != pktCopy.phoneSessionGeneration) continue;
+                    if (queued.charUUID == V1_SHORT_UUID_COMMAND_LONG) inspect(queued);
+                    else otherCommandQueued = true;
                 }
+                taskEXIT_CRITICAL(&phoneQueueMux_);
                 uint8_t header[4] = {};
                 size_t used = 0;
                 for (size_t part = 0; part < 4 && lengths[part] != 0 && used < sizeof(header); ++part) {

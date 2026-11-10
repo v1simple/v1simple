@@ -53,7 +53,19 @@ disconnect events cannot acquire a new phone's authority.
 [`test_ble_proxy_phone_session`](../../test/test_ble_proxy_phone_session/test_ble_proxy_phone_session.cpp)
 executes the real command-send path to verify that retired phone mute commands
 cannot override a later local unmute, while connected-phone retries still work.
-NimBLE transport, clocks, and locks remain host doubles.
+The phone ring uses one bounded critical section for callback copies, consumer
+copies, indexed-header inspection and teardown detach. Ordinary consumer overlap
+cannot silently reject an accepted phone write. Transport runs outside that
+section; a busy transport retains the pending command for a later loop. Queue
+overflow still evicts the oldest entry and preserves the newest. Teardown closes
+admission, waits for callback leases, detaches storage and frees outside the
+critical section.
+The phone suite models callback arrival during both consumer copies and long
+header inspection, with delivery deferred until the critical section exits. Its
+strict mutex double rejects an already-owned mutex and gives distinct resources
+distinct handles. It checks final command bytes/order, transport deferral,
+retirement at admission and callback-pinned release. NimBLE transport, clocks,
+and scheduling remain host doubles.
 
 Detector-to-phone notifications also retain both session generations from
 callback entry through the proxy queue. Admission rechecks them after acquiring

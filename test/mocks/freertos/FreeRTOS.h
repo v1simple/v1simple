@@ -55,6 +55,10 @@ struct MockSemaphoreState {
     std::vector<SemaphoreHandle_t> takeHandles;
     std::vector<SemaphoreHandle_t> giveHandles;
     std::vector<SemaphoreHandle_t> heldHandles;
+    // Opt into nonrecursive mutex ownership in callback/consumer interleavings.
+    // Legacy fixtures can continue scripting takes without modeling ownership.
+    bool enforceOwnership = false;
+    uintptr_t nextHandle = 1;
 };
 
 inline MockSemaphoreState g_mock_semaphore_state{};
@@ -73,12 +77,23 @@ inline bool mock_semaphore_is_held(SemaphoreHandle_t semaphore) {
                      semaphore) != g_mock_semaphore_state.heldHandles.end();
 }
 
-inline SemaphoreHandle_t xSemaphoreCreateMutex() { return (void*)1; }
+inline void mock_enforce_semaphore_ownership() {
+    g_mock_semaphore_state.enforceOwnership = true;
+}
+
+inline SemaphoreHandle_t xSemaphoreCreateMutex() {
+    return reinterpret_cast<SemaphoreHandle_t>(g_mock_semaphore_state.enforceOwnership
+        ? g_mock_semaphore_state.nextHandle++ : 1);
+}
 inline SemaphoreHandle_t xSemaphoreCreateBinary() { return (void*)1; }
 inline int xSemaphoreTake(SemaphoreHandle_t semaphore, TickType_t timeoutTicks) {
     g_mock_semaphore_state.takeCalls++;
     g_mock_semaphore_state.lastTakeTimeout = timeoutTicks;
     g_mock_semaphore_state.takeHandles.push_back(semaphore);
+    if (g_mock_semaphore_state.enforceOwnership &&
+        (!semaphore || mock_semaphore_is_held(semaphore))) {
+        return pdFALSE;
+    }
     int result = pdTRUE;
     if (!g_mock_semaphore_state.takeResults.empty()) {
         result = g_mock_semaphore_state.takeResults.front();

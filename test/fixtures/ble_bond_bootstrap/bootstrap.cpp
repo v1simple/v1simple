@@ -154,7 +154,7 @@ class V1BLEClient {
     bool initBLE(StorageManager&, bool, const char*);
     bool proxyEnabled_ = false, proxyServerInitAttempted_ = false, proxyServerInitialized_ = false;
     String proxyName_;
-    SemaphoreHandle_t bleMutex_ = nullptr, bleNotifyMutex_ = nullptr, phoneCmdMutex_ = nullptr;
+    SemaphoreHandle_t bleMutex_ = nullptr, bleNotifyMutex_ = nullptr;
     uint8_t lastBondBackupCount_ = 0;
     TestBleClient* pClient_ = nullptr;
     std::unique_ptr<ClientCallbacks> pClientCallbacks_;

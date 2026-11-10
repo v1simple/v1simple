@@ -142,11 +142,7 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
     if (!bleNotifyMutex_) {
         bleNotifyMutex_ = xSemaphoreCreateMutex();
     }
-    if (!phoneCmdMutex_) {
-        phoneCmdMutex_ = xSemaphoreCreateMutex();
-    }
-
-    if (!bleMutex_ || !bleNotifyMutex_ || !phoneCmdMutex_) {
+    if (!bleMutex_ || !bleNotifyMutex_) {
         Serial.println("FAIL");
         return false;
     }

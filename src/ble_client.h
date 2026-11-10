@@ -569,10 +569,9 @@ class V1BLEClient {
     String proxyName_;
 
     SemaphoreHandle_t bleMutex_ = nullptr;
-    // Main-loop transport/release ownership only; notification callbacks never
+    // Main-loop transport/release ownership only; proxy callbacks never
     // wait for transport while admitting data to the short ring critical section.
     SemaphoreHandle_t bleNotifyMutex_ = nullptr;
-    SemaphoreHandle_t phoneCmdMutex_ = nullptr;
 
     static constexpr size_t PROXY_QUEUE_SIZE = 8;   // Small queue, drop-oldest on overflow
     static constexpr size_t PROXY_PACKET_MAX = 512; // Max packet size for proxy (handles full V1 packets)
@@ -595,6 +594,8 @@ class V1BLEClient {
     static constexpr size_t PHONE_CMD_QUEUE_SIZE = 16; // Small burst-tolerant queue for phone commands
     static constexpr size_t MAX_PHONE_CMDS_PER_LOOP = 4;
     ProxyPacket* phone2v1Queue_ = nullptr;
+    // Owns bounded ring copies/inspection and detach, never BLE transport.
+    portMUX_TYPE phoneQueueMux_ = portMUX_INITIALIZER_UNLOCKED;
     bool proxyQueuesInPsram_ = false;
     // Closes queue admission before runtime teardown. The main loop retries
     // release until callback leases and main-loop/command ownership have ended.

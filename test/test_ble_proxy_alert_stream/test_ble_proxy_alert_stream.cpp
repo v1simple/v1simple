@@ -127,7 +127,6 @@ struct StreamFixture {
     mockMillis += 10; // The production sender paces writes across fixtures too.
     TEST_ASSERT_TRUE(client.allocateProxyQueues());
     client.proxyEnabled_ = true;
-    client.phoneCmdMutex_ = xSemaphoreCreateMutex();
     client.bleMutex_ = xSemaphoreCreateMutex();
     link.setConnected(true);
     client.pClient_ = &link;

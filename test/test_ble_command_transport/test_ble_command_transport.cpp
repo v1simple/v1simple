@@ -504,7 +504,6 @@ void test_sweep_capture_uses_worker_boundary_and_survives_ack_harvest() {
 namespace {
 void preparePhone(CommandFixture& f) {
     TEST_ASSERT_TRUE(f.client.allocateProxyQueues());
-    f.client.phoneCmdMutex_=xSemaphoreCreateMutex();
     f.client.proxyPhoneSessionGeneration_.store(1);
     f.client.phoneCmdPendingClear_.store(true);
 }

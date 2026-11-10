@@ -19,4 +19,13 @@ describe('settings draft reconciliation', () => {
         expect(current.volume).toBe(200);
         expect(canonical.color).toBe(200);
     });
+
+    it('rebases a reopened editor against its saved baseline, not an earlier submission', () => {
+        const saved = { name: 'BEFORE', persistence: 1 };
+        const current = { ...saved, name: 'Later draft' };
+        const canonical = { name: 'BEFORE', persistence: 5 };
+        expect(reconcileSettingsDraft(current, saved, canonical)).toEqual({
+            name: 'Later draft', persistence: 5
+        });
+    });
 });

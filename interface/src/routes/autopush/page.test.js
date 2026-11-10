@@ -297,7 +297,7 @@ describe('autopush route page', () => {
         await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
 
         await screen.findByText('Slot saved!');
-        expect(screen.queryByRole('button', { name: /^save slot$/i })).not.toBeInTheDocument();
+        await waitFor(() => expect(screen.queryByRole('button', { name: /^save slot$/i })).not.toBeInTheDocument());
         stream.close();
         unmount();
     });

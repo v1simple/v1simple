@@ -184,3 +184,26 @@ every visible phase. Presence alone does not prove text. Same-direction edges
 measure the full cycle, retaining the 10 ms aggregate half-cycle allowance while
 allowing at most 50 ms of optical rise/fall asymmetry per phase. Missing frames,
 extra phases and rapid flashing cannot pass by aliasing the text sample grid.
+
+### Saved-state recovery in the web UI
+
+`ColorsPage.svelte` retains the submitted draft through Save or Reset and its
+readback. A lost write response triggers a read, never a repeated write. If that
+read fails, Save, Reset and Preview wait for **Reload saved display settings**.
+The editor stays mounted: later input remains a draft, while unchanged fields
+take the device's current values. Reset leaves brightness and the separately
+saved Quiet screen setting alone; preview expiration remains firmware-owned.
+
+`routes/autopush/+page.svelte` distinguishes saved slots, a submitted slot, and
+the baseline of any later editor. It closes an unchanged submitted editor only
+after authoritative readback. While slot readback is unresolved, existing drafts
+can be edited or cancelled, but new Edit, Save, default selection and Apply wait
+for **Reload saved slots**. A draft opened before an earlier ACK is reconciled
+against its own baseline, so a name-only edit cannot restore obsolete persistence
+or override fields. Lost default-selection responses use the same read recovery.
+
+The actual-component regressions in `routes/colors/readback.test.js` and
+`routes/autopush/readback.test.js` cover healthy, failed and delayed reads,
+accepted and lost replies, cancel/reopen, later drafts and different slots. They
+substitute HTTP responses and assert subsequent write payloads; production
+storage, reboot retention and visible pixels remain the device bench's checks.

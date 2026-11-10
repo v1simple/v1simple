@@ -75,6 +75,9 @@
     let disposed = false;
     let loading = $state(true);
     let colorsLoaded = $state(false);
+    // Retain the comparison point until a fresh read resolves the write. A
+    // failed read must never make the pre-reset theme saveable again.
+    let pendingReadback = $state(null);
     let saving = $state(false);
     let message = $state(null);
     let stealthSaving = $state(false);
@@ -157,7 +160,8 @@
         pickerOpen = false;
     }
 
-    async function fetchColors({ detectMode = false, submitted = null } = {}) {
+    async function fetchColors({ detectMode = false } = {}) {
+        if (disposed) return false;
         // A loaded editor owns raw text drafts as well as numeric settings.
         // Keep it mounted during reconciliation so focused edits survive.
         loading = !colorsLoaded;
@@ -165,23 +169,36 @@
         message = null;
         try {
             const res = await fetchJsonWithTimeout(DISPLAY_SETTINGS_ENDPOINT);
+            if (disposed) return false;
             if (res.ok) {
                 const data = res.data;
-                colors = reconcileSettingsDraft(colors, submitted, normalizeColorPayload(data, colors));
+                colors = reconcileSettingsDraft(colors, pendingReadback, normalizeColorPayload(data, colors));
                 // Auto-detect simple vs advanced only on initial load; refetches
                 // after save/reset must not override an explicit mode choice.
                 syncBarEditorFromColors({ keepMode: !detectMode });
                 colorsLoaded = true;
+                pendingReadback = null;
                 refreshed = true;
             } else {
                 message = { type: 'error', text: 'Failed to load colors' };
             }
         } catch (_) {
+            if (disposed) return false;
             message = { type: 'error', text: 'Failed to load colors' };
         }
         if (refreshed) await fetchStealthEnabled();
         loading = false;
         return refreshed;
+    }
+
+    async function retryColors() {
+        if (disposed || saving || stealthSaving || loading) return;
+        saving = true;
+        try {
+            await fetchColors({ detectMode: !colorsLoaded });
+        } finally {
+            saving = false;
+        }
     }
 
     function handleHexInput(key, value) {
@@ -197,8 +214,9 @@
     }
 
     async function saveColors() {
-        if (saving || stealthSaving || loading || !colorsLoaded) return;
+        if (disposed || saving || stealthSaving || loading || !colorsLoaded || pendingReadback) return;
         const submitted = { ...colors };
+        pendingReadback = submitted;
         saving = true;
         message = null;
         try {
@@ -207,22 +225,27 @@
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: buildColorParams(submitted)
             });
+            if (disposed) return;
             if (!res.ok) {
+                pendingReadback = null;
                 message = { type: 'error', text: 'Failed to save colors' };
                 return;
             }
-            if (await fetchColors({ submitted }) && message === null) {
+            if (await fetchColors() && message === null) {
                 message = { type: 'success', text: 'Colors saved! Previewing on display...' };
             }
             // Firmware owns the save preview's 5.5s hold and expiration.
         } catch (_) {
-            message = { type: 'error', text: 'Connection error' };
+            if (await fetchColors() && message === null) {
+                message = { type: 'warning', text: 'Save response was lost. Current display settings reloaded.' };
+            }
         } finally {
             saving = false;
         }
     }
 
     async function testColors() {
+        if (disposed || saving || loading || pendingReadback || !colorsLoaded) return;
         message = null;
         try {
             const res = await fetchWithTimeout(DISPLAY_PREVIEW_ENDPOINT, { method: 'POST' });
@@ -235,21 +258,25 @@
     }
 
     async function resetDefaults() {
-        if (saving || stealthSaving) return;
+        if (disposed || saving || stealthSaving || loading || !colorsLoaded || pendingReadback) return;
         if (!confirm('Reset display colors to defaults?')) return;
-        const submitted = { ...colors };
+        pendingReadback = { ...colors };
         saving = true;
         try {
             const res = await fetchWithTimeout(DISPLAY_SETTINGS_RESET_ENDPOINT, { method: 'POST' });
+            if (disposed) return;
             if (!res.ok) {
+                pendingReadback = null;
                 message = { type: 'error', text: 'Failed to reset' };
                 return;
             }
-            if (await fetchColors({ submitted }) && message === null) {
+            if (await fetchColors() && message === null) {
                 message = { type: 'success', text: 'Colors reset to defaults!' };
             }
         } catch (_) {
-            message = { type: 'error', text: 'Failed to reset' };
+            if (await fetchColors() && message === null) {
+                message = { type: 'warning', text: 'Reset response was lost. Current display settings reloaded.' };
+            }
         } finally {
             saving = false;
         }
@@ -346,7 +373,7 @@
                 <p>Load the saved colors before making changes.</p>
                 <button
                     class="btn btn-primary"
-                    onclick={() => fetchColors({ detectMode: true })}
+                    onclick={retryColors}
                     disabled={saving}
                 >
                     Retry
@@ -354,6 +381,12 @@
             </div>
         </div>
     {:else}
+        {#if pendingReadback}
+            <div class="surface-note space-y-2">
+                <p>Reload the saved display settings before saving or resetting again. Your later edits will be kept.</p>
+                <button class="btn btn-sm" onclick={retryColors} disabled={saving || stealthSaving}>Reload saved display settings</button>
+            </div>
+        {/if}
         <div class="space-y-3" aria-label="Display setting categories">
             <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
                 {#each sections as section}
@@ -378,16 +411,16 @@
         </div>
 
         <div class="grid grid-cols-2 gap-3 sm:flex">
-            <button class="btn col-span-2 sm:flex-1 btn-primary" onclick={saveColors} disabled={saving || stealthSaving}>
+            <button class="btn col-span-2 sm:flex-1 btn-primary" onclick={saveColors} disabled={saving || stealthSaving || !!pendingReadback}>
                 {#if saving}
                     <span class="loading loading-sm loading-spinner"></span>
                 {:else}
                     Save display settings
                 {/if}
             </button>
-            <button class="btn btn-secondary" onclick={testColors} disabled={saving}>Preview</button
+            <button class="btn btn-secondary" onclick={testColors} disabled={saving || !!pendingReadback}>Preview</button
             >
-            <button class="btn btn-outline" onclick={resetDefaults} disabled={saving || stealthSaving}
+            <button class="btn btn-outline" onclick={resetDefaults} disabled={saving || stealthSaving || !!pendingReadback}
                 >Reset Defaults</button
             >
         </div>

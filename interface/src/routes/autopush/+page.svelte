@@ -1,6 +1,7 @@
 <script>
     import { onMount } from 'svelte';
     import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
+    import { reconcileSettingsDraft } from '#lib/utils/settingsDraft.js';
     import PageHeader from '#lib/components/PageHeader.svelte';
     import StatusAlert from '#lib/components/StatusAlert.svelte';
     import ProfileOperationStatus from '#lib/features/profiles/ProfileOperationStatus.svelte';
@@ -27,9 +28,13 @@
     let catalogGeneration = 0;
     let disposed = false;
     let loading = $state(true);
+    let slotsLoaded = $state(false);
+    let slotsReading = $state(false);
     let message = $state(null);
     let editingSlot = $state(null);
     let editingDraft = $state(null);
+    let editingBaseline = null;
+    let pendingSlotSave = null;
     let editGeneration = 0;
     let selectedProfileVolumePolicy = $state(null);
     let busy = $state(false);
@@ -87,11 +92,15 @@
     }
 
     async function fetchSlots() {
+        if (disposed || slotsReading) return false;
+        slotsReading = true;
+        slotsLoaded = false;
         try {
             const res = await fetchJsonWithTimeout('/api/autopush/slots');
+            if (disposed) return false;
             if (!res.ok) {
                 message = { type: 'error', text: 'Failed to load slots' };
-                return;
+                return false;
             }
             const loaded = res.data;
             loaded.slots = (loaded.slots || []).map((s) => {
@@ -106,10 +115,40 @@
                     priorityArrowOnly: s.priorityArrowOnly ?? false
                 };
             });
+            if (editingDraft && loaded.slots[editingSlot]) {
+                const sameSubmission = pendingSlotSave?.slot === editingSlot &&
+                    pendingSlotSave.generation === editGeneration;
+                const closeSubmitted = sameSubmission && pendingSlotSave.accepted &&
+                    JSON.stringify(editingDraft) === JSON.stringify(pendingSlotSave.draft) && !pickerOpen;
+                const canonical = slotDraft(loaded.slots[editingSlot], editingSlot);
+                // A reopened editor inherits the old saved baseline, not the
+                // earlier submission. Only its intentional edits survive.
+                editingDraft = reconcileSettingsDraft(editingDraft,
+                    sameSubmission ? pendingSlotSave.draft : editingBaseline, canonical);
+                editingBaseline = canonical;
+                if (closeSubmitted) cancelEdit();
+                else void loadSelectedProfilePolicy(editingDraft.profile);
+            }
             data = loaded;
+            slotsLoaded = true;
+            pendingSlotSave = null;
+            return true;
         } catch (e) {
-            message = { type: 'error', text: 'Failed to load slots' };
+            if (!disposed) message = { type: 'error', text: 'Failed to load slots' };
+            return false;
+        } finally {
+            slotsReading = false;
         }
+    }
+
+    async function retrySlots() {
+        if (disposed || busy || slotsReading) return;
+        message = null;
+        if (await fetchSlots()) message = { type: 'info', text: 'Saved slots reloaded.' };
+    }
+
+    function slotDraft(slot, index) {
+        return { ...slot, color: slot.color || defaultSlotColors[index] };
     }
 
     async function fetchProfiles() {
@@ -125,7 +164,7 @@
     }
 
     async function activateSlot(slot) {
-        if (busy) return;
+        if (disposed || busy || !slotsLoaded || !profileSchemaReady) return;
         busy = true;
         message = { type: 'info', text: `Setting slot ${slot + 1} as default...` };
         try {
@@ -147,14 +186,16 @@
                 message = { type: 'error', text: 'Failed to set default slot' };
             }
         } catch (e) {
-            message = { type: 'error', text: 'Connection error' };
+            if (await fetchSlots()) {
+                message = { type: 'warning', text: 'Default selection response was lost. Saved slots reloaded.' };
+            }
         } finally {
             busy = false;
         }
     }
 
     async function pushNow(slot) {
-        if (busy || !profileSchemaReady) return;
+        if (disposed || busy || !slotsLoaded || !profileSchemaReady) return;
         if (!runtimeModeKnown) {
             message = {
                 type: 'warning',
@@ -204,7 +245,7 @@
     }
 
     async function saveSlot(slot) {
-        if (busy) return;
+        if (disposed || busy || !slotsLoaded || !profileSchemaReady) return;
         if (editingSlot !== slot || !editingDraft) return;
         if (editingDraft.profile && !hasProfileOption(editingDraft.profile)) {
             message = {
@@ -236,7 +277,7 @@
         message = { type: 'info', text: 'Saving slot...' };
         const persist = Math.max(0, Math.min(5, Number(s.alertPersist ?? 0)));
         s.alertPersist = persist;
-        const submittedDraft = JSON.stringify(s);
+        pendingSlotSave = { slot, generation: submittedEditGeneration, draft: { ...s }, accepted: false };
 
         try {
             const formData = new FormData();
@@ -265,19 +306,20 @@
                 status: response.status,
                 error: response.ok ? null : await response.json().catch(() => null)
             }));
+            if (disposed) return;
 
             if (res.ok) {
+                pendingSlotSave.accepted = true;
                 message = { type: 'success', text: 'Slot saved!' };
-                if (editingSlot === slot && editGeneration === submittedEditGeneration &&
-                    JSON.stringify(editingDraft) === submittedDraft && !pickerOpen) {
-                    cancelEdit();
-                }
                 await fetchSlots();
             } else {
+                pendingSlotSave = null;
                 message = { type: 'error', text: res.status === 409 && res.error?.error ? res.error.error : 'Failed to save' };
             }
         } catch (e) {
-            message = { type: 'error', text: 'Connection error' };
+            if (await fetchSlots()) {
+                message = { type: 'warning', text: 'Save response was lost. Saved slots reloaded.' };
+            }
         } finally {
             busy = false;
         }
@@ -289,12 +331,11 @@
     }
 
     function beginEdit(slot) {
+        if (disposed || !slotsLoaded || !profileSchemaReady) return;
         editGeneration += 1;
         editingSlot = slot;
-        editingDraft = {
-            ...data.slots[slot],
-            color: data.slots[slot].color || defaultSlotColors[slot]
-        };
+        editingBaseline = slotDraft(data.slots[slot], slot);
+        editingDraft = { ...editingBaseline };
         void loadSelectedProfilePolicy(editingDraft.profile);
     }
 
@@ -303,7 +344,7 @@
         if (!name) return;
         try {
             const result = await fetchJsonWithTimeout(`/api/v1/profile?name=${encodeURIComponent(name)}`);
-            if (editingDraft?.profile === name && result.ok) {
+            if (!disposed && editingDraft?.profile === name && result.ok) {
                 selectedProfileVolumePolicy = result.data?.detector?.volume?.policy || 'unchanged';
             }
         } catch {
@@ -343,6 +384,7 @@
         selectedProfileVolumePolicy = null;
         editingSlot = null;
         editingDraft = null;
+        editingBaseline = null;
     }
 </script>
 
@@ -357,6 +399,13 @@
     </PageHeader>
 
     <StatusAlert {message} />
+
+    {#if !loading && !slotsLoaded}
+        <div class="surface-note space-y-2">
+            <p>Reload saved slots before editing, saving, choosing a default or applying to V1. Your later edits will be kept.</p>
+            <button class="btn btn-sm" onclick={retrySlots} disabled={busy || slotsReading}>Reload saved slots</button>
+        </div>
+    {/if}
 
     {#if operationStatus}
         <ProfileOperationStatus {operationStatus} />
@@ -449,7 +498,7 @@
                             {#if editingSlot !== i}
                                 <button
                                     class="btn btn-ghost btn-sm"
-                                    disabled={!profileSchemaReady}
+                                    disabled={!profileSchemaReady || !slotsLoaded}
                                     onclick={() => beginEdit(i)}>Edit</button
                                 >
                             {/if}
@@ -593,7 +642,7 @@
                                     <button
                                         class="btn btn-sm btn-success"
                                         onclick={() => saveSlot(i)}
-                                        disabled={busy ||
+                                        disabled={busy || !slotsLoaded ||
                                             (editingDraft.profile &&
                                                 !hasProfileOption(editingDraft.profile))}
                                     >
@@ -635,7 +684,7 @@
                                     <button
                                         class="btn btn-outline btn-sm"
                                         onclick={() => activateSlot(i)}
-                                        disabled={busy || !profileSchemaReady}
+                                        disabled={busy || !slotsLoaded || !profileSchemaReady}
                                     >
                                         Set as default
                                     </button>
@@ -645,6 +694,7 @@
                                     onclick={() => pushNow(i)}
                                     disabled={!slot.profile ||
                                         busy ||
+                                        !slotsLoaded ||
                                         !profileSchemaReady ||
                                         !runtimeModeKnown ||
                                         !$isMaintenance ||

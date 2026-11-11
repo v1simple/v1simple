@@ -70,27 +70,6 @@ bool v1AddressMatchesCanonicalBytes(const String& value, const char canonical[18
     return canonicalizeV1AddressBytes(value, normalized) && std::memcmp(normalized, canonical, 17u) == 0;
 }
 
-bool nvsSettingsStringFieldsEqual(const V1Settings& lhs, const V1Settings& rhs) {
-    if (lhs.apSSID != rhs.apSSID || lhs.apPassword != rhs.apPassword ||
-        lhs.wifiClientSSID != rhs.wifiClientSSID || lhs.proxyName != rhs.proxyName ||
-        lhs.slot0Name != rhs.slot0Name || lhs.slot1Name != rhs.slot1Name ||
-        lhs.slot2Name != rhs.slot2Name || lhs.slot0_default.profileName != rhs.slot0_default.profileName ||
-        lhs.slot1_highway.profileName != rhs.slot1_highway.profileName ||
-        lhs.slot2_comfort.profileName != rhs.slot2_comfort.profileName ||
-        lhs.lastV1Address != rhs.lastV1Address || lhs.obdSavedAddress != rhs.obdSavedAddress ||
-        lhs.obdSavedName != rhs.obdSavedName) return false;
-    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
-        if (lhs.wifiStaSlots[index].ssid != rhs.wifiStaSlots[index].ssid ||
-            lhs.wifiStaSlots[index].label != rhs.wifiStaSlots[index].label) return false;
-    }
-    return true;
-}
-
-bool copySettingsExact(const V1Settings& source, V1Settings& destination) {
-    destination = source;
-    return nvsSettingsStringFieldsEqual(source, destination);
-}
-
 bool copyBoundedSemanticString(const String& source, size_t maxBytes, String& destination) {
     if (source.length() > maxBytes ||
         !ExactJsonInput::validSemanticString(source.c_str(), source.length())) return false;
@@ -2233,7 +2212,7 @@ String SettingsManager::getWifiClientPassword() {
 SettingsPersistResult SettingsManager::setWifiClientEnabled(bool enabled) {
     if (!ensureSettingsLoaded()) return {};
     V1Settings before;
-    if (!copySettingsExact(settings_, before)) return SettingsPersistResult{};
+    if (!before.copyFromChecked(settings_)) return SettingsPersistResult{};
     if (settings_.wifiClientEnabled == enabled) {
         return SettingsPersistResult{true, false, false};
     }
@@ -2260,7 +2239,7 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
 
     V1Settings before;
     V1Settings candidate;
-    if (!copySettingsExact(settings_, before) || !copySettingsExact(settings_, candidate)) {
+    if (!before.copyFromChecked(settings_) || !candidate.copyFromChecked(settings_)) {
         Serial.println("[Settings] WARN: WiFi credential settings snapshot unavailable");
         return false;
     }
@@ -2419,7 +2398,7 @@ bool SettingsManager::markWifiStaSlotConnected(size_t index) {
 
     V1Settings before;
     V1Settings candidate;
-    if (!copySettingsExact(settings_, before) || !copySettingsExact(settings_, candidate) ||
+    if (!before.copyFromChecked(settings_) || !candidate.copyFromChecked(settings_) ||
         !candidate.advanceWifiStaSlotRecency(index) || !refreshWifiClientAliasExact(candidate)) {
         return false;
     }
@@ -2441,7 +2420,7 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
     }
     V1Settings before;
     V1Settings candidate;
-    if (!copySettingsExact(settings_, before) || !copySettingsExact(settings_, candidate)) return false;
+    if (!before.copyFromChecked(settings_) || !candidate.copyFromChecked(settings_)) return false;
     WifiPasswordNvsSnapshot passwordBefore;
     if (!readWifiPasswordNvsSnapshot(index, passwordBefore)) {
         return false;
@@ -2515,7 +2494,7 @@ bool SettingsManager::clearWifiClientCredentials() {
 
     V1Settings before;
     V1Settings candidate;
-    if (!copySettingsExact(settings_, before) || !copySettingsExact(settings_, candidate)) return false;
+    if (!before.copyFromChecked(settings_) || !candidate.copyFromChecked(settings_)) return false;
     WifiPasswordNvsSnapshot passwordBefore[kWifiStaSlotCount];
     WifiForgetAllJournal journal;
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {

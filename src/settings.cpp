@@ -142,6 +142,29 @@ static void migrateLegacyWifiStaSlotNvs(const String& activeNs, const WifiStaSlo
     wifiPrefs.end();
 }
 
+// Arduino String copies can fail silently. Keep every allocation-bearing
+// field in this one check shared by mutations, NVS and backup transactions.
+bool V1Settings::hasSameOwnedStrings(const V1Settings& other) const {
+    if (apSSID != other.apSSID || apPassword != other.apPassword ||
+        wifiClientSSID != other.wifiClientSSID || proxyName != other.proxyName ||
+        lastV1Address != other.lastV1Address || obdSavedAddress != other.obdSavedAddress ||
+        obdSavedName != other.obdSavedName || slot0Name != other.slot0Name ||
+        slot1Name != other.slot1Name || slot2Name != other.slot2Name ||
+        slot0_default.profileName != other.slot0_default.profileName ||
+        slot1_highway.profileName != other.slot1_highway.profileName ||
+        slot2_comfort.profileName != other.slot2_comfort.profileName) return false;
+    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        if (wifiStaSlots[index].ssid != other.wifiStaSlots[index].ssid ||
+            wifiStaSlots[index].label != other.wifiStaSlots[index].label) return false;
+    }
+    return true;
+}
+
+bool V1Settings::copyFromChecked(const V1Settings& source) {
+    *this = source;
+    return source.hasSameOwnedStrings(*this);
+}
+
 SettingsManager::SettingsManager(StorageManager& storage, V1ProfileManager& profiles)
     : storage_(&storage), profiles_(&profiles) {}
 

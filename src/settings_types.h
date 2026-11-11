@@ -313,6 +313,11 @@ struct V1Settings {
     // Default constructor with sensible defaults
     V1Settings();
 
+    // Check a freshly copied snapshot before publishing or mutating settings.
+    bool hasSameOwnedStrings(const V1Settings& other) const;
+    // A failed checked assignment may leave this staging value incomplete.
+    bool copyFromChecked(const V1Settings& source);
+
     int primaryWifiStaSlotIndex() const {
         int best = -1;
         for (size_t i = 0; i < kWifiStaSlotCount; ++i) {

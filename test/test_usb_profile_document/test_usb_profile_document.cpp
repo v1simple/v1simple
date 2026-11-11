@@ -103,7 +103,7 @@ String snapshot() {
 
 String unrelatedSettingsSnapshot() {
     V1Settings snapshotSettings;
-    TEST_ASSERT_TRUE(copySettingsChecked(manager->get(), snapshotSettings));
+    TEST_ASSERT_TRUE(snapshotSettings.copyFromChecked(manager->get()));
     const bool legacyProxyObdConflict = snapshotSettings.proxyBLE && snapshotSettings.obdEnabled;
     // Profiles-only restore deliberately leaves unrelated legacy conflicts in
     // place.  Current v21 backups cannot truthfully encode that state, so make

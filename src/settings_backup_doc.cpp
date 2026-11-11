@@ -27,27 +27,6 @@ bool exactStringCopy(const String& source, String& destination) {
     return destination.length() == source.length() && destination == source;
 }
 
-bool settingsStringFieldsEqual(const V1Settings& lhs, const V1Settings& rhs) {
-    if (lhs.apSSID != rhs.apSSID || lhs.apPassword != rhs.apPassword ||
-        lhs.wifiClientSSID != rhs.wifiClientSSID || lhs.proxyName != rhs.proxyName ||
-        lhs.slot0Name != rhs.slot0Name || lhs.slot1Name != rhs.slot1Name ||
-        lhs.slot2Name != rhs.slot2Name || lhs.slot0_default.profileName != rhs.slot0_default.profileName ||
-        lhs.slot1_highway.profileName != rhs.slot1_highway.profileName ||
-        lhs.slot2_comfort.profileName != rhs.slot2_comfort.profileName ||
-        lhs.lastV1Address != rhs.lastV1Address || lhs.obdSavedAddress != rhs.obdSavedAddress ||
-        lhs.obdSavedName != rhs.obdSavedName) return false;
-    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
-        if (lhs.wifiStaSlots[index].ssid != rhs.wifiStaSlots[index].ssid ||
-            lhs.wifiStaSlots[index].label != rhs.wifiStaSlots[index].label) return false;
-    }
-    return true;
-}
-
-bool copySettingsChecked(const V1Settings& source, V1Settings& destination) {
-    destination = source;
-    return settingsStringFieldsEqual(source, destination);
-}
-
 bool profileStringFieldsEqual(const V1Profile& lhs, const V1Profile& rhs) {
     return lhs.name == rhs.name && lhs.description == rhs.description;
 }
@@ -623,7 +602,7 @@ bool applyBackupNetworkFields(const JsonDocument& doc, V1Settings& settings, Sto
     if (!prepareNetworkFields(doc, scope, prepared)) return false;
     V1Settings before;
     RestoreCredentialSnapshot credentialsBefore;
-    if (!copySettingsChecked(settings, before) ||
+    if (!before.copyFromChecked(settings) ||
         (prepared.mutatesCredentials && !captureRestoreCredentialSnapshot(storage, credentialsBefore, &settings))) return false;
     if (applyPreparedNetworkFields(doc, prepared, settings, storage, scope, clearSdSecret)) return true;
     settings = std::move(before);
@@ -843,7 +822,7 @@ bool applyBackupCriticalFieldsAtomically(const JsonDocument& doc, V1Settings& se
     RestoreCredentialSnapshot credentialsBefore;
     if (!prepareNetworkFields(doc, BackupRestoreScope::CriticalRecovery, network) ||
         !prepareProfileSlotStrings(doc, slots) || !prepareObdFields(doc, obd) ||
-        !copySettingsChecked(settings, before) ||
+        !before.copyFromChecked(settings) ||
         (network.mutatesCredentials && !captureRestoreCredentialSnapshot(storage, credentialsBefore, &settings))) {
         return false;
     }
@@ -893,7 +872,7 @@ bool applyBackupWifiClientHealingAtomically(const JsonDocument& doc, V1Settings&
 
     V1Settings before;
     RestoreCredentialSnapshot credentialsBefore;
-    if (!copySettingsChecked(settings, before) ||
+    if (!before.copyFromChecked(settings) ||
         !captureRestoreCredentialSnapshot(storage, credentialsBefore, &settings)) return false;
     if (!applyPreparedNetworkFields(doc, network, settings, storage,
                                     BackupRestoreScope::CriticalRecovery, false) ||
@@ -2610,7 +2589,7 @@ ProfileOperationResult SettingsManager::deleteProfileAndReferences(const String&
 #endif
 
     V1Settings settingsBeforeDelete;
-    if (!copySettingsChecked(settings_, settingsBeforeDelete)) {
+    if (!settingsBeforeDelete.copyFromChecked(settings_)) {
         resolveProfileDeleteTransaction();
         return profileOperationResult(ProfileStorageStatus::IoError,
                                       "Settings snapshot memory unavailable during profile delete");
@@ -2703,7 +2682,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     PreparedNetworkFields& preparedNetwork = staging->preparedNetwork;
     PreparedObdFields& preparedObd = staging->preparedObd;
     RestoreCredentialSnapshot& credentialsBefore = staging->credentialsBefore;
-    if (!copySettingsChecked(settings_, settingsBefore)) {
+    if (!settingsBefore.copyFromChecked(settings_)) {
         Serial.println("[Settings] ERROR: Settings snapshot memory unavailable before restore");
         return result;
     }
@@ -2974,7 +2953,7 @@ bool SettingsManager::migrateAutoPushProfilesToV2() {
         }
 #endif
         V1Settings preMigrationSettings;
-        if (!copySettingsChecked(settings_, preMigrationSettings)) return false;
+        if (!preMigrationSettings.copyFromChecked(settings_)) return false;
         const SettingsBackupApplyResult migrated =
             applyBackupDocument(migration, true, SettingsRestoreWatchdog{},
                                 SettingsBackupScope::ProfilesOnly);
@@ -3052,7 +3031,7 @@ bool SettingsManager::migrateAutoPushProfilesToV2() {
 
     String assignedNames[3];
     V1Settings legacySettings;
-    if (!copySettingsChecked(settings_, legacySettings)) return false;
+    if (!legacySettings.copyFromChecked(settings_)) return false;
     const V1Settings& legacySettingsView = legacySettings;
     for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
         const V1Settings::ConstAutoPushSlotView slot = legacySettingsView.autoPushSlotView(slotIndex);

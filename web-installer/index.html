@@ -947,7 +947,7 @@
         flash,
         serial: navigator.serial,
         secure: window.isSecureContext,
-        fetchManifest: (url) => fetch(url),
+        fetchManifest: (url, options) => fetch(url, options),
       }))
       .catch(() => {
         document.querySelector('#preserve-availability').textContent =

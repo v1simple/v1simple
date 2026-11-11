@@ -234,6 +234,76 @@ test('download failures reject bytes before flashing and release the stream', as
   }
 });
 
+test('a stalled firmware stream releases the installer without writing and can be retried', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let sendFirstBytes;
+  let readStarted;
+  const firstReadStarted = new Promise(resolve => { readStarted = resolve; });
+  const firstBytes = new Promise(resolve => { sendFirstBytes = resolve; });
+  let finishRead;
+  let reading;
+  const waitingForBytes = new Promise(resolve => { reading = resolve; });
+  const release = new Promise(resolve => { finishRead = resolve; });
+  let attempt = 0;
+  let cancelled = false;
+  let released = false;
+  const { elements, calls, flashedImages } = fixture({
+    async fetchFirmware(_url, { signal } = {}) {
+      if (++attempt > 1) return firmwareResponse();
+      let firstRead = true;
+      return {
+        ok: true,
+        headers: new Headers(),
+        body: { getReader: () => ({
+          read() {
+            if (firstRead) {
+              firstRead = false;
+              readStarted();
+              return firstBytes;
+            }
+            return new Promise((resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+              release.then(resolve);
+              reading();
+            });
+          },
+          async cancel() { cancelled = true; },
+          releaseLock() { released = true; },
+        }) },
+      };
+    },
+  });
+
+  elements.install.emit('click');
+  const pending = elements.confirm.emit('click');
+  try {
+    await firstReadStarted;
+    t.mock.timers.tick(45_000);
+    sendFirstBytes({ value: image.subarray(0, 2), done: false });
+    await waitingForBytes;
+    t.mock.timers.tick(15_000);
+    await new Promise(setImmediate);
+    assert.equal(elements.close.disabled, true);
+    t.mock.timers.tick(45_000);
+    await new Promise(setImmediate);
+    assert.equal(elements.close.disabled, false);
+    assert.match(elements.status.textContent, /download timed out.*Nothing was written/i);
+    assert.equal(calls.some(call => call[0] === 'flash'), false);
+    assert.equal(cancelled, true);
+    assert.equal(released, true);
+  } finally {
+    sendFirstBytes({ done: true });
+    finishRead({ done: true });
+    await pending;
+  }
+
+  elements.close.emit('click');
+  elements.install.emit('click');
+  await elements.confirm.emit('click');
+  assert.deepEqual(flashedImages, [image]);
+  assert.match(elements.status.textContent, /Transfer complete/);
+});
+
 test('verification hashes decoded bytes when HTTP compresses the download', async () => {
   const response = firmwareResponse([image.subarray(0, 2), image.subarray(2)], {
     headers: { 'Content-Encoding': 'gzip', 'Content-Length': '24' },

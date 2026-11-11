@@ -2,8 +2,10 @@
 // Use its public flash API with an explicit false instead of that dialog.
 const APP_OFFSET = 0x20000;
 const APP_SIZE = 0xD80000;
+const DOWNLOAD_IDLE_TIMEOUT_MS = 60_000;
+const DOWNLOAD_TIMEOUT_MESSAGE = 'Firmware download timed out. Nothing was written.';
 
-async function verifiedFirmware(response, part, crypto) {
+async function verifiedFirmware(response, part, crypto, refreshDownloadDeadline) {
   if (!response.ok) throw new Error(`Firmware download failed (${response.status}).`);
   if (!response.body?.getReader) throw new Error('This browser cannot safely read the firmware download.');
   const reader = response.body.getReader();
@@ -27,6 +29,7 @@ async function verifiedFirmware(response, part, crypto) {
       }
       data.set(value, received);
       received += value.byteLength;
+      if (value.byteLength) refreshDownloadDeadline();
     }
     complete = true;
     if (received !== part.size) {
@@ -88,14 +91,23 @@ export function bindPreserveInstaller(root, {
     status.textContent = 'Choose your device. Keep the cable connected until the update completes.';
     let port;
     let firmwareURL;
+    let downloadSignal;
+    let downloadTimer;
     let flashInvoked = false;
     let failure;
     try {
       // Must run directly inside the click handler, before any await, so the
       // browser's permission prompt retains the user's activation.
       port = await serial.requestPort();
+      const download = new AbortController();
+      downloadSignal = download.signal;
+      const refreshDownloadDeadline = () => {
+        clearTimeout(downloadTimer);
+        downloadTimer = setTimeout(() => download.abort(), DOWNLOAD_IDLE_TIMEOUT_MS);
+      };
+      refreshDownloadDeadline();
       const manifestPath = new URL(button.dataset.manifest, root.baseURI).href;
-      const response = await fetchManifest(manifestPath);
+      const response = await fetchManifest(manifestPath, { signal: downloadSignal });
       if (!response.ok) throw new Error(`Firmware manifest download failed (${response.status}).`);
       const manifest = await response.json();
       const build = manifest?.builds?.[0];
@@ -109,8 +121,12 @@ export function bindPreserveInstaller(root, {
         throw new Error('The preservation manifest must contain a valid firmware size and checksum.');
       }
       status.textContent = 'Downloading and verifying the firmware and web interface before writing.';
-      const firmwareResponse = await fetchFirmware(new URL(part.path, manifestPath).href);
-      const firmware = await verifiedFirmware(firmwareResponse, part, crypto);
+      refreshDownloadDeadline();
+      const firmwareResponse = await fetchFirmware(new URL(part.path, manifestPath).href, { signal: downloadSignal });
+      refreshDownloadDeadline();
+      const firmware = await verifiedFirmware(firmwareResponse, part, crypto, refreshDownloadDeadline);
+      if (downloadSignal.aborted) throw new Error(DOWNLOAD_TIMEOUT_MESSAGE);
+      clearTimeout(downloadTimer);
       firmwareURL = createObjectURL(firmware);
       // The pinned flash API fetches parts itself. Give it only these verified
       // bytes, so a second remote download cannot change the image being written.
@@ -138,11 +154,12 @@ export function bindPreserveInstaller(root, {
     } catch (error) {
       status.textContent = !port && error.name === 'NotFoundError'
         ? 'No device selected. Nothing was written.'
-        : `Update failed: ${failure ?? error.message}`;
+        : `Update failed: ${failure ?? (downloadSignal?.aborted ? DOWNLOAD_TIMEOUT_MESSAGE : error.message)}`;
       if (flashInvoked) {
         status.textContent += ' The update may be incomplete. Disconnect USB-C, hold Power + GEAR, then reconnect USB-C while holding both buttons to enter bootloader mode. Close this dialog and choose Update and preserve data again. Do not choose Fresh install to recover; it erases saved device data.';
       }
     } finally {
+      clearTimeout(downloadTimer);
       if (firmwareURL) revokeObjectURL(firmwareURL);
       // flash normally disconnects itself. Also release the port if an
       // unexpected error escaped that routine, without opening it ourselves.

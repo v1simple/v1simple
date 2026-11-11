@@ -165,6 +165,28 @@ def test_linux_failure_bundle_retains_environment_and_build_reports() -> None:
     )
 
 
+def test_hosted_browser_checks_consume_the_production_build() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    start = "      - name: Check built pages in Chromium"
+    require(workflow.count(start) == 1, "hosted CI must run the built-page browser checks")
+    before, rest = workflow.split(start, maxsplit=1)
+    step, after = rest.split("\n      - name:", maxsplit=1)
+    require('bash ./scripts/ci-test.sh 2>&1 | tee ci-test.log' in before,
+            "browser checks must consume the frontend built by the Linux gate")
+    require("Upload log on failure" in after,
+            "browser checks must run before the failure artifact is collected")
+    require("\n        if:" not in step and "continue-on-error:" not in step,
+            "browser failures must block a successful hosted gate")
+    for requirement in (
+        './scripts/bench_python.sh --browser',
+        '-m playwright install --with-deps --only-shell chromium',
+        'PYTHONPATH=scripts BEHAVIOR_BROWSER_LIVE_TESTS=1 BEHAVIOR_BROWSER_CHANNEL=',
+        'test_behavior_browser.BuiltPageBrowserTests',
+        'test_behavior_profiles.BuiltProfilesBrowserTests',
+    ):
+        require(step.count(requirement) == 1, f"missing browser gate contract: {requirement}")
+
+
 def test_macos_local_and_hosted_gates_run_both_swift_suites() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     macos_job = workflow.split("  v1replay-swift-oracle:", maxsplit=1)[1].split(
@@ -195,13 +217,27 @@ def test_macos_local_and_hosted_gates_run_both_swift_suites() -> None:
             "local lifecycle helper must invoke the standalone regression runner")
 
 
+def test_hosted_macos_checks_the_native_microphone_recorder() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    recorder_step = workflow.split("- name: Check native camera and microphone recorders", maxsplit=1)
+    require(len(recorder_step) == 2, "hosted macOS CI must check both native recorders")
+    recorder_step = recorder_step[1].split("\n  test:", maxsplit=1)[0]
+    for invocation in (
+        "xcrun swiftc -warnings-as-errors -module-cache-path tools/v1replay/.build/camera-module-cache -typecheck scripts/bench/audio_recorder.swift",
+        "xcrun swift -module-cache-path tools/v1replay/.build/camera-module-cache scripts/bench/audio_recorder.swift --self-test",
+    ):
+        require(recorder_step.count(invocation) == 1, "hosted recorder checks must match the local macOS gate")
+
+
 def main() -> int:
     test_car_build_is_clean_and_uses_one_argument_contract()
     test_current_frontend_bundle_precedes_firmware_metadata_and_car_build()
     test_release_publication_is_owned_by_tested_script()
     test_clean_linux_runner_binds_exact_source_and_cold_amd64_image()
     test_linux_failure_bundle_retains_environment_and_build_reports()
+    test_hosted_browser_checks_consume_the_production_build()
     test_macos_local_and_hosted_gates_run_both_swift_suites()
+    test_hosted_macos_checks_the_native_microphone_recorder()
     print("CI gate sequencing tests: PASS")
     return 0
 

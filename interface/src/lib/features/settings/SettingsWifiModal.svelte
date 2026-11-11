@@ -12,6 +12,9 @@
         selectedNetwork = $bindable(null),
         wifiPassword = $bindable(''),
         wifiConnecting = false,
+        saveBlocked = false,
+        slotChanged = false,
+        recovery,
         onstartWifiScan,
         onselectNetwork,
         onconnectToNetwork,
@@ -29,7 +32,7 @@
     });
 
     function handlePasswordKeydown(event) {
-        if (event.key !== 'Enter' || wifiConnecting || (selectedNetwork?.secure && !wifiPassword)) {
+        if (event.key !== 'Enter' || wifiConnecting || saveBlocked || (selectedNetwork?.secure && !wifiPassword)) {
             return;
         }
 
@@ -53,6 +56,10 @@
         oncancel={(event) => { event.preventDefault(); handleClose(); }}>
         <div class="surface-modal modal-box max-w-md">
             <h3 class="text-lg font-bold">{title}</h3>
+            {@render recovery?.()}
+            {#if slotChanged}
+                <p class="surface-note" role="status">This saved network slot changed. Close the picker and select the current slot again.</p>
+            {/if}
 
             {#if wifiScanning}
                 <div class="state-loading stack">
@@ -92,7 +99,7 @@
                         <button
                             class="btn btn-primary"
                             onclick={onconnectToNetwork}
-                            disabled={wifiConnecting || (selectedNetwork.secure && !wifiPassword)}
+                            disabled={wifiConnecting || saveBlocked || (selectedNetwork.secure && !wifiPassword)}
                         >
                             {#if wifiConnecting}
                                 <span class="loading loading-sm loading-spinner"></span>
@@ -127,7 +134,7 @@
                     {/if}
 
                     <div class="mt-4 flex justify-end gap-2">
-                        <button class="btn btn-ghost btn-sm" onclick={() => onstartWifiScan?.()}>
+                        <button class="btn btn-ghost btn-sm" onclick={() => onstartWifiScan?.()} disabled={saveBlocked}>
                             Rescan
                         </button>
                     </div>

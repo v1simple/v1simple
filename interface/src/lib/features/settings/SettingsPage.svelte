@@ -59,13 +59,22 @@
     let wifiNetworksLoading = $state(false);
     let wifiNetworksReadbackRequired = $state(false);
     const wifiControlsDisabled = $derived(restoring || wifiNetworksReadbackRequired);
+    let wifiPendingSlotChanges = $state([]);
+    let wifiSlotChangeId = 0;
     let wifiNetworkActionsInFlight = $state(0);
     const wifiNetworkActionInFlight = $derived(wifiNetworkActionsInFlight > 0);
+    let wifiScanSavesInFlight = $state(0);
     let wifiNetworksRunId = 0;
     let wifiTestingIndex = $state(null);
     let wifiOrdering = $state(false);
     let wifiScan = $state(createWifiScanState());
     let wifiEditor = $state(createWifiEditorState());
+    let wifiScanSlotSsid = $state();
+    let wifiEditorSlotSsid = $state();
+    const wifiScanSlotChanged = $derived(
+        wifiScan.targetIndex !== null && wifiSlotSsid(wifiScan.targetIndex) !== wifiScanSlotSsid);
+    const wifiEditorSlotChanged = $derived(
+        wifiEditor.index !== null && wifiSlotSsid(wifiEditor.index) !== wifiEditorSlotSsid);
     let wifiPoll = null;
     let wifiStatusFetchPromise = null;
     let wifiStatusRunId = 0;
@@ -74,7 +83,7 @@
     let componentMounted = false;
     let wifiTestRunId = 0;
     const wifiSavedMutationBusy = $derived(wifiToggleInFlight || wifiNetworkActionInFlight ||
-        wifiOrdering || wifiScan.saving || wifiTestingIndex !== null);
+        wifiOrdering || wifiScanSavesInFlight > 0 || wifiTestingIndex !== null);
     let SettingsWifiModalComponent = $state(null);
     let wifiModalLoading = $state(false);
     const WIFI_STATUS_ERROR_TEXT = 'Failed to load WiFi status';
@@ -112,7 +121,7 @@
         const releaseDeviceSettings = retainDeviceSettings();
         const statusPoll = createPoll(async () => {
             // Explicit Test/Scan and mutations own their reads while active.
-            if (wifiTestingIndex !== null || wifiScan.scanning || wifiScan.saving ||
+            if (wifiTestingIndex !== null || wifiScan.scanning || wifiScanSavesInFlight > 0 ||
                 wifiToggleInFlight || wifiNetworkActionInFlight || wifiOrdering) return;
             await fetchWifiStatus({ reportError: false, timeoutMs: WIFI_TEST_STATUS_TIMEOUT_MS });
         }, 3000);
@@ -312,6 +321,8 @@
         const runId = ++wifiNetworksRunId;
         const isCurrent = () => componentMounted && runId === wifiNetworksRunId;
         const canResolveRestore = !restoring || afterRestore;
+        const settledChanges = new Set(wifiPendingSlotChanges
+            .filter((change) => change.settled).map((change) => change.id));
         wifiNetworksLoading = true;
         try {
             const res = await fetchJsonWithTimeout('/api/wifi/networks');
@@ -319,21 +330,57 @@
             if (res.ok && validWifiSlots(res.data?.slots)) {
                 const data = res.data;
                 savedWifiSlots = data.slots.map((slot, index) => normalizeWifiSlot(slot, index));
-                if (canResolveRestore) wifiNetworksReadbackRequired = false;
+                if (canResolveRestore) {
+                    wifiNetworksReadbackRequired = false;
+                    // Only a current read started after the write settled
+                    // can release that slot. Older reads and sibling writes
+                    // may still be in flight.
+                    wifiPendingSlotChanges = wifiPendingSlotChanges.filter((change) => !settledChanges.has(change.id));
+                }
                 clearMessageText(WIFI_NETWORKS_ERROR_TEXT);
                 return true;
-            } else {
-                message = { type: 'error', text: WIFI_NETWORKS_ERROR_TEXT };
-                return false;
             }
+            markSavedWifiNetworksUnknown();
+            return false;
         } catch (e) {
             if (isCurrent()) {
-                message = { type: 'error', text: WIFI_NETWORKS_ERROR_TEXT };
+                markSavedWifiNetworksUnknown();
                 return false;
             }
         } finally {
             if (isCurrent()) wifiNetworksLoading = false;
         }
+    }
+
+    function markSavedWifiNetworksUnknown() {
+        wifiNetworksReadbackRequired = true;
+        message = { type: 'error', text: WIFI_NETWORKS_ERROR_TEXT };
+    }
+
+    function wifiSlotSsid(index) {
+        return savedWifiSlots.find((slot) => slot.index === index)?.ssid;
+    }
+
+    function wifiUpsertSlotIndex(index, ssid) {
+        return index ?? savedWifiSlots.find((slot) => slot.ssid === ssid)?.index ?? null;
+    }
+
+    function wifiSlotChangePending(index) {
+        // An unindexed upsert lets firmware choose its target. Only explicit
+        // slot actions need to wait for that identity to become known again.
+        return index !== null &&
+            wifiPendingSlotChanges.some((change) => change.index === index || change.index === null);
+    }
+
+    function beginWifiSlotChange(index) {
+        const id = ++wifiSlotChangeId;
+        wifiPendingSlotChanges.push({ id, index, settled: false });
+        invalidateSavedWifiNetworks();
+        return id;
+    }
+
+    function settleWifiSlotChange(id) {
+        wifiPendingSlotChanges.find((change) => change.id === id).settled = true;
     }
 
     function slotConfigured(slot) {
@@ -411,15 +458,22 @@
         return Math.min(255, Math.max(...configured.map((slot) => slot.priority)) + 1);
     }
 
-    function moveDisabled(slot, direction) {
+    function wifiPriorityUpdates(slot, direction) {
         const configured = sortedConfiguredWifiSlots();
         const position = configured.findIndex((candidate) => candidate.index === slot.index);
-        if (position < 0) return true;
-        return direction < 0 ? position === 0 : position === configured.length - 1;
+        const targetPosition = position + direction;
+        if (position < 0 || targetPosition < 0 || targetPosition >= configured.length) return [];
+
+        [configured[position], configured[targetPosition]] = [configured[targetPosition], configured[position]];
+        const updates = configured.flatMap((candidate, priority) =>
+            candidate.priority === priority ? [] : [{ index: candidate.index, priority }]);
+        return updates.some((update) => wifiSlotChangePending(update.index)) ? [] : updates;
     }
 
     async function startWifiScan(targetIndex = wifiScan.targetIndex) {
-        if (wifiControlsDisabled) return;
+        const rescanning = wifiScan.open && targetIndex === wifiScan.targetIndex;
+        if (wifiControlsDisabled || wifiSlotChangePending(targetIndex) || (rescanning && wifiScanSlotChanged)) return;
+        if (!rescanning) wifiScanSlotSsid = wifiSlotSsid(targetIndex);
         wifiScan = beginWifiScan(wifiScan, targetIndex);
         const runId = wifiScan.runId;
         stopWifiPoll();
@@ -503,6 +557,7 @@
     async function saveSelectedScanNetwork() {
         if (
             wifiControlsDisabled ||
+            wifiScanSlotChanged ||
             !wifiScan.selectedNetwork ||
             wifiScan.saving ||
             (wifiScan.selectedNetwork.secure && !wifiScan.password)
@@ -514,9 +569,12 @@
         const secure = wifiScan.selectedNetwork.secure;
         const password = wifiScan.password;
         const targetIndex = wifiScan.targetIndex;
+        const pendingIndex = wifiUpsertSlotIndex(targetIndex, ssid);
+        if (wifiSlotChangePending(pendingIndex)) return;
         const submittedRunId = wifiScan.runId;
         wifiScan = setWifiScanSaving(wifiScan, true);
-        invalidateSavedWifiNetworks();
+        wifiScanSavesInFlight += 1;
+        const changeId = beginWifiSlotChange(pendingIndex);
 
         try {
             const body = {
@@ -548,8 +606,10 @@
         } catch (e) {
             if (componentMounted) message = { type: 'error', text: 'Failed to save WiFi network' };
         } finally {
+            settleWifiSlotChange(changeId);
             await refreshWifiAfterMutation();
-            wifiScan = setWifiScanSaving(wifiScan, false);
+            if (isCurrentWifiScan(wifiScan, submittedRunId)) wifiScan = setWifiScanSaving(wifiScan, false);
+            wifiScanSavesInFlight -= 1;
         }
     }
 
@@ -602,8 +662,10 @@
             });
             const statusRunId = wifiStatusRunId;
             const refreshedStatus = await statusRefresh;
-            if (runId !== wifiToggleRunId || statusRunId !== wifiStatusRunId) return;
+            if (runId !== wifiToggleRunId) return;
 
+            // A separate Test or Disconnect can supersede status, while
+            // this toggle still owes the catalog read it invalidated.
             const networksLoaded = await fetchSavedWifiNetworks();
             if (runId !== wifiToggleRunId || statusRunId !== wifiStatusRunId || networksLoaded !== true) return;
 
@@ -637,7 +699,8 @@
     }
 
     function openWifiEditor(slotIndex = null, seed = {}) {
-        if (wifiControlsDisabled) return;
+        if (wifiControlsDisabled || wifiSlotChangePending(slotIndex)) return;
+        wifiEditorSlotSsid = wifiSlotSsid(slotIndex);
         wifiEditor = openWifiEditorState(slotIndex, seed, nextWifiPriority());
     }
 
@@ -663,11 +726,13 @@
 
     async function saveWifiEditor() {
         const body = buildWifiEditorRequest(wifiEditor);
-        if (wifiControlsDisabled || !body || wifiNetworkActionInFlight) return;
+        if (wifiControlsDisabled || wifiEditorSlotChanged || !body || wifiNetworkActionInFlight) return;
+        const pendingIndex = wifiUpsertSlotIndex(wifiEditor.index, body.ssid);
+        if (wifiSlotChangePending(pendingIndex)) return;
 
         const submittedDraft = JSON.stringify(wifiEditor);
         wifiNetworkActionsInFlight += 1;
-        invalidateSavedWifiNetworks();
+        const changeId = beginWifiSlotChange(pendingIndex);
         try {
             const res = await fetchWithTimeout('/api/wifi/networks', {
                 method: 'POST',
@@ -684,17 +749,18 @@
         } catch (e) {
             if (componentMounted) message = { type: 'error', text: 'Failed to save WiFi network' };
         } finally {
+            settleWifiSlotChange(changeId);
             await refreshWifiAfterMutation();
             wifiNetworkActionsInFlight -= 1;
         }
     }
 
     async function deleteWifiSlot(slot) {
-        if (wifiControlsDisabled) return;
+        if (wifiControlsDisabled || wifiSlotChangePending(slot.index)) return;
         if (!confirm(`Delete saved WiFi network "${slot.ssid}"?`)) return;
 
         wifiNetworkActionsInFlight += 1;
-        invalidateSavedWifiNetworks();
+        const changeId = beginWifiSlotChange(slot.index);
         try {
             const res = await fetchWithTimeout('/api/wifi/networks/delete', {
                 method: 'POST',
@@ -710,13 +776,14 @@
         } catch (e) {
             if (componentMounted) message = { type: 'error', text: 'Failed to delete WiFi network' };
         } finally {
+            settleWifiSlotChange(changeId);
             await refreshWifiAfterMutation();
             wifiNetworkActionsInFlight -= 1;
         }
     }
 
     async function testWifiSlot(slot) {
-        if (wifiControlsDisabled || wifiTestingIndex !== null) return;
+        if (wifiControlsDisabled || wifiSlotChangePending(slot.index) || wifiTestingIndex !== null) return;
 
         const runId = ++wifiTestRunId;
         const deadlineMs = Date.now() + WIFI_TEST_TIMEOUT_MS;
@@ -800,27 +867,9 @@
     }
 
     async function moveWifiSlot(slot, direction) {
-        if (wifiControlsDisabled) return;
-        const configured = sortedConfiguredWifiSlots();
-        const position = configured.findIndex((candidate) => candidate.index === slot.index);
-        const targetPosition = position + direction;
-        if (
-            wifiOrdering ||
-            position < 0 ||
-            targetPosition < 0 ||
-            targetPosition >= configured.length
-        ) {
-            return;
-        }
-
-        const reordered = [...configured];
-        [reordered[position], reordered[targetPosition]] = [
-            reordered[targetPosition],
-            reordered[position]
-        ];
-        const updates = reordered.flatMap((candidate, priority) =>
-            candidate.priority === priority ? [] : [{ index: candidate.index, priority }]
-        );
+        if (wifiControlsDisabled || wifiOrdering) return;
+        const updates = wifiPriorityUpdates(slot, direction);
+        if (updates.length === 0) return;
 
         wifiOrdering = true;
         let resultMessage = null;
@@ -1045,6 +1094,18 @@
     }
 </script>
 
+{#snippet wifiReadbackNotice()}
+    {#if wifiNetworksReadbackRequired}
+        <div class="surface-note space-y-2" role="status">
+            <p>Saved network controls are read-only until the current networks can be loaded.</p>
+            <button class="btn btn-outline btn-sm" onclick={retrySavedWifiNetworks}
+                disabled={restoring || wifiNetworksLoading || wifiSavedMutationBusy}>
+                {wifiNetworksLoading ? 'Loading saved networks…' : 'Retry saved networks'}
+            </button>
+        </div>
+    {/if}
+{/snippet}
+
 <div class="page-stack">
     <PageHeader title="Settings" subtitle="Network, power, and backup configuration." />
 
@@ -1101,14 +1162,8 @@
             </div>
         </fieldset>
 
-        {#if wifiNetworksReadbackRequired}
-            <div class="surface-note space-y-2" role="status">
-                <p>Saved network controls are read-only until the current networks can be loaded.</p>
-                <button class="btn btn-outline btn-sm" onclick={retrySavedWifiNetworks}
-                    disabled={restoring || wifiNetworksLoading || wifiSavedMutationBusy}>
-                    {wifiNetworksLoading ? 'Loading saved networks…' : 'Retry saved networks'}
-                </button>
-            </div>
+        {#if !wifiEditor.open && !wifiScan.open}
+            {@render wifiReadbackNotice()}
         {/if}
 
         <fieldset class="surface-card" disabled={wifiControlsDisabled}>
@@ -1170,7 +1225,7 @@
                             {/if}
                         </div>
 
-                        {#if !wifiNetworksLoading && !hasConfiguredWifiSlots()}
+                        {#if !wifiNetworksLoading && !wifiNetworksReadbackRequired && !hasConfiguredWifiSlots()}
                             <div class="surface-note copy-muted">
                                 No saved WiFi networks yet. Add a car hotspot, phone hotspot, or
                                 garage AP so future maintenance sessions can auto-join.
@@ -1225,13 +1280,14 @@
                                                 <button
                                                     class="btn btn-ghost btn-xs"
                                                     onclick={() => openWifiEditorForSlot(slot)}
+                                                    disabled={wifiSlotChangePending(slot.index)}
                                                 >
                                                     Edit
                                                 </button>
                                                 <button
                                                     class="btn btn-outline btn-xs"
                                                     onclick={() => testWifiSlot(slot)}
-                                                    disabled={wifiTestingIndex !== null}
+                                                    disabled={wifiTestingIndex !== null || wifiSlotChangePending(slot.index)}
                                                 >
                                                     {#if wifiTestingIndex === slot.index}
                                                         <span
@@ -1245,7 +1301,7 @@
                                                     aria-label={`Move ${slot.ssid} up`}
                                                     onclick={() => moveWifiSlot(slot, -1)}
                                                     disabled={wifiOrdering ||
-                                                        moveDisabled(slot, -1)}
+                                                        wifiPriorityUpdates(slot, -1).length === 0}
                                                 >
                                                     ↑
                                                 </button>
@@ -1253,13 +1309,14 @@
                                                     class="btn btn-ghost btn-xs"
                                                     aria-label={`Move ${slot.ssid} down`}
                                                     onclick={() => moveWifiSlot(slot, 1)}
-                                                    disabled={wifiOrdering || moveDisabled(slot, 1)}
+                                                    disabled={wifiOrdering || wifiPriorityUpdates(slot, 1).length === 0}
                                                 >
                                                     ↓
                                                 </button>
                                                 <button
                                                     class="btn btn-outline btn-error btn-xs"
                                                     onclick={() => deleteWifiSlot(slot)}
+                                                    disabled={wifiSlotChangePending(slot.index)}
                                                 >
                                                     Delete
                                                 </button>
@@ -1281,12 +1338,14 @@
                                                 <button
                                                     class="btn btn-primary btn-xs"
                                                     onclick={() => openWifiEditor(slot.index)}
+                                                    disabled={wifiSlotChangePending(slot.index)}
                                                 >
                                                     Enter manually
                                                 </button>
                                                 <button
                                                     class="btn btn-outline btn-xs"
                                                     onclick={() => startWifiScan(slot.index)}
+                                                    disabled={wifiSlotChangePending(slot.index)}
                                                 >
                                                     Pick from scan
                                                 </button>
@@ -1317,6 +1376,10 @@
                     bind:selectedNetwork={wifiScan.selectedNetwork}
                     bind:wifiPassword={wifiScan.password}
                     wifiConnecting={wifiScan.saving}
+                    saveBlocked={wifiControlsDisabled || wifiScanSlotChanged ||
+                        wifiSlotChangePending(wifiUpsertSlotIndex(wifiScan.targetIndex, wifiScan.selectedNetwork?.ssid))}
+                    slotChanged={wifiScanSlotChanged}
+                    recovery={wifiReadbackNotice}
                     onstartWifiScan={startWifiScan}
                     onselectNetwork={selectNetwork}
                     onconnectToNetwork={saveSelectedScanNetwork}
@@ -1343,6 +1406,10 @@
                     <h3 class="text-lg font-bold">
                         {wifiEditor.mode === 'edit' ? 'Edit Saved Network' : 'Add Saved Network'}
                     </h3>
+                    {@render wifiReadbackNotice()}
+                    {#if wifiEditorSlotChanged}
+                        <p class="surface-note" role="status">This saved network slot changed. Close the editor and select the current slot again.</p>
+                    {/if}
                     <div class="space-y-4 py-4">
                         <div class="field-control">
                             <label class="label" for="wifi-editor-label">
@@ -1434,7 +1501,9 @@
                         <button
                             class="btn btn-primary"
                             onclick={saveWifiEditor}
-                            disabled={wifiControlsDisabled || wifiNetworkActionInFlight || !wifiEditor.ssid}
+                            disabled={wifiControlsDisabled || wifiEditorSlotChanged ||
+                                wifiSlotChangePending(wifiUpsertSlotIndex(wifiEditor.index, wifiEditor.ssid)) ||
+                                wifiNetworkActionInFlight || !wifiEditor.ssid}
                         >
                             {#if wifiNetworkActionInFlight}
                                 <span class="loading loading-sm loading-spinner"></span>

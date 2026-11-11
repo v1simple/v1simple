@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as settingsLazyComponents from '#lib/features/settings/settingsLazyComponents.js';
@@ -775,9 +775,11 @@ describe('settings route page', () => {
             expect(statusReads).toBe(3);
             expect(screen.getByText('Failed to load saved WiFi networks')).toBeInTheDocument();
             expect(screen.getByText('Garage')).toBeInTheDocument();
-            // A later explicit operation reconciles both committed deletions.
-            const card = screen.getByText('WiFi Client').closest('.surface-card');
-            await fireEvent.click(card.querySelector('input[type="checkbox"]'));
+            // Read-only retry reconciles both committed deletions.
+            expect(wifiClientToggle()).toBeDisabled();
+            const retry = screen.getByRole('button', { name: 'Retry saved networks' });
+            await waitFor(() => expect(retry).toBeEnabled());
+            await fireEvent.click(retry);
             await screen.findByText('Slot 1: Empty slot');
             expect(screen.queryByText('Failed to load saved WiFi networks')).not.toBeInTheDocument();
         } finally { unmount(); }
@@ -790,10 +792,13 @@ describe('settings route page', () => {
             let reads = 0;
             let statusReads = 0;
             const initialIsOrder = operation === 'manual save';
+            const slots = operation === 'reorder' ? defaultSlots.map((slot) => slot.index === 2
+                ? { ...slot, ssid: 'ThirdWifi', label: 'Third network', configured: true }
+                : slot) : defaultSlots;
             installDefaultFetch([
                 { method: 'GET', match: '/api/wifi/networks', respond: () => {
                     reads += 1;
-                    return reads === 2 ? oldRead.promise : jsonResponse({ slots: defaultSlots });
+                    return reads === 2 ? oldRead.promise : jsonResponse({ slots });
                 } },
                 { method: 'GET', match: '/api/wifi/status', respond: () => {
                     statusReads += 1;
@@ -806,7 +811,10 @@ describe('settings route page', () => {
             const { unmount } = render(Page);
             try {
                 await screen.findByText('Garage');
-                await fireEvent.click(initialIsOrder ? screen.getByRole('button', { name: 'Move PhoneHotspot up' }) : screen.getAllByRole('button', { name: 'Delete' })[0]);
+                const deleteRow = operation === 'reorder'
+                    ? (await screen.findByText('Third network')).closest('.rounded-box') : document.body;
+                await fireEvent.click(initialIsOrder ? screen.getByRole('button', { name: 'Move PhoneHotspot up' })
+                    : within(deleteRow).getAllByRole('button', { name: 'Delete' })[0]);
                 await waitFor(() => expect(reads).toBe(2));
                 await performSavedWifiOperation(operation);
                 await waitFor(() => expect(reads).toBe(3));
@@ -853,6 +861,246 @@ describe('settings route page', () => {
             } finally { unmount(); }
         }
     );
+
+    it.each(['acknowledged reply', 'lost reply'])(
+        'requires saved-network readback before replacing an apparently empty slot after %s',
+        async (outcome) => {
+            let reads = 0;
+            let slots = defaultSlots;
+            let allowReadback = false;
+            const fetchMock = installDefaultFetch([
+                { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                    reads += 1;
+                    return reads === 1 || allowReadback ? jsonResponse({ slots }) : jsonResponse({}, 503);
+                } },
+                { method: 'POST', match: '/api/wifi/networks', respond: ({ init }) => {
+                    const { index, ssid, password, priority } = JSON.parse(init.body);
+                    slots = slots.map((slot) => slot.index === index
+                        ? { ...slot, ssid, label: ssid, configured: true, hasPassword: Boolean(password), priority }
+                        : slot);
+                    if (outcome === 'lost reply') throw new Error('reply lost after commit');
+                    return jsonResponse({ success: true, index });
+                } }
+            ]);
+            const { unmount } = render(Page);
+            try {
+                const slot = (await screen.findByText('Slot 3: Empty slot')).closest('.rounded-box');
+                const open = within(slot).getByRole('button', { name: 'Enter manually' });
+                await fireEvent.click(open);
+                await fireEvent.input(screen.getByLabelText('SSID'), { target: { value: 'First network' } });
+                await fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'placeholder' } });
+                await fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+                await screen.findByText('Failed to load saved WiFi networks');
+                const cancel = screen.queryByRole('button', { name: 'Cancel' });
+                if (cancel) {
+                    await waitFor(() => expect(cancel).toBeEnabled());
+                    await fireEvent.click(cancel);
+                }
+
+                if (!open.matches(':disabled')) {
+                    await fireEvent.click(open);
+                    await fireEvent.input(screen.getByLabelText('SSID'), { target: { value: 'Replacement network' } });
+                    await fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+                }
+                expect(jsonBodies(fetchMock, '/api/wifi/networks')).toEqual([
+                    expect.objectContaining({ index: 2, ssid: 'First network', password: 'placeholder' })
+                ]);
+                expect(open).toBeDisabled();
+                const retry = screen.getByRole('button', { name: 'Retry saved networks' });
+                await waitFor(() => expect(retry).toBeEnabled());
+                allowReadback = true;
+                await fireEvent.click(retry);
+                await screen.findByText('SSID: First network');
+                expect(screen.queryByText('Slot 3: Empty slot')).not.toBeInTheDocument();
+                expect(jsonBodies(fetchMock, '/api/wifi/networks')).toHaveLength(1);
+            } finally { unmount(); }
+        }
+    );
+
+    it('keeps a changed slot protected when its catalog read is superseded by another slot write', async () => {
+        const firstRead = createDeferred();
+        const otherWrite = createDeferred();
+        const updatedSlots = defaultSlots.map((slot) => slot.index === 2
+            ? { ...slot, ssid: 'First network', configured: true, hasPassword: true }
+            : slot);
+        let reads = 0;
+        const fetchMock = installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                reads += 1;
+                if (reads === 2) return firstRead.promise;
+                return jsonResponse({ slots: reads === 1 ? defaultSlots : updatedSlots });
+            } },
+            { method: 'POST', match: '/api/wifi/networks/delete', respond: () => otherWrite.promise }
+        ]);
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        try {
+            const slot = (await screen.findByText('Slot 3: Empty slot')).closest('.rounded-box');
+            const open = within(slot).getByRole('button', { name: 'Enter manually' });
+            const scan = within(slot).getByRole('button', { name: 'Pick from scan' });
+            await fireEvent.click(open);
+            await fireEvent.input(screen.getByLabelText('SSID'), { target: { value: 'First network' } });
+            await fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+            await waitFor(() => expect(reads).toBe(2));
+            expect(open).toBeDisabled();
+            expect(scan).toBeDisabled();
+            const deleteButton = within(screen.getByText('Garage').closest('.rounded-box'))
+                .getByRole('button', { name: 'Delete' });
+            expect(deleteButton).toBeEnabled();
+            await fireEvent.click(deleteButton);
+            expect(screen.getByRole('button', { name: 'Move PhoneHotspot up' })).toBeDisabled();
+            firstRead.resolve(jsonResponse({ slots: updatedSlots }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(screen.getByText('Slot 3: Empty slot')).toBeInTheDocument();
+            expect(open).toBeDisabled();
+            expect(scan).toBeDisabled();
+            await fireEvent.click(scan);
+            expect(jsonBodies(fetchMock, '/api/wifi/scan')).toEqual([]);
+
+            otherWrite.resolve(jsonResponse({ success: true }));
+            const saved = (await screen.findByText('SSID: First network')).closest('.rounded-box');
+            await waitFor(() => expect(within(saved).getByRole('button', { name: 'Edit' })).toBeEnabled());
+            expect(jsonBodies(fetchMock, '/api/wifi/networks')).toHaveLength(1);
+            expect(jsonBodies(fetchMock, '/api/wifi/networks/delete')).toEqual([{ index: 0 }]);
+        } finally {
+            firstRead.resolve(jsonResponse({ slots: updatedSlots }));
+            otherWrite.resolve(jsonResponse({ success: true }));
+            unmount();
+        }
+    });
+
+    it('retries a lost scan save readback from the retained draft before offering current Edit', async () => {
+        let allowReadback = false;
+        let slots = defaultSlots;
+        let writes = 0;
+        const fetchMock = installDefaultFetch([
+            { method: 'POST', match: '/api/wifi/scan', respond: jsonResponse({
+                scanning: false, networks: [{ ssid: 'Scanned network', secure: true, rssi: -30 }]
+            }) },
+            { method: 'GET', match: '/api/wifi/networks', respond: () =>
+                writes === 0 || allowReadback ? jsonResponse({ slots }) : jsonResponse({}, 503) },
+            { method: 'POST', match: '/api/wifi/networks', respond: ({ init }) => {
+                writes += 1;
+                const { index, ssid, password, label, priority } = JSON.parse(init.body);
+                slots = slots.map((slot) => slot.index === index
+                    ? { ...slot, ssid, label: label || ssid, configured: true,
+                        hasPassword: password === undefined ? slot.hasPassword : Boolean(password), priority }
+                    : slot);
+                if (writes === 1) throw new Error('reply lost after commit');
+                return jsonResponse({ success: true, index });
+            } }
+        ]);
+        const { unmount } = render(Page);
+        try {
+            const slot = (await screen.findByText('Slot 3: Empty slot')).closest('.rounded-box');
+            await fireEvent.click(within(slot).getByRole('button', { name: 'Pick from scan' }));
+            const picker = await screen.findByRole('dialog', { name: 'Pick WiFi Network to Save' });
+            await fireEvent.click(await within(picker).findByRole('button', { name: /Scanned network/ }));
+            const password = within(picker).getByLabelText('Password');
+            await fireEvent.input(password, { target: { value: 'changeme' } });
+            const save = within(picker).getByRole('button', { name: 'Save Network' });
+            await fireEvent.click(save);
+            const retry = await within(picker).findByRole('button', { name: 'Retry saved networks' });
+            expect(save).toBeDisabled();
+            expect(password).toHaveValue('changeme');
+            await waitFor(() => expect(retry).toBeEnabled());
+            allowReadback = true;
+            await fireEvent.click(retry);
+            await within(picker).findByText(/This saved network slot changed/);
+            await fireEvent.keyDown(password, { key: 'Enter' });
+            expect(save).toBeDisabled();
+            expect(writes).toBe(1);
+            await fireEvent.click(within(picker).getByRole('button', { name: 'Close' }));
+
+            const saved = screen.getByText('SSID: Scanned network').closest('.rounded-box');
+            await fireEvent.click(within(saved).getByRole('button', { name: 'Edit' }));
+            await fireEvent.input(screen.getByLabelText('Label'), { target: { value: 'Travel WiFi' } });
+            await fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+            await screen.findByText('Travel WiFi');
+            expect(jsonBodies(fetchMock, '/api/wifi/networks')).toEqual([
+                expect.objectContaining({ index: 2, ssid: 'Scanned network', password: 'changeme' }),
+                { index: 2, ssid: 'Scanned network', label: 'Travel WiFi', priority: 2 }
+            ]);
+        } finally { unmount(); }
+    });
+
+    it('reconciles saved slots even when a later Test supersedes toggle status', async () => {
+        const oldCatalog = createDeferred();
+        const toggleStatus = createDeferred();
+        const updatedSlots = defaultSlots.map((slot) => slot.index === 2
+            ? { ...slot, ssid: 'First network', configured: true }
+            : slot);
+        let catalogs = 0;
+        let statuses = 0;
+        const fetchMock = installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                catalogs += 1;
+                return catalogs === 2 ? oldCatalog.promise : jsonResponse({ slots: catalogs === 1 ? defaultSlots : updatedSlots });
+            } },
+            { method: 'GET', match: '/api/wifi/status', respond: () => {
+                statuses += 1;
+                if (statuses === 3) return toggleStatus.promise;
+                return jsonResponse(statuses === 4
+                    ? { enabled: true, state: 'connected', connectedSSID: 'PhoneHotspot', connectedSlotIndex: 1 }
+                    : { enabled: true, state: 'disconnected' });
+            } }
+        ]);
+        const { unmount } = render(Page);
+        try {
+            const slot = (await screen.findByText('Slot 3: Empty slot')).closest('.rounded-box');
+            await fireEvent.click(within(slot).getByRole('button', { name: 'Enter manually' }));
+            await fireEvent.input(screen.getByLabelText('SSID'), { target: { value: 'First network' } });
+            await fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+            await waitFor(() => expect(catalogs).toBe(2));
+            await fireEvent.click(wifiClientToggle());
+            await waitFor(() => expect(statuses).toBe(3));
+            const test = within(screen.getByText('Phone').closest('.rounded-box')).getByRole('button', { name: 'Test' });
+            await fireEvent.click(test);
+            await screen.findByText('Testing connection to PhoneHotspot...');
+            oldCatalog.resolve(jsonResponse({ slots: updatedSlots }));
+            toggleStatus.resolve(jsonResponse({ enabled: false, state: 'disabled' }));
+            await screen.findByText('Connected to PhoneHotspot');
+            await screen.findByText('SSID: First network');
+            expect(catalogs).toBe(3);
+            expect(jsonBodies(fetchMock, '/api/wifi/networks')).toHaveLength(1);
+            expect(screen.queryByText('WiFi client disabled')).not.toBeInTheDocument();
+        } finally {
+            oldCatalog.resolve(jsonResponse({ slots: updatedSlots }));
+            toggleStatus.resolve(jsonResponse({ enabled: false, state: 'disabled' }));
+            unmount();
+        }
+    });
+
+    it('keeps restore blocked after a scan save closes while catalog readback is pending', async () => {
+        const catalog = createDeferred();
+        let reads = 0;
+        const fetchMock = installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/networks', respond: () =>
+                ++reads === 2 ? catalog.promise : jsonResponse({ slots: defaultSlots }) },
+            { method: 'POST', match: '/api/wifi/scan', respond: jsonResponse({
+                scanning: false, networks: [{ ssid: 'Open network', secure: false, rssi: -30 }]
+            }) },
+            { method: 'POST', match: '/api/settings/restore', respond: jsonResponse({ success: true }) }
+        ]);
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText('Garage');
+            await selectRestoreFile(JSON.stringify({ _type: 'v1simple_backup', _version: 1 }));
+            await performSavedWifiOperation('scan save');
+            await waitFor(() => expect(reads).toBe(2));
+            expect(screen.queryByRole('dialog', { name: 'Pick WiFi Network to Save' })).not.toBeInTheDocument();
+            const restore = screen.getByRole('button', { name: /restore from backup/i });
+            expect(restore).toBeDisabled();
+            await fireEvent.click(restore);
+            expect(fetchMock.mock.calls.some(([url]) => url === '/api/settings/restore')).toBe(false);
+            catalog.resolve(jsonResponse({ slots: defaultSlots }));
+            await waitFor(() => expect(restore).toBeEnabled());
+        } finally {
+            catalog.resolve(jsonResponse({ slots: defaultSlots }));
+            unmount();
+        }
+    });
 
     it('keeps a manual save newer than the initial saved-network load', async () => {
         const initialRead = createDeferred();

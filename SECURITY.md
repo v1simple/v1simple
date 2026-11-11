@@ -4,9 +4,10 @@ Report a suspected vulnerability privately. Use GitHub private vulnerability
 reporting if this repository offers it. Otherwise, open a public issue asking
 for private contact without including exploit details or sensitive data.
 
-Include the firmware version from `include/config.h`, board, impact, and the
-smallest safe reproduction. Do not attach credentials, network names, location
-data, device dumps, or full logs until a private channel is established.
+Include your board, the impact, and the smallest safe reproduction. If available,
+include the V1Simple firmware version shown at the top of the device's
+maintenance Dashboard. Do not attach credentials, network names, location data,
+device dumps, or full logs until a private channel is established.
 
 The repository declares no support window or response-time promise.
 

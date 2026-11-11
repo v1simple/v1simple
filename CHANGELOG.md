@@ -3,7 +3,26 @@
 This is the short version of changes users and integrators may notice. Git and
 GitHub Releases retain the complete commit history.
 
-## v2.4.3 — Unreleased
+## v2.4.4
+
+- Prevented new profile saves from overwriting an existing profile, including
+  when the saved-profile list is unavailable.
+- Preserved acknowledged profile edits when an editor is closed or reopened
+  during a save.
+- Reloaded saved display and Auto-Push settings after lost save replies while
+  preserving later draft edits.
+- Preserved existing settings when memory is insufficient to prepare a rollback.
+- Improved touchscreen slider tracking during a held drag and corrected
+  release detection.
+- Kept zero-volume warnings updating during quiet periods on a connected detector.
+- Retried briefly refused Bluetooth proxy notifications and preserved replies
+  and phone commands arriving during concurrent proxy traffic.
+- Documented how the three USB profile slot indices map to their web interface
+  labels.
+- Added automated profile, display and audio bench checks, including warning
+  cadence verification against the original camera frames.
+
+## v2.4.3 — 2026-11-03
 
 - Added an offline first-use guide to the maintenance interface and installer.
 - Exposed observed settings-save and SD-backup status so pending work and
@@ -16,8 +35,6 @@ GitHub Releases retain the complete commit history.
 - Preserved committed profile replacements when a later settings read fails.
 - Rejected profile names that share an SD filename, preserving existing
   profiles and slot assignments when a save or import is refused.
-- Prevented new profile saves from overwriting an existing profile, including
-  when the saved-profile list is unavailable.
 - Blocked Bluetooth startup after incomplete bond-table reads, preserving the
   SD bond backup for retry, and corrected empty-table initialization.
 - Rejected queued proxy notifications from retired detector or phone sessions.

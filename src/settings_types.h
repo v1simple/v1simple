@@ -396,12 +396,13 @@ struct V1Settings {
         return true;
     }
 
-    void refreshWifiClientAliasFromSlots() {
+    bool refreshWifiClientAliasFromSlots() {
         if (const WifiStaSlot* slot = primaryWifiStaSlot()) {
             wifiClientSSID = slot->ssid;
-        } else {
-            wifiClientSSID = "";
+            return wifiClientSSID.length() == slot->ssid.length() && wifiClientSSID == slot->ssid;
         }
+        wifiClientSSID = "";
+        return wifiClientSSID.length() == 0;
     }
 
     void ensureWifiStaSlotForLegacyAlias() {

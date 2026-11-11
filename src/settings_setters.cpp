@@ -284,7 +284,10 @@ SettingsManager::applyWifiStaPriorityUpdates(const std::vector<WifiStaPriorityUp
         finalPriorities[slot.priority] = true;
     }
 
-    settings_.refreshWifiClientAliasFromSlots();
+    if (!settings_.refreshWifiClientAliasFromSlots()) {
+        settings_ = std::move(before);
+        return {};
+    }
     return finishSettingsMutation(before, changed, SettingsPersistMode::Immediate);
 }
 

@@ -76,14 +76,6 @@ bool copyBoundedSemanticString(const String& source, size_t maxBytes, String& de
     return copyStringExact(source, destination);
 }
 
-bool refreshWifiClientAliasExact(V1Settings& settings) {
-    settings.refreshWifiClientAliasFromSlots();
-    const WifiStaSlot* primary = settings.primaryWifiStaSlot();
-    return primary ? (settings.wifiClientSSID.length() == primary->ssid.length() &&
-                      settings.wifiClientSSID == primary->ssid)
-                   : settings.wifiClientSSID.length() == 0;
-}
-
 bool readPreferenceStringExact(Preferences& prefs, const char* key, size_t maxBytes, String& output) {
     if (!key || !prefs.isKey(key)) return false;
     const size_t storedBytesWithTerminator = prefs.getStringLength(key);
@@ -2285,7 +2277,7 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
         slot.lastConnectedAtSec = 0;
     }
     candidate.wifiClientEnabled = candidate.hasConfiguredWifiStaSlot();
-    if (!refreshWifiClientAliasExact(candidate)) {
+    if (!candidate.refreshWifiClientAliasFromSlots()) {
         Serial.println("[Settings] WARN: WiFi credential alias staging unavailable");
         return false;
     }
@@ -2399,7 +2391,7 @@ bool SettingsManager::markWifiStaSlotConnected(size_t index) {
     V1Settings before;
     V1Settings candidate;
     if (!before.copyFromChecked(settings_) || !candidate.copyFromChecked(settings_) ||
-        !candidate.advanceWifiStaSlotRecency(index) || !refreshWifiClientAliasExact(candidate)) {
+        !candidate.advanceWifiStaSlotRecency(index) || !candidate.refreshWifiClientAliasFromSlots()) {
         return false;
     }
 
@@ -2431,7 +2423,7 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
                                         passwordBefore, oldEncodedPassword, oldPasswordUnknown)) return false;
     candidate.wifiStaSlots[index] = WifiStaSlot();
     candidate.wifiClientEnabled = candidate.hasConfiguredWifiStaSlot();
-    if (!refreshWifiClientAliasExact(candidate)) return false;
+    if (!candidate.refreshWifiClientAliasFromSlots()) return false;
 
     const bool sdRequired = storage_->isReady() && storage_->isSDCard();
     WifiCredentialJournal journal;
@@ -2521,7 +2513,7 @@ bool SettingsManager::clearWifiClientCredentials() {
         slot = WifiStaSlot();
     }
     candidate.wifiClientEnabled = false;
-    if (!refreshWifiClientAliasExact(candidate)) return false;
+    if (!candidate.refreshWifiClientAliasFromSlots()) return false;
     if (!writeWifiForgetAllJournal(journal)) return false;
 
     settings_ = std::move(candidate);

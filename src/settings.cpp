@@ -365,9 +365,7 @@ void SettingsManager::load() {
         Serial.println("[Settings] HEAL: wifiClientEnabled flag missing but SSID is set — enabling");
         loaded.wifiClientEnabled = true;
     }
-    loaded.refreshWifiClientAliasFromSlots();
-    const WifiStaSlot* primary = loaded.primaryWifiStaSlot();
-    reader.requireExactString(primary ? loaded.wifiClientSSID == primary->ssid : loaded.wifiClientSSID.length() == 0);
+    reader.requireExactString(loaded.refreshWifiClientAliasFromSlots());
 
     Serial.printf("[Settings] WiFi client keys: enabledKey=%s ssidKey=%s\n", wifiClientEnabledKeyPresent ? "yes" : "no",
                   wifiClientSsidKeyPresent ? "yes" : "no");

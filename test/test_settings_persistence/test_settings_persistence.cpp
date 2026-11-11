@@ -4106,14 +4106,7 @@ void test_restore_feeds_watchdog_between_mirrored_profile_transactions() {
     TEST_ASSERT_EQUAL_UINT8(77, rebooted.get().brightness);
 }
 
-void test_priority_http_uses_one_actual_settings_transaction_and_rolls_back_on_failure() {
-    fs::FS fs(g_tempRoot);
-    storage.setFilesystem(&fs, true);
-    TEST_ASSERT_TRUE(profiles.begin(&fs));
-    SettingsManager manager(storage, profiles);
-    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "One", "password-one", "One", 0));
-    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "Two", "password-two", "Two", 1));
-
+WifiClientApiService::Runtime actualWifiPriorityRuntime(SettingsManager& manager) {
     WifiClientApiService::Runtime runtime{};
     runtime.maintenanceBootActive = true;
     runtime.updateSavedNetworkPriorities =
@@ -4127,6 +4120,24 @@ void test_priority_http_uses_one_actual_settings_transaction_and_rolls_back_on_f
                        : WifiClientApiService::PriorityUpdateStatus::PersistFailed;
         };
     runtime.updateSavedNetworkPrioritiesCtx = &manager;
+    runtime.isEnabled = [](void* ctx) { return static_cast<SettingsManager*>(ctx)->get().wifiClientEnabled; };
+    runtime.isEnabledCtx = &manager;
+    runtime.getSavedSsid = [](void* ctx) { return static_cast<SettingsManager*>(ctx)->get().wifiClientSSID; };
+    runtime.getSavedSsidCtx = &manager;
+    runtime.getStateName = [](void*) { return "disconnected"; };
+    runtime.isScanRunning = [](void*) { return false; };
+    runtime.isConnected = [](void*) { return false; };
+    return runtime;
+}
+
+void test_priority_http_uses_one_actual_settings_transaction_and_rolls_back_on_failure() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "One", "password-one", "One", 0));
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "Two", "password-two", "Two", 1));
+    const auto runtime = actualWifiPriorityRuntime(manager);
     WebServer failed(80);
     failed.setArg("plain", "{\"updates\":[{\"index\":0,\"priority\":1},{\"index\":1,\"priority\":0}]}");
     mock_preferences::set_fail_writes_for_key(kNvsWifiStaSlotPriority[0]);
@@ -4150,6 +4161,61 @@ void test_priority_http_uses_one_actual_settings_transaction_and_rolls_back_on_f
     successReboot.load();
     TEST_ASSERT_EQUAL_UINT8(1, successReboot.get().wifiStaSlots[0].priority);
     TEST_ASSERT_EQUAL_UINT8(0, successReboot.get().wifiStaSlots[1].priority);
+}
+
+void test_priority_http_preserves_live_and_durable_order_when_primary_alias_allocation_fails() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, false);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "Short", "password-one", "Short", 0));
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "LongPrimaryNetwork", "password-two", "Long", 1));
+    TEST_ASSERT_EQUAL_STRING("Short", manager.get().wifiClientSSID.c_str());
+    const auto runtime = actualWifiPriorityRuntime(manager);
+    constexpr const char* swap = R"({"updates":[{"index":0,"priority":1},{"index":1,"priority":0}]})";
+
+    WebServer failed(80);
+    failed.setArg("plain", swap);
+    unsigned writes = 0;
+    mock_preferences::afterWrite() = [&](const char*) { ++writes; };
+    // The baseline also tries the same copy in the NVS writer. Keep a second
+    // failure available so that its retry cannot hide the inconsistent save.
+    mockStringCopyAssignmentFailureSource = &manager.get().wifiStaSlots[1].ssid;
+    mockStringCopyAssignmentFailuresRemaining = 2;
+    WifiClientApiService::handleApiNetworksPriorities(failed, runtime, nullptr, nullptr, nullptr, nullptr);
+    const auto failuresRemaining = mockStringCopyAssignmentFailuresRemaining;
+    mockStringCopyAssignmentFailureSource = nullptr;
+    mockStringCopyAssignmentFailuresRemaining = 0;
+    mock_preferences::afterWrite() = {};
+
+    TEST_ASSERT_EQUAL_INT(500, failed.lastStatusCode);
+    TEST_ASSERT_EQUAL_UINT(0, writes);
+    TEST_ASSERT_EQUAL_UINT(1, failuresRemaining);
+    TEST_ASSERT_EQUAL_UINT8(0, manager.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_UINT8(1, manager.get().wifiStaSlots[1].priority);
+    WebServer status(80);
+    WifiClientApiService::handleApiStatus(status, runtime, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, status.lastStatusCode);
+    JsonDocument statusDoc;
+    TEST_ASSERT_FALSE(deserializeJson(statusDoc, status.lastBody));
+    TEST_ASSERT_EQUAL_STRING("Short", statusDoc["savedSSID"].as<const char*>());
+
+    SettingsManager failedReload(storage, profiles);
+    failedReload.load();
+    TEST_ASSERT_EQUAL_UINT8(0, failedReload.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_UINT8(1, failedReload.get().wifiStaSlots[1].priority);
+    TEST_ASSERT_EQUAL_STRING("Short", failedReload.get().wifiClientSSID.c_str());
+
+    WebServer retry(80);
+    retry.setArg("plain", swap);
+    WifiClientApiService::handleApiNetworksPriorities(retry, runtime, nullptr, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, retry.lastStatusCode);
+    TEST_ASSERT_EQUAL_STRING("LongPrimaryNetwork", manager.get().wifiClientSSID.c_str());
+    SettingsManager retryReload(storage, profiles);
+    retryReload.load();
+    TEST_ASSERT_EQUAL_UINT8(1, retryReload.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_UINT8(0, retryReload.get().wifiStaSlots[1].priority);
+    TEST_ASSERT_EQUAL_STRING("LongPrimaryNetwork", retryReload.get().wifiClientSSID.c_str());
 }
 
 void test_device_settings_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state() {
@@ -8537,6 +8603,7 @@ int main() {
     RUN_TEST(test_restore_persist_failure_rolls_back_settings_profiles_and_reboot_state);
     RUN_TEST(test_restore_feeds_watchdog_between_mirrored_profile_transactions);
     RUN_TEST(test_priority_http_uses_one_actual_settings_transaction_and_rolls_back_on_failure);
+    RUN_TEST(test_priority_http_preserves_live_and_durable_order_when_primary_alias_allocation_fails);
     RUN_TEST(test_device_settings_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state);
     RUN_TEST(test_audio_and_quiet_http_reject_actual_nvs_failures_and_roll_back_ram);
     RUN_TEST(test_display_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state);

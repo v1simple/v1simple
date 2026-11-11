@@ -27,6 +27,10 @@ class String;
 // throwing; copying that invalid value must keep it invalid.
 inline const String* mockStringCopyConstructorFailureSource = nullptr;
 inline unsigned mockStringCopyConstructorFailures = 0;
+// Target reserve failures when copying a longer String into an inline or
+// invalid destination. Keep unrelated NVS and HTTP String copies working.
+inline const String* mockStringCopyAssignmentFailureSource = nullptr;
+inline unsigned mockStringCopyAssignmentFailuresRemaining = 0;
 
 // String class stub (minimal implementation)
 class String {
@@ -44,6 +48,13 @@ public:
     String(String&&) = default;
     String& operator=(String&&) = default;
     String& operator=(const String& other) {
+        if (&other == mockStringCopyAssignmentFailureSource && mockStringCopyAssignmentFailuresRemaining &&
+            other.length() >= 14 && data_.size() < 14) {
+            --mockStringCopyAssignmentFailuresRemaining;
+            data_.clear();
+            valid_ = false;
+            return *this;
+        }
         if (mockStringCopyAssignmentsBeforeFailure == 0) {
             mockStringCopyAssignmentsBeforeFailure = -1;
             data_.clear();

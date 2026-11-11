@@ -12,11 +12,16 @@ GitHub Releases retain the complete commit history.
 - Reloaded saved display and Auto-Push settings after lost save replies while
   preserving later draft edits.
 - Preserved existing settings when memory is insufficient to prepare a rollback.
+- Protected saved Wi-Fi slots when a save or readback is interrupted, and kept
+  the prior network priorities when the new primary name cannot be staged.
 - Improved touchscreen slider tracking during a held drag and corrected
   release detection.
 - Kept zero-volume warnings updating during quiet periods on a connected detector.
 - Retried briefly refused Bluetooth proxy notifications and preserved replies
   and phone commands arriving during concurrent proxy traffic.
+- Kept the detector's Bluetooth pairing across ordinary disconnects.
+- Let the preserving installer recover from a stalled download and retry before
+  writing to the device.
 - Documented how the three USB profile slot indices map to their web interface
   labels.
 - Added automated profile, display and audio bench checks, including warning

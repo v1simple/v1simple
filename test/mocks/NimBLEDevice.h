@@ -13,7 +13,13 @@
 #include "freertos/FreeRTOS.h"
 
 // BLE security / pairing constants
-static constexpr int BLE_HS_ETIMEOUT            = 5;
+static constexpr int BLE_HS_ETIMEOUT            = 13;
+static constexpr int BLE_ERR_AUTH_FAIL          = 0x05;
+static constexpr int BLE_ERR_PINKEY_MISSING     = 0x06;
+static constexpr int BLE_ERR_CONN_SPVN_TMO      = 0x08;
+static constexpr int BLE_ERR_REM_USER_CONN_TERM = 0x13;
+static constexpr int BLE_ERR_CONN_TERM_LOCAL    = 0x16;
+constexpr int BLE_HS_HCI_ERR(int status) { return status ? 0x200 + status : 0; }
 static constexpr int BLE_HS_ENOTCONN             = 7;
 static constexpr uint16_t BLE_HS_CONN_HANDLE_NONE = 0xFFFF;
 static constexpr int BLE_SM_IO_CAP_NO_IO        = 3;
@@ -77,6 +83,7 @@ struct MockNimBLEState {
     uint8_t bondCount = 0;
     bool bonded = false;
     uint32_t deleteBondCalls = 0;
+    std::string lastDeletedBondAddress;
 };
 
 inline MockNimBLEState g_mock_nimble_state{};
@@ -498,7 +505,8 @@ public:
     uint16_t getMTU() const { return mtu_; }
     void setMTU(uint16_t mtu) { mtu_ = mtu; }
     NimBLEConnInfo getConnInfo() const { return NimBLEConnInfo(); }
-    NimBLEAddress getPeerAddress() const { return NimBLEAddress(); }
+    NimBLEAddress getPeerAddress() const { return peerAddress_; }
+    void setPeerAddress(const NimBLEAddress& address) { peerAddress_ = address; }
     bool connect(const NimBLEAddress&, bool = false, bool = false, bool = true) {
         connected_ = true;
         return true;
@@ -539,6 +547,7 @@ public:
         disconnectResult_ = true;
         cancelConnectResult_ = true;
         connHandle_ = BLE_HS_CONN_HANDLE_NONE;
+        peerAddress_ = NimBLEAddress();
         disconnectEntryHook_ = nullptr;
         disconnectCalls_ = 0;
     }
@@ -555,6 +564,7 @@ private:
     int lastError_ = 0;
     uint16_t mtu_ = 23;
     uint16_t connHandle_ = BLE_HS_CONN_HANDLE_NONE;
+    NimBLEAddress peerAddress_;
     std::function<void()> disconnectEntryHook_;
     uint32_t disconnectCalls_ = 0;
 };
@@ -660,9 +670,11 @@ public:
     static uint8_t getNumBonds() { return g_mock_nimble_state.bondCount; }
     static void deleteAllBonds() {}
     static bool isBonded(const NimBLEAddress&) { return g_mock_nimble_state.bonded; }
-    static bool deleteBond(const NimBLEAddress&) {
+    static bool deleteBond(const NimBLEAddress& address) {
         ++g_mock_nimble_state.deleteBondCalls;
+        g_mock_nimble_state.lastDeletedBondAddress = address.toString();
         g_mock_nimble_state.bonded = false;
+        if (g_mock_nimble_state.bondCount > 0) --g_mock_nimble_state.bondCount;
         return true;
     }
     static NimBLEAddress getAddress() { return NimBLEAddress(); }

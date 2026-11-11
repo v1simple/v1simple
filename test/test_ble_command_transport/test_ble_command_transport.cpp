@@ -28,6 +28,8 @@ class DisplayPreviewModule { public: bool isRunning() const { return false; } vo
 namespace {
 
 std::function<void(const uint8_t*, size_t, uint16_t, uint32_t, uint32_t, uint32_t)> notificationSink;
+bool bondRecoveryPending;
+unsigned bondBackupRequests;
 
 void captureNotification(const uint8_t* bytes, size_t length, uint16_t characteristic, uint32_t generation,
                          uint32_t now, uint32_t sequence) {
@@ -116,10 +118,6 @@ void V1BLEClient::setBLEState(BLEState newState) {
     scanStopResultsCleared_ = false;
 }
 
-void V1BLEClient::disconnect() {
-    connected_.store(false, std::memory_order_relaxed);
-}
-
 void V1BLEClient::hardResetBLEClient() {
     connectInProgress_ = false;
     connectStartMs_ = 0;
@@ -137,7 +135,11 @@ void V1BLEClient::setProxyClientConnected(bool connectedState) {
 }
 
 bool V1BLEClient::isConnected() { return connected_.load() && pClient_ && pClient_->isConnected(); }
-int V1BLEClient::enqueueCurrentBondBackupSnapshot() { return 0; }
+int V1BLEClient::enqueueCurrentBondBackupSnapshot() {
+    ++bondBackupRequests;
+    return NimBLEDevice::getNumBonds();
+}
+bool bleBondRecoveryPending() { return bondRecoveryPending; }
 #include "../../src/ble_proxy.cpp"
 #include "../../src/ble_connection.cpp"
 #ifndef BLE_COMMAND_SOURCE
@@ -151,6 +153,7 @@ int V1BLEClient::enqueueCurrentBondBackupSnapshot() { return 0; }
 #endif
 #include BLE_SUBSCRIPTION_SOURCE
 #include "../mocks/settings.h"
+#include "../../src/ble_runtime.cpp"
 #include "../../src/modules/speed_mute/speed_mute_module.cpp"
 #include "../../src/modules/volume_fade/volume_fade_module.cpp"
 #include "../../src/modules/quiet/quiet_coordinator_module.cpp"
@@ -166,6 +169,8 @@ void setUp() {
     mock_reset_nimble_state();
     mock_reset_semaphore_state();
     notificationSink = nullptr;
+    bondRecoveryPending = false;
+    bondBackupRequests = 0;
 }
 void tearDown() {}
 
@@ -1140,6 +1145,89 @@ void test_loss_gate_retires_old_session_and_orders_wrap() {
     TEST_ASSERT_TRUE(f.wire.client.hasContinuousV1AlertInput());
 }
 
+namespace {
+
+// Drive the real callback, deferred runtime and backup scheduler. The NimBLE
+// model records the requested deletion and the backup queue counts admissions.
+void checkDisconnectBond(int reason, bool shouldDelete, bool recoveryPending = false) {
+    CommandFixture f;
+    SettingsManager settings;
+    constexpr char peerAddress[] = "AA:BB:CC:DD:EE:FF";
+    f.link.setPeerAddress(NimBLEAddress(peerAddress));
+    f.client.bleMutex_ = xSemaphoreCreateMutex();
+    f.client.lastBondBackupCount_ = 1;
+    g_mock_nimble_state.bonded = true;
+    g_mock_nimble_state.bondCount = 1;
+    bondRecoveryPending = recoveryPending;
+
+    if (reason == BLE_HS_HCI_ERR(BLE_ERR_CONN_TERM_LOCAL)) {
+        f.link.setDisconnectEntryHook([&] { f.link.emitDisconnect(reason); });
+        f.client.disconnect();
+        TEST_ASSERT_EQUAL_UINT32(1, f.link.disconnectCalls());
+    } else {
+        f.link.emitDisconnect(reason);
+    }
+    TEST_ASSERT_FALSE(f.client.sessionPublicationGate_.accepts(1));
+    TEST_ASSERT_TRUE(f.client.pendingDisconnectCleanup_);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_nimble_state.deleteBondCalls);
+
+    f.client.applyDeferredRuntimeEvents(settings);
+    TEST_ASSERT_FALSE(f.client.pendingDisconnectCleanup_);
+    TEST_ASSERT_EQUAL(BLEState::QUIESCING, f.client.bleState_);
+    if (recoveryPending) {
+        TEST_ASSERT_EQUAL_UINT32(0, g_mock_nimble_state.deleteBondCalls);
+        TEST_ASSERT_EQUAL_UINT32(0, bondBackupRequests);
+        TEST_ASSERT_TRUE(f.client.pendingDeleteBond_);
+        bondRecoveryPending = false;
+        f.client.applyDeferredRuntimeEvents(settings);
+    }
+    TEST_ASSERT_EQUAL_UINT32(shouldDelete ? 1 : 0, g_mock_nimble_state.deleteBondCalls);
+    TEST_ASSERT_EQUAL_UINT32(shouldDelete ? 1 : 0, bondBackupRequests);
+    TEST_ASSERT_EQUAL(!shouldDelete, g_mock_nimble_state.bonded);
+    TEST_ASSERT_EQUAL_UINT8(shouldDelete ? 0 : 1, f.client.lastBondBackupCount_);
+    if (shouldDelete) {
+        TEST_ASSERT_EQUAL_STRING(peerAddress, g_mock_nimble_state.lastDeletedBondAddress.c_str());
+    }
+
+    f.client.processClientQuiesce();
+    TEST_ASSERT_EQUAL(BLEState::DISCONNECTED, f.client.bleState_);
+    TEST_ASSERT_TRUE(f.client.connectToServer());
+    f.link.setConnected(true);
+    f.callbacks.onConnect(&f.link);
+    f.client.applyDeferredRuntimeEvents(settings);
+    TEST_ASSERT_TRUE(f.client.isConnected());
+    TEST_ASSERT_TRUE(f.client.sessionPublicationGate_.accepts(f.client.sessionGeneration()));
+    TEST_ASSERT_FALSE(f.client.sessionPublicationGate_.accepts(1));
+    TEST_ASSERT_EQUAL_UINT32(shouldDelete ? 1 : 0, g_mock_nimble_state.deleteBondCalls);
+    TEST_ASSERT_EQUAL_UINT32(shouldDelete ? 1 : 0, bondBackupRequests);
+}
+
+} // namespace
+
+void test_v1_bond_survives_supervision_timeout() {
+    checkDisconnectBond(BLE_HS_HCI_ERR(BLE_ERR_CONN_SPVN_TMO), false);
+}
+
+void test_v1_bond_survives_peer_termination() {
+    checkDisconnectBond(BLE_HS_HCI_ERR(BLE_ERR_REM_USER_CONN_TERM), false);
+}
+
+void test_v1_bond_survives_local_termination() {
+    checkDisconnectBond(BLE_HS_HCI_ERR(BLE_ERR_CONN_TERM_LOCAL), false);
+}
+
+void test_v1_bond_survives_generic_auth_failure() {
+    checkDisconnectBond(BLE_HS_HCI_ERR(BLE_ERR_AUTH_FAIL), false);
+}
+
+void test_v1_missing_key_removes_bond_and_requests_backup() {
+    checkDisconnectBond(BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING), true);
+}
+
+void test_v1_missing_key_deletion_waits_for_bond_recovery() {
+    checkDisconnectBond(BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING), true, true);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_delayed_ack_keeps_notifications_and_loop_work_responsive);
@@ -1154,6 +1242,12 @@ int main() {
     RUN_TEST(test_loss_preserves_manual_mute_and_owned_unmute_transport);
     RUN_TEST(test_no_response_automatic_mute_checks_loss_and_recovers);
     RUN_TEST(test_loss_gate_retires_old_session_and_orders_wrap);
+    RUN_TEST(test_v1_bond_survives_supervision_timeout);
+    RUN_TEST(test_v1_bond_survives_peer_termination);
+    RUN_TEST(test_v1_bond_survives_local_termination);
+    RUN_TEST(test_v1_bond_survives_generic_auth_failure);
+    RUN_TEST(test_v1_missing_key_removes_bond_and_requests_backup);
+    RUN_TEST(test_v1_missing_key_deletion_waits_for_bond_recovery);
     RUN_TEST(test_first_restore_echo_before_ack_harvest_keeps_connection);
     RUN_TEST(test_restore_echo_before_retry_keeps_connection);
     RUN_TEST(test_restore_echo_after_retry_harvest_keeps_connection);

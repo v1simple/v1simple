@@ -131,9 +131,10 @@ void V1BLEClient::ClientCallbacks::onDisconnect(NimBLEClient* pClient_, int reas
         }
     }
 
-    // Unexpected disconnects defer bond deletion; NVS writes must not block
-    // the NimBLE host callback.
-    if (reason != 0 && reason != BLE_HS_ETIMEOUT) {
+    // Only an explicit missing key makes the bond suspect. Ordinary controller
+    // disconnects include supervision timeout and local or peer termination.
+    // Defer the NVS change to the main loop.
+    if (reason == BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING)) {
         if (instancePtr) {
             const NimBLEAddress peerAddr = pClient_->getPeerAddress();
             // Guard the non-atomic address against a concurrent main-loop read.

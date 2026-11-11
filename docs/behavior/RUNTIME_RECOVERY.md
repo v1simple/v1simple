@@ -167,6 +167,14 @@ modeled NVS and radio adapters. It covers first/later read failure, every table,
 empty and one-sided tables, successful retry, new pairing and intentional
 bond deletion. It does not inject physical NVS faults or prove radio recovery.
 
+Normal V1 link retirement preserves the detector's saved bond, including a
+controller supervision timeout and local or peer termination. Only an explicit
+PIN/key-missing disconnect queues V1Simple's deferred deletion. The main loop
+waits for bond recovery before deleting and scheduling a refreshed SD snapshot.
+The pinned NimBLE encryption-change handler separately owns its missing-key
+recovery. `test_ble_command_transport` exercises the actual callback, deferred
+runtime, and new-session admission with a modeled bond table and backup queue.
+
 Bond backups have a fixed layout: the file length must equal its header plus
 exactly the declared records. A decreased count with remaining bytes cannot
 masquerade as a valid empty backup and discard a valid previous generation.

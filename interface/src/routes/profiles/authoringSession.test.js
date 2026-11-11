@@ -50,8 +50,19 @@ describe('mounted authoring session boundaries', () => {
         'retains acknowledged fields on the next description-only save after %s', async (transition) => {
             const save = pending();
             let saves = 0;
-            const mock = install([{ method: 'POST', match: '/api/v1/profile', respond: () =>
-                ++saves === 1 ? save.response : jsonResponse({ success: true }) }]);
+            let stored = { schemaVersion: 4, name: 'Daily', description: 'Original',
+                settings: { bytes: [255,255,255,255,255,255], xBand: true } };
+            const mock = install([
+                { method: 'GET', match: '/api/v1/profile?name=Daily', respond: () => jsonResponse(stored) },
+                { method: 'POST', match: '/api/v1/profile', respond: ({ init }) => {
+                    stored = JSON.parse(init.body);
+                    stored.settings.bytes = [...stored.settings.baseBytes];
+                    stored.settings.bytes[0] = stored.settings.xBand
+                        ? stored.settings.bytes[0] | 1 : stored.settings.bytes[0] & ~1;
+                    delete stored.settings.baseBytes;
+                    return ++saves === 1 ? save.response : jsonResponse({ success: true });
+                } }
+            ]);
             const view = render(Page);
             try {
                 const row = (await screen.findByText('Daily', { exact: true })).closest('.surface-panel');
@@ -84,6 +95,7 @@ describe('mounted authoring session boundaries', () => {
                 if (transition !== 'cancel and reopen') {
                     expect(screen.getByLabelText('X Band')).toBeDisabled();
                     await fireEvent.click(editor.getByRole('button', { name: 'Edit', exact: true }));
+                    await waitFor(() => expect(screen.getByLabelText('X Band')).toBeEnabled());
                 } else {
                     expect(screen.getByLabelText('Description')).toHaveValue('Later unsent description');
                 }
@@ -91,12 +103,69 @@ describe('mounted authoring session boundaries', () => {
                 await fireEvent.click(editor.getByRole('button', { name: 'Save Profile', exact: true }));
                 await waitFor(() => expect(postCalls(mock, '/api/v1/profile')).toHaveLength(2));
                 const second = JSON.parse(postCalls(mock, '/api/v1/profile')[1][1].body);
-                expect(second).toEqual({ ...first, description: 'Only a new description' });
-                expect(mock.mock.calls.filter(([url]) => url.startsWith('/api/v1/profile?'))).toHaveLength(1);
+                expect(second).toEqual({ ...first, description: 'Only a new description',
+                    settings: { ...first.settings, baseBytes: transition === 'cancel and reopen'
+                        ? first.settings.baseBytes : stored.settings.bytes } });
+                expect(mock.mock.calls.filter(([url]) => url.startsWith('/api/v1/profile?'))).toHaveLength(transition === 'cancel and reopen' ? 1 : 2);
                 expect(postCalls(mock, '/api/v1/apply')).toHaveLength(0);
             } finally { view.unmount(); }
         }
     );
+
+    it.each([false, true])('reloads an uncertain saved profile before a later edit (read fails first: %s)', async (readFails) => {
+        let stored = { schemaVersion: 4, name: 'Daily', description: 'Original',
+            settings: { bytes: [255,255,255,255,255,255], xBand: true } };
+        let writes = 0;
+        let reads = 0;
+        const mock = install([
+            { method: 'GET', match: '/api/v1/profile?name=Daily', respond: () => {
+                reads += 1;
+                return readFails && reads === 2 ? jsonResponse({ error: 'Temporarily unavailable' }, 503) : jsonResponse(stored);
+            } },
+            { method: 'POST', match: '/api/v1/profile', respond: ({ init }) => {
+                stored = JSON.parse(init.body);
+                stored.settings.bytes = [...stored.settings.baseBytes];
+                stored.settings.bytes[0] = stored.settings.xBand
+                    ? stored.settings.bytes[0] | 1 : stored.settings.bytes[0] & ~1;
+                delete stored.settings.baseBytes;
+                if (++writes === 1) throw new Error('Save reply lost after commit');
+                return jsonResponse({ success: true });
+            } }
+        ]);
+        const view = render(Page);
+        try {
+            const row = (await screen.findByText('Daily', { exact: true })).closest('.surface-panel');
+            await fireEvent.click(within(row).getByRole('button', { name: 'Edit', exact: true }));
+            await screen.findByText('Editing profile: Daily');
+            const editor = within(document.getElementById('profile-editor'));
+            await fireEvent.click(screen.getByLabelText('X Band'));
+            await fireEvent.click(editor.getByRole('button', { name: 'Save Profile', exact: true }));
+            await screen.findByText('Connection error');
+            expect(stored.settings.xBand).toBe(false);
+            const first = JSON.parse(postCalls(mock, '/api/v1/profile')[0][1].body);
+            await fireEvent.click(editor.getByRole('button', { name: 'Cancel', exact: true }));
+            await fireEvent.click(editor.getByRole('button', { name: 'Edit', exact: true }));
+            if (readFails) {
+                await screen.findByText(/Failed to load:/);
+                expect(screen.getByLabelText('X Band')).toBeDisabled();
+                expect(editor.queryByRole('button', { name: 'Save Profile', exact: true })).not.toBeInTheDocument();
+                expect(writes).toBe(1);
+                await fireEvent.click(editor.getByRole('button', { name: 'Edit', exact: true }));
+            }
+            await waitFor(() => expect(screen.getByLabelText('X Band')).toBeEnabled());
+            expect(screen.getByLabelText('X Band')).not.toBeChecked();
+            expect(writes).toBe(1);
+            await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'Only a new description' } });
+            await fireEvent.click(editor.getByRole('button', { name: 'Save Profile', exact: true }));
+            await screen.findByText('Profile "Daily" saved');
+            expect(postCalls(mock, '/api/v1/profile').map(([, init]) => JSON.parse(init.body))).toEqual([
+                first, { ...first, description: 'Only a new description', settings: { ...first.settings, baseBytes: stored.settings.bytes } }
+            ]);
+            expect(stored.settings.xBand).toBe(false);
+            expect(reads).toBe(readFails ? 3 : 2);
+            expect(postCalls(mock, '/api/v1/apply')).toHaveLength(0);
+        } finally { view.unmount(); }
+    });
 
     it.each([false, true])('reselects a pending saved profile without an obsolete read (via another profile: %s)', async (viaOther) => {
         const save = pending();
@@ -151,6 +220,7 @@ describe('mounted authoring session boundaries', () => {
         let saves = 0;
         let reads = 0;
         const original = { schemaVersion: 4, name: 'Daily', description: 'Original', settings: { xBand: true } };
+        let stored = original;
         const finishOlderRead = async () => {
             const json = vi.fn(async () => original);
             olderRead.resolve({ ok: true, json });
@@ -159,9 +229,11 @@ describe('mounted authoring session boundaries', () => {
         };
         const mock = install([
             { method: 'GET', match: '/api/v1/profile?name=Daily', respond: () =>
-                ++reads === 1 ? jsonResponse(original) : olderRead.response },
-            { method: 'POST', match: '/api/v1/profile', respond: () =>
-                ++saves === 1 ? save.response : jsonResponse({ success: true }) }
+                ++reads === 2 ? olderRead.response : jsonResponse(stored) },
+            { method: 'POST', match: '/api/v1/profile', respond: ({ init }) => {
+                stored = JSON.parse(init.body);
+                return ++saves === 1 ? save.response : jsonResponse({ success: true });
+            } }
         ]);
         const view = render(Page);
         try {
@@ -183,13 +255,13 @@ describe('mounted authoring session boundaries', () => {
             expect(screen.getByLabelText('X Band')).not.toBeChecked();
             const editor = within(document.getElementById('profile-editor'));
             await fireEvent.click(editor.getByRole('button', { name: 'Edit', exact: true }));
-            await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'Only a new description' } });
+            await fireEvent.input(await screen.findByLabelText('Description'), { target: { value: 'Only a new description' } });
             await fireEvent.click(editor.getByRole('button', { name: 'Save Profile', exact: true }));
             await waitFor(() => expect(postCalls(mock, '/api/v1/profile')).toHaveLength(2));
             const payloads = postCalls(mock, '/api/v1/profile').map(([, init]) => JSON.parse(init.body));
             expect(payloads[0].settings.xBand).toBe(false);
             expect(payloads[1]).toEqual({ ...payloads[0], description: 'Only a new description' });
-            expect(reads).toBe(2);
+            expect(reads).toBe(3);
         } finally { view.unmount(); }
     });
 

@@ -227,8 +227,19 @@
     }
 
     function startEditing() {
+        const name = authoring.acceptedProfile?.name;
+        if (name) {
+            // A lost save response may have committed. Reopen saved profiles
+            // through the existing fresh reader; pending edits keep their snapshot.
+            return editProfile(name);
+        }
         profileLoadGeneration += 1;
         authoring.reedit();
+    }
+
+    function showSaveDialog() {
+        profileLoadGeneration += 1;
+        authoring.openNamingDialog();
     }
 
     function cancelProfileEditing() {
@@ -422,7 +433,7 @@
             onaddCustomFrequencyRange={addCustomFrequencyRange}
             onremoveCustomFrequencyRange={removeCustomFrequencyRange}
             onresetDraft={resetDraftToLocalDefaults}
-            onshowSaveDialog={authoring.openNamingDialog}
+            onshowSaveDialog={showSaveDialog}
         />
     {/if}
 

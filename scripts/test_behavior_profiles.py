@@ -100,7 +100,9 @@ def profile_server(mode="normal"):
                                     "profiles": rows, "total": len(rows), "hasMore": False})
             elif parsed.path == "/api/v1/profile":
                 name = parse_qs(parsed.query).get("name", [""])[0]
-                if name not in state["profiles"]:
+                if state.get("fail_profile_read"):
+                    self.send_json({"error": "Profile read unavailable"}, 503)
+                elif name not in state["profiles"]:
                     self.send_json({"error": "Profile not found"}, 404)
                 else:
                     self.send_json(state["profiles"][name])
@@ -134,8 +136,10 @@ def profile_server(mode="normal"):
                     payload.pop("createOnly", None)
                     payload["settings"].pop("baseBytes", None)
                     payload["settings"]["bytes"] = [255] * 6
+                    if payload["settings"].get("xBand") is False:
+                        payload["settings"]["bytes"][0] &= ~1
                     state["profiles"][name] = payload
-                if mode == "lost_create":
+                if mode == "lost_create" or (mode == "lost_edit" and len(state["posts"]) == 1):
                     self.disconnect()
                 else:
                     self.send_json({"success": True})
@@ -227,6 +231,55 @@ class BuiltProfilesBrowserTests(unittest.TestCase):
             self.assertEqual(result["mutation_outcome"], "possibly_committed")
             self.assertEqual(result["readback"], document)
             self.assertEqual(len(state["posts"]), 1)
+
+    def test_saved_editor_reopens_authoritative_profile_after_lost_edit_reply(self):
+        from playwright.sync_api import expect
+        for mode in ("normal", "lost_edit"):
+            with self.subTest(mode=mode), self.driver(mode) as (driver, state):
+                context = driver._browser.new_context(service_workers="block")
+                page = context.new_page()
+                page.set_default_timeout(driver.timeout_ms)
+                errors = []
+                page.on("pageerror", lambda error, errors=errors: errors.append(str(error)))
+                try:
+                    page.goto(driver.base_url + "/profiles", wait_until="domcontentloaded")
+                    row = page.locator(".surface-panel").filter(has=page.get_by_text("Original", exact=True)).first
+                    row.get_by_role("button", name="Edit", exact=True).click()
+                    expect(page.get_by_text("Editing profile: Original", exact=True)).to_be_visible()
+                    editor = page.locator("#profile-editor")
+                    page.get_by_role("button", name="Show all settings", exact=True).click()
+                    page.get_by_label("X Band", exact=True).uncheck()
+                    editor.get_by_role("button", name="Save Profile", exact=True).click()
+                    if mode == "lost_edit":
+                        expect(page.get_by_text("Connection error", exact=True)).to_be_visible()
+                        editor.get_by_role("button", name="Cancel", exact=True).click()
+                        state["fail_profile_read"] = True
+                    else:
+                        expect(page.get_by_text('Profile "Original" saved', exact=True)).to_be_visible()
+                    self.assertFalse(state["profiles"]["Original"]["settings"]["xBand"])
+                    editor.get_by_role("button", name="Edit", exact=True).click()
+                    if mode == "lost_edit":
+                        expect(page.get_by_text("Failed to load:", exact=False)).to_be_visible()
+                        expect(editor.get_by_role("button", name="Save Profile", exact=True)).to_have_count(0)
+                        expect(page.get_by_label("X Band", exact=True)).to_be_disabled()
+                        self.assertEqual(len(state["posts"]), 1)
+                        state["fail_profile_read"] = False
+                        editor.get_by_role("button", name="Edit", exact=True).click()
+                    expect(page.get_by_label("Description", exact=True)).to_be_visible()
+                    expect(page.get_by_label("X Band", exact=True)).not_to_be_checked()
+                    page.get_by_label("Description", exact=True).fill("Description only")
+                    editor.get_by_role("button", name="Save Profile", exact=True).click()
+                    expect(page.get_by_text('Profile "Original" saved', exact=True)).to_be_visible()
+                    payloads = [json.loads(item["body"]) for item in state["posts"]]
+                    self.assertEqual(len(payloads), 2)
+                    expected = {**payloads[0], "description": "Description only", "settings": {
+                        **payloads[0]["settings"], "baseBytes": state["profiles"]["Original"]["settings"]["bytes"]}}
+                    self.assertEqual(payloads[1], expected)
+                    self.assertFalse(state["profiles"]["Original"]["settings"]["xBand"])
+                    self.assertTrue(all(item["path"] == "/api/v1/profile" for item in state["posts"]))
+                    self.assertEqual(errors, [])
+                finally:
+                    context.close()
 
     def test_success_message_does_not_hide_ignored_edit(self):
         with self.driver("ignored_edit") as (driver, state):

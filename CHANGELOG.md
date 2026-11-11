@@ -9,9 +9,13 @@ GitHub Releases retain the complete commit history.
   when the saved-profile list is unavailable.
 - Preserved acknowledged profile edits when an editor is closed or reopened
   during a save.
+- Reloaded saved profiles before reopening an editor after a lost save reply,
+  and preserved a newer naming draft when an earlier profile read finishes.
 - Reloaded saved display and Auto-Push settings after lost save replies while
   preserving later draft edits.
 - Preserved existing settings when memory is insufficient to prepare a rollback.
+- Rolled back restores when memory is insufficient to copy the primary Wi-Fi
+  name into the live settings.
 - Protected saved Wi-Fi slots when a save or readback is interrupted, and kept
   the prior network priorities when the new primary name cannot be staged.
 - Improved touchscreen slider tracking during a held drag and corrected

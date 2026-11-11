@@ -504,7 +504,7 @@ bool applyPreparedWifiStaSlots(PreparedNetworkFields& prepared, V1Settings& sett
     if (restoredAny && !settings.wifiClientEnabled && !prepared.hasWifiClientEnabled) {
         settings.wifiClientEnabled = true;
     }
-    settings.refreshWifiClientAliasFromSlots();
+    if (!settings.refreshWifiClientAliasFromSlots()) return false;
 
     if (clearSdSecret) {
         for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
@@ -581,7 +581,7 @@ bool applyPreparedNetworkFields(const JsonDocument& doc, PreparedNetworkFields& 
         !applyPreparedWifiStaSlots(prepared, settings, storage, synchronizeSdSecrets)) return false;
     if (!settings.wifiClientEnabled && settings.hasConfiguredWifiStaSlot() && !prepared.hasWifiClientEnabled)
         settings.wifiClientEnabled = true;
-    settings.refreshWifiClientAliasFromSlots();
+    if (!settings.refreshWifiClientAliasFromSlots()) return false;
 
     if (scope == BackupRestoreScope::Full) {
         restoreBackupBool(doc, "proxyBLE", settings.proxyBLE);

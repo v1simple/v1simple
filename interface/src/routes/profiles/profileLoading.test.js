@@ -155,6 +155,32 @@ describe('profile editor selection during a pending load', () => {
         }
     );
 
+    it('preserves a later naming draft when an earlier profile load completes', async () => {
+        const load = pendingResponse();
+        const original = savedProfile('Daily');
+        let reads = 0;
+        installProfiles([original], [
+            { method: 'GET', match: '/api/v1/profile?name=Daily', respond: () =>
+                ++reads === 1 ? jsonResponse(original) : load.response }
+        ]);
+        const { unmount } = render(Page);
+        try {
+            await chooseProfile('Daily', 'Edit');
+            await screen.findByText('Editing profile: Daily');
+            const editor = within(document.getElementById('profile-editor'));
+            await fireEvent.click(editor.getByRole('button', { name: 'Cancel', exact: true }));
+            await fireEvent.click(screen.getByText(/Browse saved profiles/));
+            await chooseProfile('Daily', 'Edit');
+            await waitFor(() => expect(load.readBody).toHaveBeenCalledOnce());
+            await fireEvent.click(editor.getByRole('button', { name: 'Save under a name…', exact: true }));
+            await fireEvent.input(screen.getByLabelText('Profile Name'), { target: { value: 'Later name' } });
+            await fireEvent.input(screen.getByLabelText('Description (optional)'), { target: { value: 'Later description' } });
+            await load.finish(original);
+            expect(screen.getByLabelText('Profile Name')).toHaveValue('Later name');
+            expect(screen.getByLabelText('Description (optional)')).toHaveValue('Later description');
+        } finally { unmount(); }
+    });
+
     it('allows a later Edit to complete after an earlier save closes its editor', async () => {
         const save = pendingResponse();
         const load = pendingResponse();

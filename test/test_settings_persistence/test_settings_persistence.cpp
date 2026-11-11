@@ -5595,6 +5595,112 @@ int restoreHttpBackup(SettingsManager& manager, const JsonDocument& backup) {
 }
 
 namespace {
+unsigned restoreAliasSyncCalls = 0;
+
+void assertRestoreAliasFailurePreservesState(bool sdCard) {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, sdCard);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile incomingProfile("Road");
+    incomingProfile.description = "Restored profile";
+    incomingProfile.settings.bytes[0] = 61;
+    TEST_ASSERT_TRUE(profiles.saveProfile(incomingProfile).success);
+    SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
+    source.mutableSettings().slot0_default.profileName = "Road";
+    source.mutableSettings().brightness = 88;
+    TEST_ASSERT_TRUE(source.setWifiStaSlotCredentials(0, "LongPrimaryNetwork", "password-one", "Long", 0));
+    JsonDocument incoming;
+    downloadCurrentHttpBackup(source, incoming);
+
+    V1Profile originalProfile("Road");
+    originalProfile.description = "Original profile";
+    originalProfile.settings.bytes[0] = 17;
+    TEST_ASSERT_TRUE(profiles.saveProfile(originalProfile).success);
+    source.mutableSettings().brightness = 33;
+    TEST_ASSERT_TRUE(source.setWifiStaSlotCredentials(0, "Short", "password-two", "Short", 0));
+    TEST_ASSERT_TRUE(source.save());
+
+    // Arduino String retains capacity when shortened. Reload the short source
+    // so the alias is inline and copying the incoming long name must allocate.
+    SettingsManager manager(storage, profiles);
+    manager.load();
+    TEST_ASSERT_EQUAL_STRING("Short", manager.get().wifiClientSSID.c_str());
+    const V1Settings before = manager.get();
+    const auto backupBefore = readFileToString(filesystem, SETTINGS_BACKUP_PATH);
+    const auto secretBefore = readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH);
+    if (sdCard) {
+        TEST_ASSERT_FALSE(backupBefore.empty());
+        TEST_ASSERT_FALSE(secretBefore.empty());
+    }
+    auto runtime = actualBackupRuntime(manager);
+    restoreAliasSyncCalls = 0;
+    runtime.syncAfterRestore = [](void*) { ++restoreAliasSyncCalls; };
+    String body;
+    serializeJson(incoming, body);
+    WebServer rejected(80);
+    // Baseline retries this same allocation in both restore helpers and the
+    // NVS writer. All three may fail; the fixed first check must stop after one.
+    mockStringCopyAssignmentFailureSource = &manager.get().wifiStaSlots[0].ssid;
+    mockStringCopyAssignmentFailuresRemaining = 3;
+    BackupApiService::handleApiRestoreBody(
+        rejected, runtime, reinterpret_cast<const uint8_t*>(body.c_str()), body.length(),
+        nullptr, nullptr, nullptr, nullptr);
+    const auto remainingFailures = mockStringCopyAssignmentFailuresRemaining;
+    mockStringCopyAssignmentFailureSource = nullptr;
+    mockStringCopyAssignmentFailuresRemaining = 0;
+    TEST_ASSERT_EQUAL_INT(500, rejected.lastStatusCode);
+    TEST_ASSERT_EQUAL_UINT(2, remainingFailures);
+    TEST_ASSERT_EQUAL_UINT(0, restoreAliasSyncCalls);
+    assertSettingsEqual(before, manager.get());
+    TEST_ASSERT_EQUAL_STRING("password-two", manager.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_EQUAL_STRING(backupBefore.c_str(), readFileToString(filesystem, SETTINGS_BACKUP_PATH).c_str());
+    TEST_ASSERT_EQUAL_STRING(secretBefore.c_str(), readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH).c_str());
+    TEST_ASSERT_FALSE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+    V1Profile retained;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", retained));
+    TEST_ASSERT_EQUAL_STRING("Original profile", retained.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(17, retained.settings.bytes[0]);
+    TEST_ASSERT_EQUAL_UINT(1, profiles.listProfilesResult().profiles.size());
+    WebServer status(80);
+    WifiClientApiService::handleApiStatus(status, actualWifiPriorityRuntime(manager), nullptr, nullptr);
+    JsonDocument statusDoc;
+    TEST_ASSERT_FALSE(deserializeJson(statusDoc, status.lastBody));
+    TEST_ASSERT_EQUAL_STRING("Short", statusDoc["savedSSID"].as<const char*>());
+    SettingsManager rejectedReload(storage, profiles);
+    rejectedReload.load();
+    assertSettingsEqual(before, rejectedReload.get());
+    TEST_ASSERT_EQUAL_STRING("password-two", rejectedReload.getWifiStaSlotPassword(0).c_str());
+
+    WebServer retry(80);
+    BackupApiService::handleApiRestoreBody(
+        retry, runtime, reinterpret_cast<const uint8_t*>(body.c_str()), body.length(),
+        nullptr, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, retry.lastStatusCode);
+    TEST_ASSERT_EQUAL_UINT(1, restoreAliasSyncCalls);
+    TEST_ASSERT_EQUAL_STRING("LongPrimaryNetwork", manager.get().wifiClientSSID.c_str());
+    // HTTP export omits passwords; an unrelated old SSID must not supply one.
+    TEST_ASSERT_EQUAL_STRING("", manager.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_EQUAL_UINT8(88, manager.get().brightness);
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", retained));
+    TEST_ASSERT_EQUAL_STRING("Restored profile", retained.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(61, retained.settings.bytes[0]);
+    SettingsManager retryReload(storage, profiles);
+    retryReload.load();
+    assertSettingsEqual(manager.get(), retryReload.get());
+    TEST_ASSERT_EQUAL_STRING("", retryReload.getWifiStaSlotPassword(0).c_str());
+}
+} // namespace
+
+void test_http_restore_alias_allocation_failure_preserves_littlefs_state_then_retries() {
+    assertRestoreAliasFailurePreservesState(false);
+}
+
+void test_http_restore_alias_allocation_failure_preserves_sd_state_then_retries() {
+    assertRestoreAliasFailurePreservesState(true);
+}
+
+namespace {
 
 void failWritesAfterBackupRoadCommit(const char*, const char* destination) {
     if (std::string(destination) == "/v1profiles/Road.json.meta") {
@@ -8348,6 +8454,8 @@ void test_settings_backup_replacement_preserves_valid_previous_across_errors_and
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_http_restore_alias_allocation_failure_preserves_littlefs_state_then_retries);
+    RUN_TEST(test_http_restore_alias_allocation_failure_preserves_sd_state_then_retries);
     RUN_TEST(test_wifi_password_lookup_open_failure_does_not_restore_stale_sd);
     RUN_TEST(test_wifi_password_lookup_key_and_string_read_failures_do_not_restore_stale_sd);
     RUN_TEST(test_wifi_password_lookup_legacy_read_failures_do_not_restore_stale_sd);

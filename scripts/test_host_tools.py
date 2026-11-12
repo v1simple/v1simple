@@ -53,9 +53,9 @@ class HostToolsTests(unittest.TestCase):
         self.assertEqual(self.cli("workflow", "macos").stdout,
                          "macos_developer_dir=/Applications/Xcode_16.4.app/Contents/Developer\n")
         self.assertEqual(self.cli("packages", "release").stdout.splitlines(),
-                         ["pioarduino==6.2.0", "esptool==5.4.0", "Pillow>=10.4,<13", "littlefs-python==0.18.0"])
+                         ["pioarduino==6.2.0", "esptool==5.4.0", "esp-idf-size==2.2.1", "Pillow>=10.4,<13", "littlefs-python==0.18.0"])
         self.assertEqual(self.cli("packages", "ci").stdout.splitlines(),
-                         ["pioarduino==6.2.0", "esptool==5.4.0", "Pillow>=10.4,<13", "littlefs-python==0.18.0",
+                         ["pioarduino==6.2.0", "esptool==5.4.0", "esp-idf-size==2.2.1", "Pillow>=10.4,<13", "littlefs-python==0.18.0",
                           "ruff==0.16.0", "cryptography>=41", "numpy>=2,<3"])
         self.assertEqual(self.cli("requires", "release", "swift").returncode, 1)
         self.assertEqual(self.cli("requires", "ci", "swift").returncode, 0)
@@ -181,7 +181,7 @@ elif name == 'sha256sum':
         self.assertEqual(result.returncode, 0, result.stderr)
         pip = [call for call in calls if call[1:4] == ["-m", "pip", "install"]]
         self.assertEqual(len(pip), 1)
-        self.assertEqual(pip[0][4:], ["pioarduino==6.3.1", "esptool==5.4.0", "Pillow>=10.4,<13",
+        self.assertEqual(pip[0][4:], ["pioarduino==6.3.1", "esptool==5.4.0", "esp-idf-size==2.2.1", "Pillow>=10.4,<13",
                                      "littlefs-python==0.18.0", "ruff==0.16.0", "cryptography>=41", "numpy>=2,<3"])
         self.assertTrue(any(call[0] == "curl" and any("swift-6.3.4-release" in arg for arg in call) for call in calls))
         self.assertIn(["digest", "da8272a5fddccd65b1529ed0e52e04526e2eadd4237d58d6220efeb973c6cd19"], calls)
@@ -254,7 +254,7 @@ if name == 'docker' and args[0] == 'run':
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(call[0] in {"apt-get", "curl", "swiftc", "install"} for call in calls))
         pip = next(call for call in calls if call[1:4] == ["-m", "pip", "install"])
-        self.assertEqual(pip[4:], ["pioarduino==6.2.0", "esptool==5.4.0", "Pillow>=10.4,<13", "littlefs-python==0.18.0"])
+        self.assertEqual(pip[4:], ["pioarduino==6.2.0", "esptool==5.4.0", "esp-idf-size==2.2.1", "Pillow>=10.4,<13", "littlefs-python==0.18.0"])
         self.assertIn(["npm", "ci"], calls)
 
     def test_ca_discovery_reads_optional_fallback_with_only_base_python(self) -> None:

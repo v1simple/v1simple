@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import check_linux_validation_environment as checker
 
@@ -22,6 +23,7 @@ def valid_snapshot(profile: str = "ci", **changes: object) -> checker.Environmen
         "npm_version": '10.9.9',
         "pioarduino_version": '6.2.0',
         "esptool_version": '5.4.0',
+        "esp_idf_size_version": '2.2.1',
         "ruff_version": '0.16.0',
         "shellcheck_version": '0.11.0',
         "swift_version": '6.3.3',
@@ -64,6 +66,25 @@ class LinuxValidationEnvironmentTests(unittest.TestCase):
     def test_missing_swift_fails_before_protocol_contract(self) -> None:
         errors = checker.validate_snapshot(valid_snapshot(swift_version=""))
         self.assertIn("swift_version is missing; required 6.3.3", errors)
+
+    def test_memory_size_dependency_is_required_by_ci_and_release(self) -> None:
+        for profile in ("ci", "release"):
+            for version in ("", "2.2.0"):
+                with self.subTest(profile=profile, version=version):
+                    errors = checker.validate_snapshot(valid_snapshot(profile, esp_idf_size_version=version))
+                    self.assertIn(f"esp_idf_size_version is {version or 'missing'}; required 2.2.1", errors)
+
+    def test_memory_size_probe_imports_cli_with_validation_interpreter(self) -> None:
+        interpreter = "/fixture/validation/bin/python"
+        command = [interpreter, "-c",
+                   "import esp_idf_size; import esp_idf_size.main; print(esp_idf_size.__version__)"]
+        with patch.object(checker.sys, "executable", interpreter), \
+                patch.object(checker, "command_output", side_effect=lambda args: "2.2.1" if args == command else "") as probe, \
+                patch.object(checker, "tracked_source_is_clean", return_value=True), \
+                patch.object(checker.check_platformio_core_version, "installed_pioarduino_version", return_value=(6, 2, 0)):
+            snapshot = checker.collect_snapshot("ci", checker.ROOT)
+        probe.assert_any_call(command)
+        self.assertEqual(snapshot.esp_idf_size_version, "2.2.1")
 
     def test_release_profile_preserves_smaller_dependency_surface(self) -> None:
         snapshot = valid_snapshot(

@@ -35,6 +35,7 @@ class EnvironmentSnapshot:
     npm_version: str
     pioarduino_version: str
     esptool_version: str
+    esp_idf_size_version: str
     ruff_version: str
     shellcheck_version: str
     swift_version: str
@@ -131,6 +132,10 @@ def collect_snapshot(profile_name: str, root: Path) -> EnvironmentSnapshot:
         esptool_version=(
             check_esptool_version.format_version(esptool) if esptool is not None else ""
         ),
+        esp_idf_size_version=first_version(command_output([
+            sys.executable, "-c",
+            "import esp_idf_size; import esp_idf_size.main; print(esp_idf_size.__version__)",
+        ])),
         ruff_version=first_version(command_output(["ruff", "--version"])),
         shellcheck_version=first_version(command_output(["shellcheck", "--version"])),
         swift_version=first_version(command_output(["swiftc", "--version"])),
@@ -151,7 +156,8 @@ def validate_snapshot(snapshot: EnvironmentSnapshot, tools: host_tools.HostTools
             errors.append(f"{field_name} is {actual or 'missing'}; required {value}")
     version_fields = {
         "node": "node_version", "npm": "npm_version", "pioarduino": "pioarduino_version",
-        "esptool": "esptool_version", "ruff": "ruff_version", "shellcheck": "shellcheck_version",
+        "esptool": "esptool_version", "esp-idf-size": "esp_idf_size_version",
+        "ruff": "ruff_version", "shellcheck": "shellcheck_version",
         "swift": "swift_version",
     }
     for tool, field_name in version_fields.items():

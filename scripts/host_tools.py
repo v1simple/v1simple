@@ -66,7 +66,7 @@ def load(path: Path = DEFAULT_MANIFEST) -> HostTools:
     swift = _object(data["swift"], {"version", "ubuntu_archive_sha256"}, "swift")
     linux = _object(data["linux"], {"id", "version", "image"}, "linux")
     macos = _object(data["macos"], {"developer_dir"}, "macos")
-    package_names = {"pioarduino", "esptool", "Pillow", "littlefs-python", "ruff", "cryptography", "numpy"}
+    package_names = {"pioarduino", "esptool", "esp-idf-size", "Pillow", "littlefs-python", "ruff", "cryptography", "numpy"}
     packages = _object(data["python_packages"], package_names, "python_packages")
     profiles = _object(data["profiles"], {"common", "ci", "release"}, "profiles")
     version = r"[0-9]+\.[0-9]+\.[0-9]+"
@@ -86,7 +86,7 @@ def load(path: Path = DEFAULT_MANIFEST) -> HostTools:
     }
     requirements = {}
     for name, spec in packages.items():
-        exact = name in {"pioarduino", "esptool", "littlefs-python", "ruff"}
+        exact = name in {"pioarduino", "esptool", "esp-idf-size", "littlefs-python", "ruff"}
         pattern = r"==" + version if exact else r"(?:>=|<)[0-9]+(?:\.[0-9]+)*(?:,(?:>=|<)[0-9]+(?:\.[0-9]+)*)*"
         requirements[name] = name + _text(spec, pattern, name + " requirement")
         if exact:

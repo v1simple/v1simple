@@ -1081,22 +1081,25 @@ void test_unavailable_live_address_cannot_overwrite_prior_detector_snapshot() {
     // either std::string or Arduino String materialization is unavailable.
     std::ifstream driveSource(std::string(PROJECT_DIR) + "/src/drive_runtime.cpp");
     const std::string source((std::istreambuf_iterator<char>(driveSource)), std::istreambuf_iterator<char>());
-    const size_t connectedBranch = source.find("if (!connected.isNull())",
-                                               source.find("void DriveRuntime::onV1Connected()"));
-    const size_t exactFailure = source.find("reason=device_identity_unavailable", connectedBranch);
-    const size_t fallbackBranch = source.find("if (connected.isNull())", connectedBranch);
+    const size_t owner = source.find("void DriveRuntime::processStableDetector(");
+    const size_t nextOwner = source.find("void DriveRuntime::observeAlertTable(", owner);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, owner);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, nextOwner);
+    const std::string stableDetector = source.substr(owner, nextOwner - owner);
+    const size_t connectedBranch = stableDetector.find("if (!connected.isNull())");
+    const size_t exactFailure = stableDetector.find("reason=device_identity_unavailable", connectedBranch);
+    const size_t fallbackBranch = stableDetector.find("if (connected.isNull())", connectedBranch);
     TEST_ASSERT_NOT_EQUAL(std::string::npos, connectedBranch);
     TEST_ASSERT_NOT_EQUAL(std::string::npos, exactFailure);
     TEST_ASSERT_NOT_EQUAL(std::string::npos, fallbackBranch);
     TEST_ASSERT_LESS_THAN(fallbackBranch, exactFailure);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, source.find("catch (const std::bad_alloc&)", connectedBranch));
-    const size_t snapshotBlock = source.find("if (linkAddress.length() > 0 && self.devices_.isReady())",
-                                             source.find("bounded connect-followup read"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, stableDetector.find("catch (const std::bad_alloc&)", connectedBranch));
+    const size_t snapshotBlock = stableDetector.find("if (linkAddress.length() > 0 && devices_.isReady())");
     TEST_ASSERT_NOT_EQUAL(std::string::npos, snapshotBlock);
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          source.find("recordSnapshotInMemory(linkAddress, snapshot)", snapshotBlock));
+                          stableDetector.find("recordSnapshotInMemory(linkAddress, snapshot)", snapshotBlock));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          source.find("reason=device_snapshot_unavailable", snapshotBlock));
+                          stableDetector.find("reason=device_snapshot_unavailable", snapshotBlock));
 }
 
 void test_default_profile_lookup_distinguishes_no_override_from_unavailable() {
@@ -1593,8 +1596,14 @@ void test_both_boot_paths_use_catalog_bootstrap_and_connection_still_discovers()
         const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
         TEST_ASSERT_TRUE(source.find("PersistentBootstrap::run(storage_, settings_, profiles_, devices_, effects)") != std::string::npos);
         if (std::string(path).find("drive_runtime") != std::string::npos) {
-            TEST_ASSERT_TRUE(source.find("self.devices_.touchDeviceInMemory(*profileAddress)",
-                                        source.find("void DriveRuntime::onV1Connected()")) != std::string::npos);
+            const size_t callback = source.find("void DriveRuntime::onV1Connected()");
+            const size_t detectorOwner = source.find("void DriveRuntime::processStableDetector(", callback);
+            const size_t delegated = source.find("self.processStableDetector(false)", callback);
+            TEST_ASSERT_NOT_EQUAL(std::string::npos, detectorOwner);
+            TEST_ASSERT_NOT_EQUAL(std::string::npos, delegated);
+            TEST_ASSERT_LESS_THAN(detectorOwner, delegated);
+            TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                                  source.find("devices_.touchDeviceInMemory(*profileAddress)", detectorOwner));
         }
     }
 }

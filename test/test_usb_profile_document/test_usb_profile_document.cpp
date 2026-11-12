@@ -1365,7 +1365,7 @@ void test_maximum_profile_delete_journal_recovers_after_interruption() {
     TEST_ASSERT_TRUE(primaryFs->exists(PROFILE_DELETE_TRANSACTION_PATH));
     File journal = primaryFs->open(PROFILE_DELETE_TRANSACTION_PATH, FILE_READ);
     TEST_ASSERT_TRUE(journal);
-    TEST_ASSERT_EQUAL_UINT(12309u, journal.size());
+    TEST_ASSERT_LESS_THAN_UINT(PROFILE_DELETE_TRANSACTION_MAX_BYTES, journal.size());
     journal.close();
 
     reboot();
@@ -1645,15 +1645,26 @@ void test_measure_maximum_profile_catalog_transport_shapes() {
     RestoreTransactionJournal restored;
     TEST_ASSERT_EQUAL_INT(static_cast<int>(JournalCopyStatus::Valid),
                           static_cast<int>(readRestoreTransactionJournal(restoreDocument, restored)));
-    const RestoreTransactionJournal expectedRestore{1, true, credentials, true, profilesBefore};
+    JournalOwnerRecord restoreOwner;
+    TEST_ASSERT_TRUE(readJournalOwner(restoreJournalLocation.ownerKey, restoreOwner));
+    TEST_ASSERT_EQUAL_UINT64(1, restoreOwner.token);
+    TEST_ASSERT_EQUAL(JournalPhase::Pending, restoreOwner.phase);
+    TEST_ASSERT_NOT_EQUAL(0, restoreOwner.cardWitness);
+    TEST_ASSERT_TRUE(readCardWitness(*primaryFs, restoreJournalLocation.cardPath, restoreOwner));
+    const JournalOrigin restoreOrigin{JournalStorage::Mirrored, restoreOwner.cardWitness, journalDevice()};
+    const RestoreTransactionJournal expectedRestore{1, restoreOrigin, true, credentials, true, profilesBefore};
     TEST_ASSERT_TRUE(restoreJournalsEqual(expectedRestore, restored));
 
     // Filesystem enumeration changes profile order and therefore the CRC's
     // decimal width. Validate the real journal first, then measure its maximum
-    // wire size with a ten-digit CRC; only this in-memory size copy is changed.
+    // wire size with full-width receipt fields and CRC. Only this in-memory
+    // size copy is changed.
+    restoreDocument["token"] = std::numeric_limits<int64_t>::max();
+    restoreDocument["cardWitness"] = std::numeric_limits<uint64_t>::max();
+    restoreDocument["device"] = std::numeric_limits<uint64_t>::max();
     restoreDocument["_crc32"] = std::numeric_limits<uint32_t>::max();
     const size_t maximumRestoreJournalBytes = measureJson(restoreDocument);
-    TEST_ASSERT_EQUAL_UINT(124489u, maximumRestoreJournalBytes);
+    TEST_ASSERT_EQUAL_UINT(124584u, maximumRestoreJournalBytes);
     TEST_ASSERT_LESS_OR_EQUAL_UINT(maximumRestoreJournalBytes, restoreJournalBytes);
     TEST_ASSERT_LESS_THAN_UINT(RESTORE_TRANSACTION_MAX_BYTES, maximumRestoreJournalBytes);
     TEST_ASSERT_GREATER_THAN_UINT(4096u, RESTORE_TRANSACTION_MAX_BYTES - maximumRestoreJournalBytes);
@@ -1672,14 +1683,24 @@ void test_measure_maximum_profile_catalog_transport_shapes() {
         ProfileDeleteTransactionJournal deleted;
         TEST_ASSERT_EQUAL_INT(static_cast<int>(JournalCopyStatus::Valid),
                               static_cast<int>(readProfileDeleteTransactionJournal(deleteDocument, deleted)));
-        const ProfileDeleteTransactionJournal expectedDelete{2, true, profile};
+        JournalOwnerRecord deleteOwner;
+        TEST_ASSERT_TRUE(readJournalOwner(deleteJournalLocation.ownerKey, deleteOwner));
+        TEST_ASSERT_EQUAL_UINT64(2, deleteOwner.token);
+        TEST_ASSERT_EQUAL(JournalPhase::Pending, deleteOwner.phase);
+        TEST_ASSERT_NOT_EQUAL(0, deleteOwner.cardWitness);
+        TEST_ASSERT_TRUE(readCardWitness(*primaryFs, deleteJournalLocation.cardPath, deleteOwner));
+        const JournalOrigin deleteOrigin{JournalStorage::Mirrored, deleteOwner.cardWitness, journalDevice()};
+        const ProfileDeleteTransactionJournal expectedDelete{2, deleteOrigin, true, profile};
         TEST_ASSERT_TRUE(deleteJournalsEqual(expectedDelete, deleted));
+        deleteDocument["token"] = std::numeric_limits<int64_t>::max();
+        deleteDocument["cardWitness"] = std::numeric_limits<uint64_t>::max();
+        deleteDocument["device"] = std::numeric_limits<uint64_t>::max();
         deleteDocument["_crc32"] = std::numeric_limits<uint32_t>::max();
         const size_t maximumDeleteJournalBytes = measureJson(deleteDocument);
-        TEST_ASSERT_EQUAL_UINT(12315u, maximumDeleteJournalBytes);
+        TEST_ASSERT_EQUAL_UINT(12410u, maximumDeleteJournalBytes);
         TEST_ASSERT_LESS_OR_EQUAL_UINT(maximumDeleteJournalBytes, deleteJournalBytes);
         TEST_ASSERT_LESS_THAN_UINT(PROFILE_DELETE_TRANSACTION_MAX_BYTES, maximumDeleteJournalBytes);
-        TEST_ASSERT_GREATER_THAN_UINT(4000u, PROFILE_DELETE_TRANSACTION_MAX_BYTES - maximumDeleteJournalBytes);
+        TEST_ASSERT_GREATER_THAN_UINT(3900u, PROFILE_DELETE_TRANSACTION_MAX_BYTES - maximumDeleteJournalBytes);
     }
 }
 

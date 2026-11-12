@@ -654,7 +654,7 @@ def test_startup_progress_is_flushed_before_maintenance_usb_and_upload() -> None
 
     def port(*_args):
         require_progress("waiting for the USB serial device")
-        return "/dev/test"
+        return run_window_module.UsbTarget("/dev/test", "fixture-serial")
 
     def upload(*_args):
         require_progress("building and uploading firmware")

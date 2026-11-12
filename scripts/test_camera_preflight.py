@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
@@ -474,6 +474,9 @@ def make_live_args() -> SimpleNamespace:
 
 
 def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> None:
+    args = make_live_args()
+    initial_target = run_window_module.UsbTarget(args.port, "fixture-serial")
+    returned_target = run_window_module.UsbTarget("fixture-reopened-port", initial_target.serial_number)
     events = {"serial": 0, "emulator_start": 0}
     cameras: list[FakeCamera] = []
     pending_profile_updates: list[dict[str, Any]] = []
@@ -501,11 +504,14 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             }
 
     class FakeSerial:
-        def __init__(self, *_args: Any) -> None:
+        def __init__(
+            self, port: str, _baud: int, _path: Path, timeline: run_window_module.BenchTimeline
+        ) -> None:
+            assert_true(port == returned_target.port, f"opened the wrong USB port: {port}")
             events["serial"] += 1
             self.boot_marker_count = 0
             self.line_count = 0
-            self.timeline = _args[-1]
+            self.timeline = timeline
             self.runtime_identity = None
             self.reset_performed = False
             self.reset_requested_ns: int | None = None
@@ -556,13 +562,15 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
         def __exit__(self, *_args: Any) -> None:
             pass
 
+    def upload(target: run_window_module.UsbTarget, _skip_web: bool) -> None:
+        assert_true(target == initial_target, f"upload received the wrong USB target: {target}")
+
     originals = {
         "CameraCapture": run_window_module.CameraCapture,
         "V1Emulator": run_window_module.V1Emulator,
         "BenchSerial": run_window_module.BenchSerial,
         "retain_build_upload_artifacts": run_window_module.retain_build_upload_artifacts,
         "run_upload": run_window_module.run_upload,
-        "wait_for_port": run_window_module.wait_for_port,
         "V1RadioLease": run_window_module.V1RadioLease,
     }
     run_window_module.CameraCapture = lambda out, duration: (  # type: ignore[assignment]
@@ -586,15 +594,20 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             "missing": [],
         }
     )
-    run_window_module.run_upload = lambda *_args: None  # type: ignore[assignment]
-    run_window_module.wait_for_port = lambda *_args: "fixture-port"  # type: ignore[assignment]
+    run_window_module.run_upload = upload
     run_window_module.V1RadioLease = FakeLease  # type: ignore[assignment]
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(run_window_module, "DUT_LEASE_PATH", Path(tmp).resolve() / "managed-dut.lock"),
+            patch.object(run_window_module, "wait_for_port", autospec=True) as wait_for_port,
+            patch.object(run_window_module, "require_usb_target", autospec=True) as require_target,
+        ):
+            root = Path(tmp).resolve()
+            wait_for_port.return_value = initial_target
             pending_profile_updates.append({"video_exposure_time_abs": 156})
             try:
-                collect_live(make_live_args(), root / "profile-mismatch", {})
+                collect_live(args, root / "profile-mismatch", {})
             except CameraPreflightFailure as exc:
                 assert_true(
                     exc.preflight["diagnostics"][0]["code"] == "camera_profile_mismatch",
@@ -615,7 +628,7 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             try:
                 with_calibrator(
                     refused,
-                    lambda: collect_live(make_live_args(), root / "refused", {}),
+                    lambda: collect_live(args, root / "refused", {}),
                 )
             except CameraPreflightFailure as exc:
                 assert_true(
@@ -637,10 +650,18 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             def calibrate(_path: Path, _ffmpeg: str) -> tuple[float, float, dict[str, Any]]:
                 return detect_display_crop_registration(registration_fixture(0.0, 0.0))
 
+            wait_for_port.side_effect = [initial_target, returned_target]
             passed = with_calibrator(
                 calibrate,
-                lambda: collect_live(make_live_args(), root / "passed", {}),
+                lambda: collect_live(args, root / "passed", {}),
             )
+            assert_true(
+                wait_for_port.call_args_list == [call(args.port)] * 3 + [
+                    call("", serial_number=initial_target.serial_number)
+                ],
+                f"wrong USB discovery sequence: {wait_for_port.call_args_list}",
+            )
+            require_target.assert_called_once_with(returned_target.port, initial_target.serial_number)
             assert_true(
                 passed["emulator"]["lifecycle_completed"]
                 and passed["emulator"]["completed"],

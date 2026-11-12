@@ -132,6 +132,17 @@ int WifiStationLifecycle::findConfiguredSlotBySsid(const String& ssid) const {
     return -1;
 }
 
+bool WifiStationLifecycle::savedSlotMatches(int index, const String& ssid) const {
+    return index >= 0 && static_cast<size_t>(index) < kWifiStaSlotCount && ssid.length() > 0 &&
+           settings_.get().wifiStaSlots[index].ssid == ssid;
+}
+
+int WifiStationLifecycle::connectedSlotForSsid(const String& ssid) const {
+    return settings_.get().wifiClientEnabled && savedSlotMatches(state_.connectedSlot, ssid)
+               ? state_.connectedSlot
+               : -1;
+}
+
 bool WifiStationLifecycle::testSavedNetwork(const Environment& environment, size_t index) {
     if (index >= kWifiStaSlotCount) {
         return false;
@@ -153,7 +164,9 @@ bool WifiStationLifecycle::testSavedNetwork(const Environment& environment, size
     cancelMaintenanceAutoConnect(environment, "slot_test");
     state_.candidates.collisionMask &= static_cast<uint8_t>(~(1U << index));
     resetReconnectFailures();
-    return connectToNetwork(environment, slot.ssid, password, false, static_cast<int>(index));
+    if (!connectToNetwork(environment, slot.ssid, password, false, static_cast<int>(index))) return false;
+    state_.pending.requiresSavedSlot = true;
+    return true;
 }
 
 bool WifiStationLifecycle::connectToNetwork(const Environment& environment, const String& ssid, const String& password, bool persistCredentialsOnSuccess,
@@ -172,6 +185,7 @@ bool WifiStationLifecycle::connectToNetwork(const Environment& environment, cons
     state_.pending.ssid = ssid;
     state_.pending.password = password;
     state_.pending.persistCredentials = persistCredentialsOnSuccess;
+    state_.pending.requiresSavedSlot = maintenanceAutoConnect;
     state_.pending.slot = persistSlotIndex;
     state_.connectedSlot = -1;
     state_.pending.startedAt = 0;
@@ -207,13 +221,51 @@ void WifiStationLifecycle::disconnectTrackedWifiActivity(const Environment& envi
     state_.client = disableClientState ? WIFI_CLIENT_DISABLED : WIFI_CLIENT_DISCONNECTED;
     state_.candidates.staDropGate.request();
     applyDeferredMaintenanceStaRadioDrop(environment);
-    if (!disableClientState) {
+    if (disableClientState) {
+        state_.candidates.retryAt = 0;
+    } else {
         scheduleMaintenanceAutoConnectRetry(environment, WIFI_MAINTENANCE_LINK_LOSS_RETRY_MS);
     }
 }
 
+bool WifiStationLifecycle::cancelObsoleteSavedNetworkAttempt(const Environment& environment) {
+    const PendingAttempt& attempt = state_.pending;
+    if (state_.client != WIFI_CLIENT_CONNECTING || !attempt.requiresSavedSlot) {
+        return false;
+    }
+    const bool enabled = settings_.get().wifiClientEnabled;
+    if (enabled && savedSlotMatches(attempt.slot, attempt.ssid)) {
+        return false;
+    }
+
+    // A restore can replace a slot without going through the saved-network
+    // mutation callback. Retire its attempt before using the stale credentials
+    // or attributing a late association to the new occupant.
+    if (attempt.slot >= 0 && static_cast<size_t>(attempt.slot) < kWifiStaSlotCount) {
+        state_.candidates.collisionMask &= static_cast<uint8_t>(~(1U << attempt.slot));
+    }
+    const int liveSlot = enabled && attempt.phase != WifiConnectPhase::IDLE && WiFi.status() == WL_CONNECTED
+                             ? findConfiguredSlotBySsid(WiFi.SSID())
+                             : -1;
+    if (state_.candidates.phase == MaintenanceAutoConnectPhase::CONNECTING) {
+        finishMaintenanceAutoConnect(environment, "saved_network_changed", false);
+    }
+    if (liveSlot >= 0) {
+        // The radio has not started the retired attempt. Keep the physical
+        // link without recording a new connection or changing its retry policy.
+        clearPendingWifiConnectState();
+        state_.connectedSlot = liveSlot;
+        state_.client = WIFI_CLIENT_CONNECTED;
+        state_.candidates.staDropGate.clear();
+        state_.candidates.retryAt = 0;
+    } else {
+        disconnectTrackedWifiActivity(environment, "saved_network_changed", !enabled);
+    }
+    return true;
+}
+
 void WifiStationLifecycle::processWifiClientConnectPhase(const Environment& environment) {
-    if (state_.pending.phase == WifiConnectPhase::IDLE) {
+    if (state_.pending.phase == WifiConnectPhase::IDLE || cancelObsoleteSavedNetworkAttempt(environment)) {
         return;
     }
 
@@ -477,7 +529,7 @@ void WifiStationLifecycle::applyDeferredMaintenanceStaRadioDrop(const Environmen
             Serial.println("[WiFiClient] Maintenance STA unavailable; returning to AP-only mode");
             WiFi.mode(WIFI_AP);
         }
-        state_.client = WIFI_CLIENT_DISCONNECTED;
+        if (state_.client != WIFI_CLIENT_DISABLED) state_.client = WIFI_CLIENT_DISCONNECTED;
     }
 }
 
@@ -558,6 +610,15 @@ void WifiStationLifecycle::checkWifiClientStatus(const Environment& environment)
                 WiFi.mode(WIFI_AP);
             }
         }
+        return;
+    }
+
+    if (cancelObsoleteSavedNetworkAttempt(environment)) {
+        return;
+    }
+    if (environment.maintenanceMode && state_.client == WIFI_CLIENT_CONNECTED && state_.connectedSlot >= 0 &&
+        !settings_.get().wifiClientEnabled) {
+        disconnectTrackedWifiActivity(environment, "saved_network_disabled", true);
         return;
     }
 
@@ -717,6 +778,15 @@ void WifiStationLifecycle::checkWifiClientStatus(const Environment& environment)
             state_.connectedSlot = -1;
             Serial.println("[WiFiClient] Lost connection");
             scheduleMaintenanceAutoConnectRetry(environment, WIFI_MAINTENANCE_LINK_LOSS_RETRY_MS);
+        } else if (environment.maintenanceMode && state_.connectedSlot >= 0) {
+            const String ssid = WiFi.SSID();
+            if (ssid.length() == 0 || savedSlotMatches(state_.connectedSlot, ssid)) break;
+            const int currentSlot = findConfiguredSlotBySsid(ssid);
+            if (currentSlot >= 0) {
+                state_.connectedSlot = currentSlot;
+            } else {
+                disconnectTrackedWifiActivity(environment, "saved_network_changed", false);
+            }
         }
         break;
     }

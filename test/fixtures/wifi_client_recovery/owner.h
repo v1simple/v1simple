@@ -29,8 +29,10 @@ class WiFiManager {
     bool disableWifiClient();
     bool forgetWifiClient();
     int selectSlotForNetworkConnect(const String&) const;
-    bool upsertSavedNetwork(const WifiClientApiService::SavedNetworkUpsertPayload&, size_t&);
-    bool deleteSavedNetwork(size_t);
+    WifiClientApiService::SlotActionStatus upsertSavedNetwork(
+        const WifiClientApiService::SavedNetworkUpsertPayload&, size_t&);
+    WifiClientApiService::SlotActionStatus deleteSavedNetwork(const WifiClientApiService::SavedNetworkSlotRequest&);
+    bool savedNetworkSlotMatches(const WifiClientApiService::SavedNetworkSlotRequest&) const;
     bool maintenanceBootMode_ = true;
     bool fixtureSetupActive = true;
     bool isSetupModeActive() const { return fixtureSetupActive; }
@@ -65,7 +67,7 @@ class WiFiManager {
     void resetReconnectFailures() { station_.resetReconnectFailures(); }
     bool isReconnectGaveUp() const { return station_.isReconnectGaveUp(); }
     void runOwnerPass();
-    bool testSavedNetwork(size_t);
+    WifiClientApiService::SlotActionStatus testSavedNetwork(const WifiClientApiService::SavedNetworkSlotRequest&);
     bool connectToNetwork(const String&, const String&, bool = true, int = -1, bool = false);
     void disconnectFromNetwork();
     void checkWifiClientStatus();

@@ -572,6 +572,31 @@ describe('settings route page', () => {
         unmount();
     });
 
+    it('keeps credentials added elsewhere while a same-SSID label edit is open', async () => {
+        let savedPassword;
+        const slots = defaultSlots.map((slot) => slot.index === 0 ? { ...slot, hasPassword: false } : slot);
+        const fetchMock = installDefaultFetch([
+            { method: 'POST', match: '/api/wifi/networks', respond: ({ init }) => {
+                const body = JSON.parse(init.body);
+                if (Object.hasOwn(body, 'password')) savedPassword = body.password;
+                return jsonResponse({ success: true, index: 0 });
+            } }
+        ], { slots });
+        const { unmount } = render(Page);
+        try {
+            const garage = (await screen.findByText('Garage')).closest('.rounded-box');
+            await fireEvent.click(within(garage).getByRole('button', { name: 'Edit' }));
+            savedPassword = 'replacement-password';
+            await fireEvent.input(screen.getByLabelText('Label'), { target: { value: 'Updated garage' } });
+            await fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Save', exact: true }));
+            await screen.findByText('Saved HomeWifi');
+            expect(jsonBodies(fetchMock, '/api/wifi/networks')).toEqual([
+                { index: 0, expectedSsid: 'HomeWifi', ssid: 'HomeWifi', label: 'Updated garage' }
+            ]);
+            expect(savedPassword).toBe('replacement-password');
+        } finally { unmount(); }
+    });
+
     it('allows a label-only edit of an existing whitespace-only SSID', async () => {
         const slots = [
             {
@@ -622,9 +647,64 @@ describe('settings route page', () => {
         await fireEvent.click(screen.getAllByRole('button', { name: /^Delete$/i })[0]);
 
         await screen.findByText('Deleted HomeWifi');
-        expect(jsonBodies(fetchMock, '/api/wifi/networks/delete').at(-1)).toEqual({ index: 0 });
+        expect(jsonBodies(fetchMock, '/api/wifi/networks/delete').at(-1)).toEqual({ index: 0, expectedSsid: 'HomeWifi' });
 
         unmount();
+    });
+
+    it.each([
+        { label: 'Delete', action: 'delete', failReadback: false },
+        { label: 'Test', action: 'test', failReadback: false },
+        { label: 'Test', action: 'test', failReadback: true }
+    ])('refreshes a stale $label target without replaying it (readback failure $failReadback)', async ({ label, action, failReadback }) => {
+        const readback = createDeferred();
+        const initialSlots = defaultSlots.map((slot) => slot.index === 0 ? { ...slot, ssid: ' HomeWifi ' } : slot);
+        const currentSlots = initialSlots.map((slot) => slot.index === 0
+            ? { ...slot, ssid: 'ReplacementWifi', label: 'Replacement' } : slot);
+        let reads = 0;
+        const endpoint = `/api/wifi/networks/${action}`;
+        const fetchMock = installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                reads += 1;
+                if (reads === 1) return jsonResponse({ slots: initialSlots });
+                if (reads === 2) return readback.promise;
+                return jsonResponse({ slots: currentSlots });
+            } },
+            { method: 'POST', match: endpoint, respond: jsonResponse({ error: 'network_slot_changed' }, 409) }
+        ]);
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        try {
+            const garage = (await screen.findByText('Garage')).closest('.rounded-box');
+            const actionButton = within(garage).getByRole('button', { name: label });
+            await fireEvent.click(actionButton);
+            await screen.findByText('Saved WiFi networks changed. Review the list before trying again.');
+            expect(actionButton).toBeDisabled();
+            expect(within(garage).getByRole('button', { name: 'Edit' })).toBeDisabled();
+            expect(jsonBodies(fetchMock, endpoint)).toEqual([{ index: 0, expectedSsid: ' HomeWifi ' }]);
+            expect(screen.queryByText(/^Testing connection to/)).not.toBeInTheDocument();
+            expect(screen.queryByText(/^Deleted/)).not.toBeInTheDocument();
+
+            if (failReadback) {
+                readback.resolve(jsonResponse({ error: 'unavailable' }, 503));
+                await screen.findByText('Failed to load saved WiFi networks');
+                const retry = screen.getByRole('button', { name: 'Retry saved networks' });
+                await waitFor(() => expect(retry).toBeEnabled());
+                expect(actionButton).toBeDisabled();
+                await fireEvent.click(retry);
+            } else {
+                readback.resolve(jsonResponse({ slots: currentSlots }));
+            }
+            await screen.findByText('Replacement');
+            expect(screen.queryByText('Garage')).not.toBeInTheDocument();
+            expect(jsonBodies(fetchMock, endpoint)).toHaveLength(1);
+            expect(fetchMock.mock.calls.filter(([url, init]) =>
+                url === '/api/wifi/networks' && (init?.method || 'GET') === 'GET')
+                .every(([, init]) => init.cache === 'no-store')).toBe(true);
+        } finally {
+            readback.resolve(jsonResponse({ slots: currentSlots }));
+            unmount();
+        }
     });
 
     it.each(['success', 'HTTP error', 'transport error'])(
@@ -663,7 +743,7 @@ describe('settings route page', () => {
                 expect(statusReads).toBe(3);
                 expect(screen.queryByText('Phone')).not.toBeInTheDocument();
                 expect(screen.queryByText('Failed to load saved WiFi networks')).not.toBeInTheDocument();
-                expect(jsonBodies(fetchMock, '/api/wifi/networks/delete')).toEqual([{ index: 0 }, { index: 1 }]);
+                expect(jsonBodies(fetchMock, '/api/wifi/networks/delete')).toEqual([{ index: 0, expectedSsid: 'HomeWifi' }, { index: 1, expectedSsid: 'PhoneHotspot' }]);
             } finally { unmount(); }
         }
     );
@@ -962,7 +1042,7 @@ describe('settings route page', () => {
             const saved = (await screen.findByText('SSID: First network')).closest('.rounded-box');
             await waitFor(() => expect(within(saved).getByRole('button', { name: 'Edit' })).toBeEnabled());
             expect(jsonBodies(fetchMock, '/api/wifi/networks')).toHaveLength(1);
-            expect(jsonBodies(fetchMock, '/api/wifi/networks/delete')).toEqual([{ index: 0 }]);
+            expect(jsonBodies(fetchMock, '/api/wifi/networks/delete')).toEqual([{ index: 0, expectedSsid: 'HomeWifi' }]);
         } finally {
             firstRead.resolve(jsonResponse({ slots: updatedSlots }));
             otherWrite.resolve(jsonResponse({ success: true }));
@@ -1310,7 +1390,7 @@ describe('settings route page', () => {
                 expect(testButton).toBeEnabled();
                 await fireEvent.click(testButton);
                 await screen.findByText('Testing connection to PhoneHotspot...');
-                expect(jsonBodies(fetchMock, '/api/wifi/networks/test')).toEqual([{ index: 1 }]);
+                expect(jsonBodies(fetchMock, '/api/wifi/networks/test')).toEqual([{ index: 1, expectedSsid: 'PhoneHotspot' }]);
                 expect(state.statusReads).toBe(2);
 
                 oldStatus.resolve(jsonResponse({
@@ -1396,11 +1476,11 @@ describe('settings route page', () => {
             await screen.findByText('Garage');
             await fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[0]);
             await waitFor(() => expect(jsonBodies(fetchMock, '/api/wifi/networks/test'))
-                .toEqual([{ index: 0 }]));
+                .toEqual([{ index: 0, expectedSsid: 'HomeWifi' }]));
             expect(screen.getAllByRole('button', { name: 'Test' })[0]).toBeDisabled();
 
-            // The UI permits editing while Test is pending. Model the save
-            // reaching the device first; Test then reads that slot's current SSID.
+            // The device accepts Test before the save, but the replacement
+            // happens before the delayed Test acknowledgment reaches the UI.
             await performWifiStatusMutation('manual save');
             await screen.findByText('Saved ReplacementWifi');
             expect(jsonBodies(fetchMock, '/api/wifi/networks')).toEqual([
@@ -1618,16 +1698,19 @@ describe('settings route page', () => {
         expect(screen.getAllByRole('button', { name: /^Test$/i })[1]).toBeDisabled();
         await vi.advanceTimersByTimeAsync(1000);
         await screen.findByText('Connected to HomeWifi');
-        expect(jsonBodies(fetchMock, '/api/wifi/networks/test').at(-1)).toEqual({ index: 0 });
+        expect(jsonBodies(fetchMock, '/api/wifi/networks/test').at(-1)).toEqual({ index: 0, expectedSsid: 'HomeWifi' });
 
         unmount();
     });
 
     it.each([
-        ['SSID-only status', { connectedSSID: 'HomeWifi' }, true],
-        ['slot-only status', { connectedSlotIndex: 0 }, true],
-        ['another saved network', { connectedSSID: 'PhoneHotspot', connectedSlotIndex: 1 }, false]
-    ])('preserves Test identity handling for %s', async (_label, connection, succeeds) => {
+        ['SSID-only status', { connectedSSID: 'HomeWifi' }, 'Could not confirm connection to HomeWifi'],
+        ['SSID with unknown slot', { connectedSSID: 'HomeWifi', connectedSlotIndex: null }, 'Could not confirm connection to HomeWifi'],
+        ['SSID with string slot', { connectedSSID: 'HomeWifi', connectedSlotIndex: '0' }, 'Could not confirm connection to HomeWifi'],
+        ['slot-only status', { connectedSlotIndex: 0 }, 'Could not confirm connection to HomeWifi'],
+        ['another saved network', { connectedSSID: 'PhoneHotspot', connectedSlotIndex: 1 }, 'Connection test reached PhoneHotspot, not HomeWifi'],
+        ['same SSID in another slot', { connectedSSID: 'HomeWifi', connectedSlotIndex: 1 }, 'Connection test reached slot 2. Expected slot 1.']
+    ])('checks Test identity with %s', async (_label, connection, expectedMessage) => {
         let testing = false;
         installDefaultFetch([
             { method: 'POST', match: '/api/wifi/networks/test', respond: () => {
@@ -1642,12 +1725,9 @@ describe('settings route page', () => {
         try {
             await screen.findByText('Garage');
             await fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[0]);
-            if (succeeds) {
-                await screen.findByText('Connected to HomeWifi');
-            } else {
-                await screen.findByText('Connection test reached PhoneHotspot, not HomeWifi');
-                expect(screen.queryByText('Connected to HomeWifi')).not.toBeInTheDocument();
-            }
+            await screen.findByText(expectedMessage);
+            const wifiCard = screen.getByText('WiFi Client').closest('.surface-card');
+            expect(screen.queryAllByText('Connected to HomeWifi').every((element) => wifiCard.contains(element))).toBe(true);
             expect(screen.getAllByRole('button', { name: 'Test' })
                 .every((button) => !button.disabled)).toBe(true);
         } finally { unmount(); }
@@ -1816,8 +1896,8 @@ describe('settings route page', () => {
         expect(jsonBodies(fetchMock, '/api/wifi/networks/priorities')).toEqual([
             {
                 updates: [
-                    { index: 1, priority: 0 },
-                    { index: 0, priority: 1 }
+                    { index: 1, priority: 0, expectedSsid: 'PhoneHotspot', expectedPriority: 1 },
+                    { index: 0, priority: 1, expectedSsid: 'HomeWifi', expectedPriority: 0 }
                 ]
             }
         ]);
@@ -1828,6 +1908,60 @@ describe('settings route page', () => {
         ).toBeTruthy();
 
         unmount();
+    });
+
+    it('includes unchanged rows in a reorder and refreshes after a competing priority change', async () => {
+        const third = { ...defaultSlots[2], ssid: 'TravelWifi', label: 'Travel', configured: true };
+        const initialSlots = [...defaultSlots.slice(0, 2), third, defaultSlots[3]];
+        const currentSlots = [...initialSlots.slice(0, 2), { ...third, priority: 3 }, initialSlots[3]];
+        let conflicted = false;
+        const fetchMock = installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/networks', respond: () =>
+                jsonResponse({ slots: conflicted ? currentSlots : initialSlots }) },
+            { method: 'POST', match: '/api/wifi/networks/priorities', respond: () => {
+                conflicted = true;
+                return jsonResponse({ error: 'priority_conflict' }, 409);
+            } }
+        ]);
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText('Travel');
+            await fireEvent.click(screen.getByRole('button', { name: 'Move PhoneHotspot up' }));
+            await screen.findByText('Saved WiFi networks changed. Review the list before trying again.');
+            expect(jsonBodies(fetchMock, '/api/wifi/networks/priorities')).toEqual([{
+                updates: [
+                    { index: 1, priority: 0, expectedSsid: 'PhoneHotspot', expectedPriority: 1 },
+                    { index: 0, priority: 1, expectedSsid: 'HomeWifi', expectedPriority: 0 },
+                    { index: 2, priority: 2, expectedSsid: 'TravelWifi', expectedPriority: 2 }
+                ]
+            }]);
+            expect(screen.getByText('Travel').closest('.rounded-box')).toHaveTextContent('Priority 4');
+            expect(screen.getByText('Garage').closest('.rounded-box')).toHaveTextContent('Priority 1');
+        } finally { unmount(); }
+    });
+
+    it('moves equal priorities in the order the device attempts them', async () => {
+        const slots = [
+            defaultSlots[0],
+            { ...defaultSlots[1], priority: 0, lastConnectedAtSec: 200 },
+            ...defaultSlots.slice(2)
+        ];
+        const fetchMock = installDefaultFetch([], { slots });
+        const { unmount } = render(Page);
+        try {
+            const phone = await screen.findByText('Phone');
+            const garage = screen.getByText('Garage');
+            expect(phone.compareDocumentPosition(garage) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+            expect(screen.getByRole('button', { name: 'Move PhoneHotspot up' })).toBeDisabled();
+            await fireEvent.click(screen.getByRole('button', { name: 'Move HomeWifi up' }));
+            await screen.findByText('WiFi network priority updated');
+            expect(jsonBodies(fetchMock, '/api/wifi/networks/priorities')).toEqual([{
+                updates: [
+                    { index: 0, priority: 0, expectedSsid: 'HomeWifi', expectedPriority: 0 },
+                    { index: 1, priority: 1, expectedSsid: 'PhoneHotspot', expectedPriority: 0 }
+                ]
+            }]);
+        } finally { unmount(); }
     });
 
     it.each(['acknowledged', 'lost'])('keeps a label-only draft from overwriting a reorder with %s reply', async (reply) => {
@@ -1945,8 +2079,8 @@ describe('settings route page', () => {
             expect(jsonBodies(fetchMock, '/api/wifi/networks/priorities')).toEqual([
                 {
                     updates: [
-                        { index: 1, priority: 0 },
-                        { index: 0, priority: 1 }
+                        { index: 1, priority: 0, expectedSsid: 'PhoneHotspot', expectedPriority: 1 },
+                        { index: 0, priority: 1, expectedSsid: 'HomeWifi', expectedPriority: 0 }
                     ]
                 }
             ]);
@@ -1985,6 +2119,20 @@ describe('settings route page', () => {
         expect(screen.getAllByText('-55 dBm').length).toBeGreaterThan(0);
 
         unmount();
+    });
+
+    it('keeps an old physical connection separate from the replacement saved in its slot', async () => {
+        const slots = defaultSlots.map((slot) => slot.index === 0
+            ? { ...slot, ssid: 'ReplacementWifi', label: 'Replacement' } : slot);
+        installDefaultFetch([], { slots, wifiStatus: connectedWifiStatus });
+        const { unmount } = render(Page);
+        try {
+            const replacement = (await screen.findByText('Replacement')).closest('.rounded-box');
+            expect(within(replacement).getByText('Saved')).toBeInTheDocument();
+            expect(within(replacement).queryByText('Connected')).not.toBeInTheDocument();
+            expect(screen.getByText(/Connected to HomeWifi/)).toBeInTheDocument();
+            expect(screen.queryByText(/Slot 1 \(Replacement\)/)).not.toBeInTheDocument();
+        } finally { unmount(); }
     });
 
     // Connection fields disappear when the STA link drops; stale values must
@@ -2104,6 +2252,8 @@ describe('settings route page', () => {
 
         await screen.findByText('Saved HomeWifi');
         expect(jsonBodies(fetchMock, '/api/wifi/networks').at(-1)).toMatchObject({
+            index: 0,
+            expectedSsid: 'HomeWifi',
             ssid: 'HomeWifi',
             password: ''
         });
@@ -2113,6 +2263,51 @@ describe('settings route page', () => {
         });
 
         unmount();
+    });
+
+    it.each([
+        ['manual', 'conflict'], ['manual', 'lost reply'],
+        ['scan', 'conflict'], ['scan', 'lost reply']
+    ])('keeps an unseen %s add from updating a network after a %s', async (mode, outcome) => {
+        let appeared = false;
+        const currentSlots = defaultSlots.map((slot) => slot.index === 2
+            ? { ...slot, ssid: 'AppearedWifi', label: 'Saved elsewhere', configured: true, hasPassword: true }
+            : slot);
+        const fetchMock = installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/networks', respond: () =>
+                jsonResponse({ slots: appeared ? currentSlots : defaultSlots }) },
+            { method: 'POST', match: '/api/wifi/scan', respond: jsonResponse({
+                scanning: false, networks: [{ ssid: 'AppearedWifi', secure: true, rssi: -35 }]
+            }) },
+            { method: 'POST', match: '/api/wifi/networks', respond: () => {
+                appeared = true;
+                if (outcome === 'lost reply') throw new Error('Save reply lost');
+                return jsonResponse({ error: 'network_slot_changed' }, 409);
+            } }
+        ]);
+        const { unmount } = render(Page);
+        try {
+            if (mode === 'manual') {
+                await openManualEditor();
+                await fireEvent.input(screen.getByLabelText('SSID'), { target: { value: 'AppearedWifi' } });
+            } else {
+                await openScanModal();
+                await fireEvent.click(await screen.findByRole('button', { name: /AppearedWifi.*dBm/ }));
+            }
+            const password = screen.getByLabelText('Password');
+            await fireEvent.input(password, { target: { value: 'placeholder' } });
+            const save = within(screen.getByRole('dialog')).getByRole('button', { name: /^Save( Network)?$/ });
+            await fireEvent.click(save);
+            await screen.findByText(/This saved network slot changed/);
+            expect(password).toHaveValue('placeholder');
+            expect(save).toBeDisabled();
+            await fireEvent.click(save);
+            expect(jsonBodies(fetchMock, '/api/wifi/networks')).toEqual([{
+                ssid: 'AppearedWifi',
+                password: 'placeholder',
+                ...(mode === 'manual' ? { label: '' } : {})
+            }]);
+        } finally { unmount(); }
     });
 
     it('uses captured enable success and status-refetch responses', async () => {
@@ -3227,7 +3422,7 @@ describe('settings route page', () => {
                 await waitFor(() => expect(deletes[0]).toBeEnabled());
                 await fireEvent.click(deletes[0]);
                 expect(confirm).toHaveBeenLastCalledWith('Delete saved WiFi network "RestoredWifi"?');
-                expect(jsonBodies(fetchMock, '/api/wifi/networks/delete')).toEqual([{ index: 0 }]);
+                expect(jsonBodies(fetchMock, '/api/wifi/networks/delete')).toEqual([{ index: 0, expectedSsid: 'RestoredWifi' }]);
             } finally {
                 restoreResponse.resolve(jsonResponse({ success: true }));
                 networkResponse.resolve(jsonResponse({ slots: restoredSlots }));

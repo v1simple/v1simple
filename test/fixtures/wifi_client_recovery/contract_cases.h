@@ -103,21 +103,25 @@ void mutationCommitsBeforeRadio(bool erase, bool fail) {
     manager.settings_.credentialWriteSucceeds = !fail;
     manager.settings_.clearSucceeds = !fail;
     stationEffects.clear();
-    bool success;
+    using WifiClientApiService::SlotActionStatus;
+    SlotActionStatus result;
     if (erase) {
-        success = manager.deleteSavedNetwork(0);
+        result = manager.deleteSavedNetwork({0, "Saved"});
     } else {
         WifiClientApiService::SavedNetworkUpsertPayload request;
         request.hasIndex = true;
         request.index = 0;
+        request.hasExpectedSsid = true;
+        request.expectedSsid = "Saved";
         request.ssid = " Saved ";
         request.hasPassword = true;
         request.password = "";
         size_t selected = kWifiStaSlotCount;
-        success = manager.upsertSavedNetwork(request, selected);
+        result = manager.upsertSavedNetwork(request, selected);
         require(selected == (fail ? kWifiStaSlotCount : 0), "failed edit changed selected output");
     }
-    require(success == !fail, "credential mutation result changed");
+    require(result == (fail ? SlotActionStatus::Failed : SlotActionStatus::Success),
+            "credential mutation result changed");
     if (fail) {
         if (erase) requireStationEffects({"clear:0"}); else requireStationEffects({"slot:0"});
         require(manager.station_.clientState() == WIFI_CLIENT_CONNECTED && WiFi.physicalConnected,
@@ -346,4 +350,134 @@ void normalRetryIntervalAndGiveUp(uint32_t start) {
     manager.checkWifiClientStatus();
     require(!manager.isReconnectGaveUp() && manager.station_.clientState() == WIFI_CLIENT_CONNECTING,
             "explicit reconnect reset did not restore admission");
+}
+
+void restoreDuringSavedAttempt(bool radioStarted, bool retainOtherLink, bool automatic) {
+    WiFiManager manager{};
+    WiFi = WiFiClass{};
+    manager.settings_.value.wifiStaSlots[0].ssid = "Saved";
+    manager.settings_.value.wifiStaSlots[1].ssid = "Test target";
+    manager.station_.selectSessionMode(true);
+    if (!retainOtherLink) WiFi.lost();
+    mockMillis = 500;
+    manager.checkWifiClientStatus();
+    manager.settings_.markCalls = 0;
+
+    mockMillis = 1000;
+    if (automatic) {
+        WiFi.scanSsids = {"Test target"};
+        require(manager.station_.beginMaintenanceAutoConnectScan(manager.stationEnvironment(), false), "scan admission");
+        WiFi.scanState = 1;
+        manager.station_.processMaintenanceAutoConnect(manager.stationEnvironment());
+    } else {
+        require(manager.testSavedNetwork({1, "Test target"}) == WifiClientApiService::SlotActionStatus::Success,
+                "saved-network test admission");
+    }
+    if (radioStarted) {
+        manager.station_.processWifiClientConnectPhase(manager.stationEnvironment());
+        mockMillis = 1010;
+        manager.station_.processWifiClientConnectPhase(manager.stationEnvironment());
+        require(WiFi.begins == 1 && WiFi.lastBeginSsid == "Test target", "radio attempt did not start");
+    }
+
+    // The maintenance restore replaces the effective slot without using the
+    // individual saved-network mutation callback.
+    manager.settings_.value.wifiStaSlots[1].ssid = "Replacement";
+    if (radioStarted) {
+        WiFi.restored();
+        WiFi.stationIp = static_cast<uint32_t>(WiFi.softAPIP());
+    } else {
+        manager.station_.processWifiClientConnectPhase(manager.stationEnvironment());
+        mockMillis = 1010;
+        manager.station_.processWifiClientConnectPhase(manager.stationEnvironment());
+        require(WiFi.begins == 0, "obsolete credentials reached radio start");
+    }
+    mockMillis = 1050;
+    manager.checkWifiClientStatus();
+    require(manager.station_.pendingSlot() == -1 && manager.settings_.markCalls == 0,
+            "obsolete attempt retained ownership or wrote replacement recency");
+    if (retainOtherLink) {
+        require(manager.station_.connectedSlot() == 0 && WiFi.physicalConnected && WiFi.SSID() == "Saved" &&
+                    WiFi.disconnects == 0,
+                "retiring the attempt disturbed a different authorized link");
+    } else {
+        require(manager.station_.connectedSlot() == -1 && !WiFi.physicalConnected,
+                "obsolete association was retained");
+    }
+    if (radioStarted) {
+        // A late address collision from the old SSID must not blacklist the
+        // new occupant. The ordinary retry must still reach its credentials.
+        mockMillis = manager.station_.retryAt();
+        WiFi.scanSsids = {"Replacement"};
+        manager.checkWifiClientStatus();
+        WiFi.scanState = 1;
+        manager.station_.processMaintenanceAutoConnect(manager.stationEnvironment());
+        require(manager.station_.pendingSlot() == 1, "late old association blocked the replacement retry");
+    }
+}
+
+void restoreChangesConnectedNetwork(bool moveToAnotherSlot) {
+    WiFiManager manager{};
+    WiFi = WiFiClass{};
+    manager.settings_.value.wifiStaSlots[0].ssid = "Saved";
+    manager.station_.selectSessionMode(true);
+    mockMillis = 500;
+    manager.checkWifiClientStatus();
+    manager.settings_.markCalls = 0;
+    require(manager.station_.connectedSlotForSsid(WiFi.SSID()) == 0, "original link is not attributed");
+
+    manager.settings_.value.wifiStaSlots[0].ssid = "Replacement";
+    if (moveToAnotherSlot) manager.settings_.value.wifiStaSlots[1].ssid = "Saved";
+    require(manager.station_.connectedSlotForSsid(WiFi.SSID()) == -1, "status exposes a stale slot before service");
+    mockMillis = 550;
+    manager.checkWifiClientStatus();
+    require(manager.settings_.markCalls == 0, "catalog restore fabricated a fresh association");
+    if (moveToAnotherSlot) {
+        require(WiFi.physicalConnected && WiFi.disconnects == 0 &&
+                    manager.station_.connectedSlotForSsid(WiFi.SSID()) == 1,
+                "valid restored SSID was disconnected or attributed to the replacement");
+    } else {
+        require(!WiFi.physicalConnected && manager.station_.connectedSlot() == -1,
+                "removed saved network remained active");
+    }
+}
+
+void restoreDisablesSavedConnection(bool stagedTest, bool colliding = false) {
+    WiFiManager manager{};
+    WiFi = WiFiClass{};
+    manager.settings_.value.wifiStaSlots[0].ssid = "Saved";
+    manager.station_.selectSessionMode(true);
+    mockMillis = 500;
+    manager.checkWifiClientStatus();
+    if (stagedTest) {
+        require(manager.testSavedNetwork({0, "Saved"}) == WifiClientApiService::SlotActionStatus::Success,
+                "saved-network test admission");
+        require(manager.wifiScanOwner_.request(WifiScanConsumer::UI, WifiStationLifecycle::scanDriver()) ==
+                    WifiScanResultOwner::RequestResult::STARTED,
+                "shared radio scan must start before restore");
+    }
+    manager.settings_.value.wifiClientEnabled = false;
+    if (colliding) WiFi.stationIp = static_cast<uint32_t>(WiFi.softAPIP());
+    mockMillis = 550;
+    manager.station_.processWifiClientConnectPhase(manager.stationEnvironment());
+    manager.checkWifiClientStatus();
+    require(manager.station_.clientState() == WIFI_CLIENT_DISABLED && manager.station_.pendingSlot() == -1 &&
+                manager.station_.retryAt() == 0 && !WiFi.physicalConnected && WiFi.begins == 0,
+            "a disabled restored client still owns station activity");
+    manager.settings_.markCalls = 0;
+    WiFi.physicalConnected = true;
+    WiFi.cachedStatus = WL_CONNECTED;
+    mockMillis = 600;
+    manager.checkWifiClientStatus();
+    require(manager.station_.clientState() == WIFI_CLIENT_DISABLED && !WiFi.physicalConnected &&
+                manager.settings_.markCalls == 0,
+            "a late physical association bypassed the restored disabled state");
+    if (stagedTest) {
+        require(manager.wifiScanOwner_.isRunning() && WiFi.scanAborts == 0,
+                "retiring station disturbed the UI's active scan");
+        WiFi.scanState = 1;
+        manager.station_.processMaintenanceAutoConnect(manager.stationEnvironment());
+        require(manager.station_.clientState() == WIFI_CLIENT_DISABLED && WiFi.radioMode == WIFI_AP,
+                "deferred station radio drop reopened the disabled state");
+    }
 }

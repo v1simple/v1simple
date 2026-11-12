@@ -4138,8 +4138,10 @@ void test_priority_http_uses_one_actual_settings_transaction_and_rolls_back_on_f
     TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "One", "password-one", "One", 0));
     TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "Two", "password-two", "Two", 1));
     const auto runtime = actualWifiPriorityRuntime(manager);
+    constexpr const char* swap = R"({"updates":[{"index":0,"priority":1,"expectedSsid":"One","expectedPriority":0},)"
+                                 R"({"index":1,"priority":0,"expectedSsid":"Two","expectedPriority":1}]})";
     WebServer failed(80);
-    failed.setArg("plain", "{\"updates\":[{\"index\":0,\"priority\":1},{\"index\":1,\"priority\":0}]}");
+    failed.setArg("plain", swap);
     mock_preferences::set_fail_writes_for_key(kNvsWifiStaSlotPriority[0]);
     WifiClientApiService::handleApiNetworksPriorities(failed, runtime, nullptr, nullptr, nullptr, nullptr);
     mock_preferences::set_fail_writes_for_key(nullptr);
@@ -4152,7 +4154,7 @@ void test_priority_http_uses_one_actual_settings_transaction_and_rolls_back_on_f
     TEST_ASSERT_EQUAL_UINT8(1, failedReboot.get().wifiStaSlots[1].priority);
 
     WebServer success(80);
-    success.setArg("plain", "{\"updates\":[{\"index\":0,\"priority\":1},{\"index\":1,\"priority\":0}]}");
+    success.setArg("plain", swap);
     WifiClientApiService::handleApiNetworksPriorities(success, runtime, nullptr, nullptr, nullptr, nullptr);
     TEST_ASSERT_EQUAL_INT(200, success.lastStatusCode);
     TEST_ASSERT_EQUAL_UINT8(1, manager.get().wifiStaSlots[0].priority);
@@ -4172,7 +4174,8 @@ void test_priority_http_preserves_live_and_durable_order_when_primary_alias_allo
     TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "LongPrimaryNetwork", "password-two", "Long", 1));
     TEST_ASSERT_EQUAL_STRING("Short", manager.get().wifiClientSSID.c_str());
     const auto runtime = actualWifiPriorityRuntime(manager);
-    constexpr const char* swap = R"({"updates":[{"index":0,"priority":1},{"index":1,"priority":0}]})";
+    constexpr const char* swap = R"({"updates":[{"index":0,"priority":1,"expectedSsid":"Short","expectedPriority":0},)"
+                                 R"({"index":1,"priority":0,"expectedSsid":"LongPrimaryNetwork","expectedPriority":1}]})";
 
     WebServer failed(80);
     failed.setArg("plain", swap);

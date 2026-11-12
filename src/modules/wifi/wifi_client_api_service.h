@@ -57,9 +57,22 @@ struct SavedNetworkUpsertPayload {
     uint8_t priority = 0;
 };
 
+struct SavedNetworkSlotRequest {
+    size_t index = 0;
+    String expectedSsid;
+};
+
 struct SavedNetworkPriorityUpdate {
     size_t index = 0;
+    String expectedSsid;
+    uint8_t expectedPriority = 0;
     uint8_t priority = 0;
+};
+
+enum class SlotActionStatus : uint8_t {
+    Success,
+    Conflict,
+    Failed,
 };
 
 enum class PriorityUpdateStatus : uint8_t {
@@ -105,14 +118,15 @@ struct Runtime {
 
     std::vector<SavedNetworkSlotPayload> (*getSavedNetworks)(void* ctx) = nullptr;
     void* getSavedNetworksCtx = nullptr;
-    bool (*upsertSavedNetwork)(const SavedNetworkUpsertPayload& request, size_t& indexOut, void* ctx) = nullptr;
+    SlotActionStatus (*upsertSavedNetwork)(const SavedNetworkUpsertPayload& request, size_t& indexOut,
+                                           void* ctx) = nullptr;
     void* upsertSavedNetworkCtx = nullptr;
-    bool (*deleteSavedNetwork)(size_t index, void* ctx) = nullptr;
+    SlotActionStatus (*deleteSavedNetwork)(const SavedNetworkSlotRequest& request, void* ctx) = nullptr;
     void* deleteSavedNetworkCtx = nullptr;
     PriorityUpdateStatus (*updateSavedNetworkPriorities)(const std::vector<SavedNetworkPriorityUpdate>& updates,
                                                          void* ctx) = nullptr;
     void* updateSavedNetworkPrioritiesCtx = nullptr;
-    bool (*testSavedNetwork)(size_t index, void* ctx) = nullptr;
+    SlotActionStatus (*testSavedNetwork)(const SavedNetworkSlotRequest& request, void* ctx) = nullptr;
     void* testSavedNetworkCtx = nullptr;
 };
 

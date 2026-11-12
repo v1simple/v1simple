@@ -19,6 +19,8 @@ typedef bool boolean;
 // Opt-in simulation of Arduino String's non-throwing allocation failure.
 // A negative value leaves copies unchanged; zero fails the next copy assignment.
 inline int mockStringCopyAssignmentsBeforeFailure = -1;
+// Fail a C-string construction for one specific long value.
+inline const char* mockStringConstructorFailureValue = nullptr;
 
 class String;
 // Target one copy construction without affecting equal-valued strings elsewhere.
@@ -66,7 +68,15 @@ public:
         }
         return *this;
     }
-    String(const char* s) : data_(s ? s : "") {}
+    String(const char* s) {
+        if (s && mockStringConstructorFailureValue && std::strlen(s) >= 14 &&
+            std::strcmp(s, mockStringConstructorFailureValue) == 0) {
+            mockStringConstructorFailureValue = nullptr;
+            valid_ = false;
+            return;
+        }
+        data_ = s ? s : "";
+    }
     String(const std::string& s) : data_(s) {}
     String(int val) : data_(std::to_string(val)) {}
     String(unsigned int val) : data_(std::to_string(val)) {}

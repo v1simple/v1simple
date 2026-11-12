@@ -37,6 +37,7 @@ class WifiStationLifecycle {
 
     WifiClientState clientState() const { return state_.client; }
     int connectedSlot() const { return state_.connectedSlot; }
+    int connectedSlotForSsid(const String& ssid) const;
     int pendingSlot() const { return state_.pending.slot; }
     unsigned long retryAt() const { return state_.candidates.retryAt; }
     bool isReconnectGaveUp() const { return state_.reconnectFailures >= WIFI_MAX_RECONNECT_FAILURES; }
@@ -75,6 +76,7 @@ class WifiStationLifecycle {
         String ssid;
         String password;
         bool persistCredentials = true;
+        bool requiresSavedSlot = false;
         int slot = -1;
         WifiConnectPhase phase = WifiConnectPhase::IDLE;
         unsigned long startedAt = 0;
@@ -116,6 +118,8 @@ class WifiStationLifecycle {
     static constexpr unsigned long WIFI_RECONNECT_DEFER_NO_V1_MS = 90000;
 
     int findConfiguredSlotBySsid(const String&) const;
+    bool savedSlotMatches(int index, const String& ssid) const;
+    bool cancelObsoleteSavedNetworkAttempt(const Environment&);
     bool queueNextMaintenanceAutoConnectSlot(const Environment&);
     void finishMaintenanceAutoConnect(const Environment&, const char* reason, bool dropStaRadio);
     void disconnectTrackedWifiActivity(const Environment&, const char* reason, bool disableClientState);

@@ -32,17 +32,22 @@ void assertWifiNamespaceUnchanged(const mock_preferences::NamespaceStore& before
 
 int saveSecondWifiNetworkThroughHttp(SettingsManager& manager) {
     WebServer server;
-    server.setArg("plain", "{\"index\":1,\"ssid\":\"SecondNetwork\",\"password\":\"updated-second\",\"label\":\"Second\",\"priority\":1}");
+    server.setArg("plain", R"({"index":1,"expectedSsid":"SecondNetwork","ssid":"SecondNetwork",)"
+                           R"("password":"updated-second","label":"Second","priority":1})");
     WifiClientApiService::Runtime runtime;
     runtime.maintenanceBootActive = true;
     // The explicit-index, full-field WiFiManager path forwards these validated
     // fields directly to SettingsManager. Its radio activity tail is not modeled.
     runtime.upsertSavedNetwork = [](const WifiClientApiService::SavedNetworkUpsertPayload& request,
                                     size_t& index, void* context) {
-        if (!request.hasIndex || !request.hasPassword || !request.hasLabel || !request.hasPriority) return false;
+        using WifiClientApiService::SlotActionStatus;
+        if (!request.hasIndex || !request.hasPassword || !request.hasLabel || !request.hasPriority) {
+            return SlotActionStatus::Failed;
+        }
         index = request.index;
         return static_cast<SettingsManager*>(context)->setWifiStaSlotCredentials(
-            index, request.ssid, request.password, request.label, request.priority);
+            index, request.ssid, request.password, request.label, request.priority) ? SlotActionStatus::Success
+                                                                                  : SlotActionStatus::Failed;
     };
     runtime.upsertSavedNetworkCtx = &manager;
     bool preAdmitted = true;

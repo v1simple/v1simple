@@ -150,6 +150,17 @@ successful persistence. Enable rollback restores one lifecycle state value
 without copying scan-owner state. `test_wifi_client_recovery.py` exercises
 the actual station owner and the manager transaction boundaries.
 
+Saved-network Edit, Delete and Test carry the exact SSID observed for the
+selected slot. A save without a slot can only create a network whose SSID is
+still absent. Reorder compares every configured slot's SSID and prior priority
+before writing the new order. The maintenance routes resolve storage recovery
+before checking these conditions. On a conflict, Settings reads the current
+catalog and waits for a new user action before trying the operation again.
+The station also checks the saved identity before starting an association for
+that slot and before accepting its result. A restore that replaces the slot
+invalidates the older attempt. A label-only edit preserves an untouched
+password, including when a different tab secured a formerly open network.
+
 WiFi rollback discovery in `settings_nvs.cpp` distinguishes proven absence,
 single-slot rollback, forget-all rollback and unavailable authority. A failed
 namespace/key read or invalid header cannot be treated as absence. Set, delete,

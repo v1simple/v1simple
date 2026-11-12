@@ -349,7 +349,7 @@ WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
             auto* self = static_cast<WiFiManager*>(ctx);
             WifiClientApiService::ConnectedNetworkPayload payload;
             payload.ssid = WiFi.SSID();
-            payload.connectedSlotIndex = self->station_.connectedSlot();
+            payload.connectedSlotIndex = self->station_.connectedSlotForSsid(payload.ssid);
             payload.ip = WiFi.localIP().toString();
             payload.rssi = WiFi.RSSI();
             return payload;
@@ -391,13 +391,17 @@ WifiClientApiService::Runtime WiFiManager::makeWifiClientRuntime() {
             return static_cast<WiFiManager*>(ctx)->upsertSavedNetwork(request, indexOut);
         },
         this,
-        [](size_t index, void* ctx) { return static_cast<WiFiManager*>(ctx)->deleteSavedNetwork(index); },
+        [](const WifiClientApiService::SavedNetworkSlotRequest& request, void* ctx) {
+            return static_cast<WiFiManager*>(ctx)->deleteSavedNetwork(request);
+        },
         this,
         [](const std::vector<WifiClientApiService::SavedNetworkPriorityUpdate>& updates, void* ctx) {
             return static_cast<WiFiManager*>(ctx)->updateSavedNetworkPriorities(updates);
         },
         this,
-        [](size_t index, void* ctx) { return static_cast<WiFiManager*>(ctx)->testSavedNetwork(index); },
+        [](const WifiClientApiService::SavedNetworkSlotRequest& request, void* ctx) {
+            return static_cast<WiFiManager*>(ctx)->testSavedNetwork(request);
+        },
         this,
     };
 }

@@ -14,6 +14,8 @@ unsigned long mockMicros = 0;
 
 namespace {
 
+using WifiClientApiService::SlotActionStatus;
+
 struct Probe {
     bool forgetResult = true;
     bool enableResult = true;
@@ -22,13 +24,13 @@ struct Probe {
     int enableCalls = 0;
     int disableCalls = 0;
     int testCalls = 0;
-    size_t testedIndex = 0;
-    bool testResult = true;
+    WifiClientApiService::SavedNetworkSlotRequest slotRequest;
+    SlotActionStatus testResult = SlotActionStatus::Success;
     int upsertCalls = 0;
-    bool upsertResult = true;
+    SlotActionStatus upsertResult = SlotActionStatus::Success;
     WifiClientApiService::SavedNetworkUpsertPayload upsertRequest;
     int deleteCalls = 0;
-    bool deleteResult = true;
+    SlotActionStatus deleteResult = SlotActionStatus::Success;
     int priorityCalls = 0;
     WifiClientApiService::PriorityUpdateStatus priorityResult =
         WifiClientApiService::PriorityUpdateStatus::Success;
@@ -56,10 +58,10 @@ WifiClientApiService::Runtime makeRuntime(Probe& probe) {
         return state->disableResult;
     };
     runtime.disableClientCtx = &probe;
-    runtime.testSavedNetwork = [](size_t index, void* ctx) {
+    runtime.testSavedNetwork = [](const WifiClientApiService::SavedNetworkSlotRequest& request, void* ctx) {
         auto* state = static_cast<Probe*>(ctx);
         state->testCalls++;
-        state->testedIndex = index;
+        state->slotRequest = request;
         return state->testResult;
     };
     runtime.testSavedNetworkCtx = &probe;
@@ -72,10 +74,10 @@ WifiClientApiService::Runtime makeRuntime(Probe& probe) {
         return state->upsertResult;
     };
     runtime.upsertSavedNetworkCtx = &probe;
-    runtime.deleteSavedNetwork = [](size_t index, void* ctx) {
+    runtime.deleteSavedNetwork = [](const WifiClientApiService::SavedNetworkSlotRequest& request, void* ctx) {
         auto* state = static_cast<Probe*>(ctx);
         state->deleteCalls++;
-        state->testedIndex = index;
+        state->slotRequest = request;
         return state->deleteResult;
     };
     runtime.deleteSavedNetworkCtx = &probe;
@@ -164,13 +166,14 @@ void test_maintenance_enable_starts_now_without_deferred_boot_message() {
 void test_maintenance_saved_network_test_starts_live_connection() {
     WebServer server(80);
     Probe probe;
-    server.setArg("plain", "{\"index\":0}");
+    server.setArg("plain", R"({"index":0,"expectedSsid":" Garage "})");
 
     WifiClientApiService::handleApiNetworksTest(server, makeRuntime(probe), allow, nullptr, nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, probe.testCalls);
-    TEST_ASSERT_EQUAL_UINT(0u, probe.testedIndex);
+    TEST_ASSERT_EQUAL_UINT(0u, probe.slotRequest.index);
+    TEST_ASSERT_EQUAL_STRING(" Garage ", probe.slotRequest.expectedSsid.c_str());
     TEST_ASSERT_TRUE(contains(server.lastBody, "Connecting"));
     TEST_ASSERT_FALSE(contains(server.lastBody, "ap_only_maintenance"));
 }
@@ -178,7 +181,7 @@ void test_maintenance_saved_network_test_starts_live_connection() {
 void test_saved_network_upsert_failure_is_not_reported_as_success() {
     WebServer server(80);
     Probe probe;
-    probe.upsertResult = false;
+    probe.upsertResult = SlotActionStatus::Failed;
     server.setArg("plain", "{\"ssid\":\"Garage\",\"password\":\"password-one\"}");
 
     WifiClientApiService::handleApiNetworksSave(server, makeRuntime(probe), allow, nullptr, nullptr, nullptr);
@@ -188,7 +191,7 @@ void test_saved_network_upsert_failure_is_not_reported_as_success() {
     TEST_ASSERT_TRUE(contains(server.lastBody, "network_save_failed"));
 }
 
-void test_network_save_parses_optional_exact_slot_identity_and_priority() {
+void test_network_save_requires_exact_identity_for_an_indexed_request() {
     Probe probe;
     const auto runtime = makeRuntime(probe);
     WebServer edit(80);
@@ -208,7 +211,8 @@ void test_network_save_parses_optional_exact_slot_identity_and_priority() {
     TEST_ASSERT_TRUE(probe.upsertRequest.hasPriority);
     TEST_ASSERT_EQUAL_UINT8(0, probe.upsertRequest.priority);
 
-    for (const char* body : {R"({"expectedSsid":"Old","ssid":"New"})",
+    for (const char* body : {R"({"index":0,"ssid":"New"})",
+                            R"({"expectedSsid":"Old","ssid":"New"})",
                             R"({"index":0,"expectedSsid":null,"ssid":"New"})",
                             R"({"index":0,"expectedSsid":"Old\u0000suffix","ssid":"New"})"}) {
         WebServer invalid(80);
@@ -219,38 +223,65 @@ void test_network_save_parses_optional_exact_slot_identity_and_priority() {
     TEST_ASSERT_EQUAL_INT(2, probe.upsertCalls);
 }
 
+void test_password_input_allocation_failure_cannot_become_open_network() {
+    Probe probe;
+    const auto runtime = makeRuntime(probe);
+    WebServer unavailable;
+    unavailable.setArg("plain", R"({"ssid":"Garage","password":"<fixture-long-password>"})");
+    mockStringConstructorFailureValue = "<fixture-long-password>";
+    WifiClientApiService::handleApiNetworksSave(unavailable, runtime, allow, nullptr, nullptr, nullptr);
+    mockStringConstructorFailureValue = nullptr;
+    TEST_ASSERT_EQUAL_INT(503, unavailable.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, probe.upsertCalls);
+
+    WebServer truncated;
+    truncated.setArg("plain", R"({"ssid":"Garage","password":"\u0000suffix"})");
+    WifiClientApiService::handleApiNetworksSave(truncated, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(400, truncated.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, probe.upsertCalls);
+
+    WebServer open;
+    open.setArg("plain", R"({"ssid":"Garage","password":""})");
+    WifiClientApiService::handleApiNetworksSave(open, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, open.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, probe.upsertCalls);
+    TEST_ASSERT_TRUE(probe.upsertRequest.hasPassword);
+    TEST_ASSERT_EQUAL_STRING("", probe.upsertRequest.password.c_str());
+}
+
 void test_saved_network_delete_failure_is_not_reported_as_success() {
     WebServer server(80);
     Probe probe;
-    probe.deleteResult = false;
-    server.setArg("plain", "{\"index\":2}");
+    probe.deleteResult = SlotActionStatus::Failed;
+    server.setArg("plain", R"({"index":2,"expectedSsid":"Garage"})");
 
     WifiClientApiService::handleApiNetworksDelete(server, makeRuntime(probe), allow, nullptr, nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(404, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, probe.deleteCalls);
-    TEST_ASSERT_EQUAL_UINT(2u, probe.testedIndex);
+    TEST_ASSERT_EQUAL_UINT(2u, probe.slotRequest.index);
     TEST_ASSERT_TRUE(contains(server.lastBody, "network_delete_failed"));
 }
 
 void test_saved_network_connect_failure_is_not_reported_as_success() {
     WebServer server(80);
     Probe probe;
-    probe.testResult = false;
-    server.setArg("plain", "{\"index\":1}");
+    probe.testResult = SlotActionStatus::Failed;
+    server.setArg("plain", R"({"index":1,"expectedSsid":"Garage"})");
 
     WifiClientApiService::handleApiNetworksTest(server, makeRuntime(probe), allow, nullptr, nullptr, nullptr);
 
     TEST_ASSERT_EQUAL_INT(404, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, probe.testCalls);
-    TEST_ASSERT_EQUAL_UINT(1u, probe.testedIndex);
+    TEST_ASSERT_EQUAL_UINT(1u, probe.slotRequest.index);
     TEST_ASSERT_TRUE(contains(server.lastBody, "network_test_failed"));
 }
 
 void test_priority_batch_validates_all_entries_before_callback() {
     WebServer server(80);
     Probe probe;
-    server.setArg("plain", "{\"updates\":[{\"index\":0,\"priority\":1},{\"index\":0,\"priority\":2}]}");
+    server.setArg("plain", R"({"updates":[{"index":0,"priority":1,"expectedSsid":"One","expectedPriority":0},)"
+                          R"({"index":0,"priority":2,"expectedSsid":"Two","expectedPriority":1}]})");
 
     WifiClientApiService::handleApiNetworksPriorities(
         server, makeRuntime(probe), allow, nullptr, nullptr, nullptr);
@@ -259,11 +290,42 @@ void test_priority_batch_validates_all_entries_before_callback() {
     TEST_ASSERT_EQUAL_INT(0, probe.priorityCalls);
 }
 
+void test_slot_actions_and_reorder_require_well_formed_preconditions() {
+    Probe probe;
+    const auto runtime = makeRuntime(probe);
+    for (const auto handler : {WifiClientApiService::handleApiNetworksDelete,
+                               WifiClientApiService::handleApiNetworksTest}) {
+        for (const char* body : {R"({"index":0})", R"({"index":0,"expectedSsid":""})",
+                                 R"({"index":0,"expectedSsid":"Garage\u0000suffix"})",
+                                 R"({"index":0,"expectedSsid":3})", R"({"index":4,"expectedSsid":"Garage"})"}) {
+            WebServer invalid;
+            invalid.setArg("plain", body);
+            handler(invalid, runtime, allow, nullptr, nullptr, nullptr);
+            TEST_ASSERT_EQUAL_INT(400, invalid.lastStatusCode);
+        }
+    }
+    for (const char* body : {R"({"updates":[{"index":0,"priority":1}]})",
+                             R"({"updates":[{"index":0,"priority":1,"expectedPriority":0}]})",
+                             R"({"updates":[{"index":0,"priority":1,"expectedSsid":"One"}]})",
+                             R"({"updates":[{"index":0,"priority":1,"expectedSsid":"One","expectedPriority":256}]})",
+                             R"({"updates":[{"index":0,"priority":1,"expectedSsid":"One","expectedPriority":-1}]})",
+                             R"({"updates":[{"index":0,"priority":1,"expectedSsid":"One","expectedPriority":0.5}]})"}) {
+        WebServer invalid;
+        invalid.setArg("plain", body);
+        WifiClientApiService::handleApiNetworksPriorities(invalid, runtime, allow, nullptr, nullptr, nullptr);
+        TEST_ASSERT_EQUAL_INT(400, invalid.lastStatusCode);
+    }
+    TEST_ASSERT_EQUAL_INT(0, probe.deleteCalls);
+    TEST_ASSERT_EQUAL_INT(0, probe.testCalls);
+    TEST_ASSERT_EQUAL_INT(0, probe.priorityCalls);
+}
+
 void test_priority_batch_maps_persist_failure_to_500() {
     WebServer server(80);
     Probe probe;
     probe.priorityResult = WifiClientApiService::PriorityUpdateStatus::PersistFailed;
-    server.setArg("plain", "{\"updates\":[{\"index\":0,\"priority\":1},{\"index\":1,\"priority\":0}]}");
+    server.setArg("plain", R"({"updates":[{"index":0,"priority":1,"expectedSsid":" One ","expectedPriority":255},)"
+                          R"({"index":1,"priority":0,"expectedSsid":"Two","expectedPriority":1}]})");
 
     WifiClientApiService::handleApiNetworksPriorities(
         server, makeRuntime(probe), allow, nullptr, nullptr, nullptr);
@@ -277,7 +339,8 @@ void test_priority_batch_maps_persist_failure_to_500() {
 void test_priority_batch_success_returns_200_after_one_callback() {
     WebServer server(80);
     Probe probe;
-    server.setArg("plain", "{\"updates\":[{\"index\":0,\"priority\":1},{\"index\":1,\"priority\":0}]}");
+    server.setArg("plain", R"({"updates":[{"index":0,"priority":1,"expectedSsid":" One ","expectedPriority":255},)"
+                          R"({"index":1,"priority":0,"expectedSsid":"Two","expectedPriority":1}]})");
 
     WifiClientApiService::handleApiNetworksPriorities(
         server, makeRuntime(probe), allow, nullptr, nullptr, nullptr);
@@ -285,6 +348,8 @@ void test_priority_batch_success_returns_200_after_one_callback() {
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, probe.priorityCalls);
     TEST_ASSERT_EQUAL_UINT(2u, probe.updates.size());
+    TEST_ASSERT_EQUAL_STRING(" One ", probe.updates[0].expectedSsid.c_str());
+    TEST_ASSERT_EQUAL_UINT8(255, probe.updates[0].expectedPriority);
 }
 
 void test_mutating_json_routes_require_exact_roots_and_accept_valid_requests() {
@@ -305,19 +370,19 @@ void test_mutating_json_routes_require_exact_roots_and_accept_valid_requests() {
     TEST_ASSERT_EQUAL_INT(0, probe.upsertCalls);
 
     WebServer remove(80);
-    remove.setArg("plain", "{\"index\":2}{\"index\":0}");
+    remove.setArg("plain", R"({"index":2,"expectedSsid":"Garage"}{"index":0})");
     WifiClientApiService::handleApiNetworksDelete(remove, runtime, allow, nullptr, nullptr, nullptr);
     TEST_ASSERT_EQUAL_INT(400, remove.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(0, probe.deleteCalls);
 
     WebServer priorities(80);
-    priorities.setArg("plain", "{\"updates\":[{\"index\":0,\"priority\":1}]}x");
+    priorities.setArg("plain", R"({"updates":[{"index":0,"priority":1,"expectedSsid":"Garage","expectedPriority":0}]}x)");
     WifiClientApiService::handleApiNetworksPriorities(priorities, runtime, allow, nullptr, nullptr, nullptr);
     TEST_ASSERT_EQUAL_INT(400, priorities.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(0, probe.priorityCalls);
 
     WebServer test(80);
-    test.setArg("plain", "{\"index\":1}{\"index\":0}");
+    test.setArg("plain", R"({"index":1,"expectedSsid":"Garage"}{"index":0})");
     WifiClientApiService::handleApiNetworksTest(test, runtime, allow, nullptr, nullptr, nullptr);
     TEST_ASSERT_EQUAL_INT(400, test.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(0, probe.testCalls);
@@ -335,19 +400,19 @@ void test_mutating_json_routes_require_exact_roots_and_accept_valid_requests() {
     TEST_ASSERT_EQUAL_INT(1, probe.upsertCalls);
 
     WebServer validRemove(80);
-    validRemove.setArg("plain", "{\"index\":2}");
+    validRemove.setArg("plain", R"({"index":2,"expectedSsid":"Garage"})");
     WifiClientApiService::handleApiNetworksDelete(validRemove, runtime, allow, nullptr, nullptr, nullptr);
     TEST_ASSERT_EQUAL_INT(200, validRemove.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, probe.deleteCalls);
 
     WebServer validPriorities(80);
-    validPriorities.setArg("plain", "{\"updates\":[{\"index\":0,\"priority\":1}]}");
+    validPriorities.setArg("plain", R"({"updates":[{"index":0,"priority":1,"expectedSsid":"Garage","expectedPriority":0}]})");
     WifiClientApiService::handleApiNetworksPriorities(validPriorities, runtime, allow, nullptr, nullptr, nullptr);
     TEST_ASSERT_EQUAL_INT(200, validPriorities.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, probe.priorityCalls);
 
     WebServer validTest(80);
-    validTest.setArg("plain", "{\"index\":1}");
+    validTest.setArg("plain", R"({"index":1,"expectedSsid":"Garage"})");
     WifiClientApiService::handleApiNetworksTest(validTest, runtime, allow, nullptr, nullptr, nullptr);
     TEST_ASSERT_EQUAL_INT(200, validTest.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, probe.testCalls);
@@ -400,10 +465,12 @@ int main() {
     RUN_TEST(test_maintenance_enable_starts_now_without_deferred_boot_message);
     RUN_TEST(test_maintenance_saved_network_test_starts_live_connection);
     RUN_TEST(test_saved_network_upsert_failure_is_not_reported_as_success);
-    RUN_TEST(test_network_save_parses_optional_exact_slot_identity_and_priority);
+    RUN_TEST(test_network_save_requires_exact_identity_for_an_indexed_request);
+    RUN_TEST(test_password_input_allocation_failure_cannot_become_open_network);
     RUN_TEST(test_saved_network_delete_failure_is_not_reported_as_success);
     RUN_TEST(test_saved_network_connect_failure_is_not_reported_as_success);
     RUN_TEST(test_priority_batch_validates_all_entries_before_callback);
+    RUN_TEST(test_slot_actions_and_reorder_require_well_formed_preconditions);
     RUN_TEST(test_priority_batch_maps_persist_failure_to_500);
     RUN_TEST(test_priority_batch_success_returns_200_after_one_callback);
     RUN_TEST(test_mutating_json_routes_require_exact_roots_and_accept_valid_requests);

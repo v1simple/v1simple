@@ -69,16 +69,22 @@
     let wifiOrdering = $state(false);
     let wifiScan = $state(createWifiScanState());
     let wifiEditor = $state(createWifiEditorState());
-    let wifiScanSlotSsid = $state();
     let wifiEditorSlotSsid = $state();
+    let wifiScanSelectedSlotIndex = $state(null);
+    let wifiEditorEnteredSlotIndex = $state(null);
+    const wifiScanTargetIndex = $derived(
+        wifiScan.targetIndex ?? (wifiScan.selectedNetwork ? wifiScanSelectedSlotIndex : null));
+    const wifiEditorTargetIndex = $derived(wifiEditor.index ?? wifiEditorEnteredSlotIndex);
     const wifiScanSlotChanged = $derived(
-        wifiScan.targetIndex !== null && wifiSlotSsid(wifiScan.targetIndex) !== wifiScanSlotSsid);
+        wifiSaveTargetChanged(wifiScanTargetIndex, wifiScan.selectedNetwork?.ssid,
+            wifiScan.targetIndex === null ? wifiScan.selectedNetwork?.ssid : ''));
     const wifiEditorSlotChanged = $derived(
-        wifiEditor.index !== null && wifiSlotSsid(wifiEditor.index) !== wifiEditorSlotSsid);
+        wifiSaveTargetChanged(wifiEditorTargetIndex, wifiEditor.ssid,
+            wifiEditor.index === null ? wifiEditor.ssid : wifiEditorSlotSsid));
     const wifiEditorAppendUnavailable = $derived(wifiEditor.priority === null &&
-        wifiAppendUnavailable(wifiUpsertSlotIndex(wifiEditor.index, wifiEditor.ssid)));
+        wifiAppendUnavailable(wifiEditorTargetIndex));
     const wifiScanAppendUnavailable = $derived(wifiScan.selectedNetwork &&
-        wifiAppendUnavailable(wifiUpsertSlotIndex(wifiScan.targetIndex, wifiScan.selectedNetwork.ssid)));
+        wifiAppendUnavailable(wifiScanTargetIndex));
     let wifiPoll = null;
     let wifiStatusFetchPromise = null;
     let wifiStatusRunId = 0;
@@ -92,6 +98,7 @@
     let wifiModalLoading = $state(false);
     const WIFI_STATUS_ERROR_TEXT = 'Failed to load WiFi status';
     const WIFI_NETWORKS_ERROR_TEXT = 'Failed to load saved WiFi networks';
+    const WIFI_NETWORKS_CHANGED_TEXT = 'Saved WiFi networks changed. Review the list before trying again.';
     const WIFI_SCAN_START_ERROR_TEXT = 'Failed to start WiFi scan';
     const WIFI_SCAN_ERROR_TEXT = 'Failed to update WiFi scan';
     const WIFI_TEST_POLL_INTERVAL_MS = 1000;
@@ -329,7 +336,7 @@
             .filter((change) => change.settled).map((change) => change.id));
         wifiNetworksLoading = true;
         try {
-            const res = await fetchJsonWithTimeout('/api/wifi/networks');
+            const res = await fetchJsonWithTimeout('/api/wifi/networks', { cache: 'no-store' });
             if (!isCurrent()) return;
             if (res.ok && validWifiSlots(res.data?.slots)) {
                 const data = res.data;
@@ -365,8 +372,15 @@
         return savedWifiSlots.find((slot) => slot.index === index)?.ssid;
     }
 
-    function wifiUpsertSlotIndex(index, ssid) {
-        return index ?? savedWifiSlots.find((slot) => slot.ssid === ssid)?.index ?? null;
+    function wifiSlotIndexForSsid(ssid) {
+        return ssid ? savedWifiSlots.find((slot) => slot.ssid === ssid)?.index ?? null : null;
+    }
+
+    function wifiSaveTargetChanged(index, ssid, expectedSsid) {
+        if (index !== null) return wifiSlotSsid(index) !== expectedSsid;
+        // A draft that began as a create stays a create. Later readback may
+        // invalidate it, but must not turn a retry into a credential update.
+        return wifiSlotIndexForSsid(ssid) !== null;
     }
 
     function wifiSlotChangePending(index) {
@@ -396,21 +410,21 @@
 
         const index = currentConnectedSlotIndex();
         if (index !== null) {
-            return Number(slot.index) === index;
+            return slot.index === index && (!wifiStatus.connectedSSID || slot.ssid === wifiStatus.connectedSSID);
         }
 
         return Boolean(wifiStatus.connectedSSID && slot.ssid === wifiStatus.connectedSSID);
     }
 
     function currentConnectedSlotIndex() {
-        const index = Number(wifiStatus.connectedSlotIndex);
+        const index = wifiStatus.connectedSlotIndex;
         return Number.isInteger(index) && index >= 0 ? index : null;
     }
 
     function currentConnectedSlot() {
         const index = currentConnectedSlotIndex();
         if (index === null) return null;
-        return savedWifiSlots.find((slot) => Number(slot.index) === index) || null;
+        return savedWifiSlots.find(isSlotConnected) || null;
     }
 
     function currentConnectedSlotText() {
@@ -430,10 +444,8 @@
         return parts.join(' • ');
     }
 
-    function sortedConfiguredWifiSlots() {
-        return savedWifiSlots
-            .filter(slotConfigured)
-            .sort((a, b) => a.priority - b.priority || a.index - b.index);
+    function compareWifiPriority(a, b) {
+        return a.priority - b.priority || b.lastConnectedOrder - a.lastConnectedOrder || a.index - b.index;
     }
 
     function sortedWifiSlots() {
@@ -446,7 +458,7 @@
             const bConfigured = slotConfigured(b);
             if (aConfigured !== bConfigured) return aConfigured ? -1 : 1;
             if (aConfigured && bConfigured) {
-                return a.priority - b.priority || a.index - b.index;
+                return compareWifiPriority(a, b);
             }
             return a.index - b.index;
         });
@@ -465,27 +477,30 @@
     }
 
     function wifiEditorDefaultPriority() {
-        const index = wifiUpsertSlotIndex(wifiEditor.index, wifiEditor.ssid);
-        return savedWifiSlots.find((slot) => slot.index === index && slotConfigured(slot))?.priority ??
+        return savedWifiSlots.find((slot) => slot.index === wifiEditorTargetIndex && slotConfigured(slot))?.priority ??
             Math.min(255, nextWifiPriority());
     }
 
     function wifiPriorityUpdates(slot, direction) {
-        const configured = sortedConfiguredWifiSlots();
-        const position = configured.findIndex((candidate) => candidate.index === slot.index);
+        const configured = savedWifiSlots.filter(slotConfigured).sort(compareWifiPriority);
+        const position = configured.findIndex((candidate) =>
+            candidate.index === slot.index && candidate.ssid === slot.ssid && candidate.priority === slot.priority);
         const targetPosition = position + direction;
         if (position < 0 || targetPosition < 0 || targetPosition >= configured.length) return [];
-
         [configured[position], configured[targetPosition]] = [configured[targetPosition], configured[position]];
-        const updates = configured.flatMap((candidate, priority) =>
-            candidate.priority === priority ? [] : [{ index: candidate.index, priority }]);
-        return updates.some((update) => wifiSlotChangePending(update.index)) ? [] : updates;
+        const updates = configured.map((candidate, priority) => ({
+            index: candidate.index,
+            priority,
+            expectedSsid: candidate.ssid,
+            expectedPriority: candidate.priority
+        }));
+        return updates.some((update) => update.priority !== update.expectedPriority &&
+            wifiSlotChangePending(update.index)) ? [] : updates;
     }
 
     async function startWifiScan(targetIndex = wifiScan.targetIndex) {
         const rescanning = wifiScan.open && targetIndex === wifiScan.targetIndex;
         if (wifiControlsDisabled || wifiSlotChangePending(targetIndex) || (rescanning && wifiScanSlotChanged)) return;
-        if (!rescanning) wifiScanSlotSsid = wifiSlotSsid(targetIndex);
         wifiScan = beginWifiScan(wifiScan, targetIndex);
         const runId = wifiScan.runId;
         stopWifiPoll();
@@ -563,7 +578,20 @@
     }
 
     function selectNetwork(network) {
+        wifiScanSelectedSlotIndex = wifiSlotIndexForSsid(network.ssid);
         wifiScan = selectWifiScanNetwork(wifiScan, network);
+    }
+
+    function postSavedWifiNetwork(body) {
+        return fetchWithTimeout('/api/wifi/networks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        }, undefined, async (response) => ({
+            ok: response.ok,
+            slotChanged: response.status === 409 &&
+                (await response.json().catch(() => null))?.error === 'network_slot_changed'
+        }));
     }
 
     async function saveSelectedScanNetwork() {
@@ -582,7 +610,7 @@
         const secure = wifiScan.selectedNetwork.secure;
         const password = wifiScan.password;
         const targetIndex = wifiScan.targetIndex;
-        const pendingIndex = wifiUpsertSlotIndex(targetIndex, ssid);
+        const pendingIndex = wifiScanTargetIndex;
         if (wifiSlotChangePending(pendingIndex)) return;
         const submittedRunId = wifiScan.runId;
         wifiScan = setWifiScanSaving(wifiScan, true);
@@ -595,20 +623,16 @@
                 // Omission preserves old credentials; an open scan result clears them.
                 password: secure ? password : ''
             };
-            if (targetIndex !== null) {
-                body.index = targetIndex;
-                body.expectedSsid = wifiScanSlotSsid ?? '';
+            if (pendingIndex !== null) {
+                body.index = pendingIndex;
+                body.expectedSsid = targetIndex === null ? ssid : '';
             }
 
-            const res = await fetchWithTimeout('/api/wifi/networks', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            });
+            const res = await postSavedWifiNetwork(body);
 
             if (!componentMounted) return;
             if (!res.ok) {
-                message = { type: 'error', text: 'Failed to save WiFi network' };
+                message = { type: 'error', text: res.slotChanged ? WIFI_NETWORKS_CHANGED_TEXT : 'Failed to save WiFi network' };
                 return;
             }
 
@@ -713,7 +737,8 @@
 
     function openWifiEditor(slotIndex = null, seed = {}) {
         if (wifiControlsDisabled || wifiSlotChangePending(slotIndex)) return;
-        wifiEditorSlotSsid = wifiSlotSsid(slotIndex);
+        wifiEditorSlotSsid = slotIndex === null ? undefined : seed.ssid ?? '';
+        wifiEditorEnteredSlotIndex = null;
         wifiEditor = openWifiEditorState(slotIndex, seed);
     }
 
@@ -736,25 +761,30 @@
         }
     }
 
+    function enterWifiSsid(ssid) {
+        if (ssid !== wifiEditor.ssid) wifiEditorEnteredSlotIndex = wifiSlotIndexForSsid(ssid);
+        wifiEditor.ssid = ssid;
+    }
+
     async function saveWifiEditor() {
         const body = buildWifiEditorRequest(wifiEditor, wifiEditorSlotSsid ?? '');
         if (wifiControlsDisabled || wifiEditorSlotChanged || wifiEditorAppendUnavailable || !body || wifiNetworkActionInFlight ||
             (wifiOrdering && Object.hasOwn(body, 'priority'))) return;
-        const pendingIndex = wifiUpsertSlotIndex(wifiEditor.index, body.ssid);
+        const pendingIndex = wifiEditorTargetIndex;
         if (wifiSlotChangePending(pendingIndex)) return;
+        if (wifiEditor.index === null && pendingIndex !== null) {
+            body.index = pendingIndex;
+            body.expectedSsid = body.ssid;
+        }
 
         const submittedDraft = JSON.stringify(wifiEditor);
         wifiNetworkActionsInFlight += 1;
         const changeId = beginWifiSlotChange(pendingIndex);
         try {
-            const res = await fetchWithTimeout('/api/wifi/networks', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            });
+            const res = await postSavedWifiNetwork(body);
             if (!componentMounted) return;
             if (!res.ok) {
-                message = { type: 'error', text: 'Failed to save WiFi network' };
+                message = { type: 'error', text: res.slotChanged ? WIFI_NETWORKS_CHANGED_TEXT : 'Failed to save WiFi network' };
                 return;
             }
             message = { type: 'success', text: `Saved ${body.ssid}` };
@@ -778,11 +808,11 @@
             const res = await fetchWithTimeout('/api/wifi/networks/delete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ index: slot.index })
+                body: JSON.stringify({ index: slot.index, expectedSsid: slot.ssid })
             });
             if (!componentMounted) return;
             if (!res.ok) {
-                message = { type: 'error', text: 'Failed to delete WiFi network' };
+                message = { type: 'error', text: res.status === 409 ? WIFI_NETWORKS_CHANGED_TEXT : 'Failed to delete WiFi network' };
                 return;
             }
             message = { type: 'success', text: `Deleted ${slot.ssid}` };
@@ -805,9 +835,15 @@
             const res = await fetchWithTimeout('/api/wifi/networks/test', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ index: slot.index })
+                body: JSON.stringify({ index: slot.index, expectedSsid: slot.ssid })
             });
             if (runId !== wifiTestRunId) return;
+            if (res.status === 409) {
+                settleWifiSlotChange(beginWifiSlotChange(slot.index));
+                message = { type: 'error', text: WIFI_NETWORKS_CHANGED_TEXT };
+                await refreshWifiAfterMutation();
+                return;
+            }
             if (!res.ok) {
                 message = { type: 'error', text: `Failed to test ${slot.ssid}` };
                 return;
@@ -836,22 +872,25 @@
                 if (statusRunId !== wifiStatusRunId) status = null;
 
                 if (status?.state === 'connected') {
-                    const connectedIndex = Number(status.connectedSlotIndex);
-                    const hasConnectedIndex =
-                        Number.isInteger(connectedIndex) && connectedIndex >= 0;
-                    // A saved slot can be edited while Test is pending. Its
-                    // index alone cannot confirm the originally requested SSID.
-                    const targetConnected = hasConnectedIndex
-                        ? connectedIndex === Number(slot.index) &&
-                          (!status.connectedSSID || status.connectedSSID === slot.ssid)
-                        : status.connectedSSID === slot.ssid;
-                    if (targetConnected) {
-                        message = { type: 'success', text: `Connected to ${slot.ssid}` };
-                    } else {
+                    const connectedIndex = status.connectedSlotIndex;
+                    const connectedSsid = status.connectedSSID;
+                    const hasConnectedIndex = Number.isInteger(connectedIndex) && connectedIndex >= 0;
+                    // Status can still report a physical link whose saved
+                    // slot no longer owns it. Test requires the indexed link.
+                    if (!connectedSsid || (connectedSsid === slot.ssid && !hasConnectedIndex)) {
+                        message = { type: 'error', text: `Could not confirm connection to ${slot.ssid}` };
+                    } else if (connectedSsid !== slot.ssid) {
                         message = {
                             type: 'error',
-                            text: `Connection test reached ${status.connectedSSID || 'another saved network'}, not ${slot.ssid}`
+                            text: `Connection test reached ${connectedSsid}, not ${slot.ssid}`
                         };
+                    } else if (connectedIndex !== slot.index) {
+                        message = {
+                            type: 'error',
+                            text: `Connection test reached slot ${connectedIndex + 1}. Expected slot ${slot.index + 1}.`
+                        };
+                    } else {
+                        message = { type: 'success', text: `Connected to ${slot.ssid}` };
                     }
                     return;
                 }
@@ -895,7 +934,7 @@
             });
             if (!componentMounted) return;
             if (!res.ok) {
-                resultMessage = { type: 'error', text: 'Failed to reorder WiFi networks' };
+                resultMessage = { type: 'error', text: res.status === 409 ? WIFI_NETWORKS_CHANGED_TEXT : 'Failed to reorder WiFi networks' };
                 return;
             }
             resultMessage = { type: 'success', text: 'WiFi network priority updated' };
@@ -1390,7 +1429,7 @@
                     bind:wifiPassword={wifiScan.password}
                     wifiConnecting={wifiScan.saving}
                     saveBlocked={wifiControlsDisabled || wifiScanSlotChanged || wifiScanAppendUnavailable ||
-                        wifiSlotChangePending(wifiUpsertSlotIndex(wifiScan.targetIndex, wifiScan.selectedNetwork?.ssid))}
+                        wifiSlotChangePending(wifiScanTargetIndex)}
                     slotChanged={wifiScanSlotChanged}
                     appendUnavailable={Boolean(wifiScanAppendUnavailable)}
                     recovery={wifiReadbackNotice}
@@ -1446,7 +1485,7 @@
                                 id="wifi-editor-ssid"
                                 type="text"
                                 class="input w-full"
-                                bind:value={wifiEditor.ssid}
+                                bind:value={() => wifiEditor.ssid, enterWifiSsid}
                                 placeholder="Network name"
                             />
                         </div>
@@ -1520,7 +1559,7 @@
                             class="btn btn-primary"
                             onclick={saveWifiEditor}
                             disabled={wifiControlsDisabled || wifiEditorSlotChanged || wifiEditorAppendUnavailable ||
-                                wifiSlotChangePending(wifiUpsertSlotIndex(wifiEditor.index, wifiEditor.ssid)) ||
+                                wifiSlotChangePending(wifiEditorTargetIndex) ||
                                 wifiNetworkActionInFlight || (wifiOrdering && wifiEditor.priority !== null) || !wifiEditor.ssid}
                         >
                             {#if wifiNetworkActionInFlight}

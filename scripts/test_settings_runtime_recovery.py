@@ -6,7 +6,7 @@ The other carries the real recovery/dispatch methods through the connection
 coordinator and OBD runtime, with BLE links and peripheral replies scripted.
 Maintenance also follows the real restore API through its post-restore callback,
 periodic display application and a settings reload; panel writes are recorded.
-Saved WiFi edits and listing exercise the actual callers against the settings
+Saved WiFi actions exercise HTTP and manager admission against the settings
 store, then carry unavailable-password metadata through the browser editor.
 """
 from pathlib import Path
@@ -53,9 +53,12 @@ def build_and_run(build: Path) -> None:
     (build / "maintenance_restore_sync.inc").write_text(
         "void actualPostRestore(void* ctx) {" + callback + "}\n", encoding="utf-8")
     wifi = (ROOT / "src/wifi_client.cpp").read_text(encoding="utf-8")
-    (build / "wifi_credentials.inc").write_text(between(
+    wifi_owner = between(
         wifi, "std::vector<WifiClientApiService::SavedNetworkSlotPayload> WiFiManager::getSavedNetworkSlots() const",
-        "bool WiFiManager::deleteSavedNetwork("), encoding="utf-8")
+        "bool WiFiManager::disableWifiClient()")
+    wifi_owner += between(wifi, "WifiClientApiService::SlotActionStatus WiFiManager::testSavedNetwork(",
+                          "bool WiFiManager::enableWifiClientFromSavedCredentials()")
+    (build / "wifi_credentials.inc").write_text(wifi_owner, encoding="utf-8")
     bootstrap = between(source, "void DriveRuntime::initializeStorageAndProfiles()",
                         "void DriveRuntime::initializeBle(")
     bootstrap += between(maintenance, "void MaintenanceRuntime::initializeStorageAndProfiles()",

@@ -44,7 +44,9 @@ namespace WifiClientApiService {
 struct Runtime;
 struct SavedNetworkSlotPayload;
 struct SavedNetworkUpsertPayload;
+struct SavedNetworkSlotRequest;
 struct SavedNetworkPriorityUpdate;
+enum class SlotActionStatus : uint8_t;
 enum class PriorityUpdateStatus : uint8_t;
 } // namespace WifiClientApiService
 
@@ -324,11 +326,13 @@ class WiFiManager {
     bool setupWebServer();
     void checkAutoTimeout();
     std::vector<WifiClientApiService::SavedNetworkSlotPayload> getSavedNetworkSlots() const;
-    bool upsertSavedNetwork(const WifiClientApiService::SavedNetworkUpsertPayload& request, size_t& indexOut);
-    bool deleteSavedNetwork(size_t index);
+    WifiClientApiService::SlotActionStatus upsertSavedNetwork(
+        const WifiClientApiService::SavedNetworkUpsertPayload& request, size_t& indexOut);
+    WifiClientApiService::SlotActionStatus deleteSavedNetwork(const WifiClientApiService::SavedNetworkSlotRequest& request);
+    bool savedNetworkSlotMatches(const WifiClientApiService::SavedNetworkSlotRequest& request) const;
     WifiClientApiService::PriorityUpdateStatus updateSavedNetworkPriorities(
         const std::vector<WifiClientApiService::SavedNetworkPriorityUpdate>& updates);
-    bool testSavedNetwork(size_t index);
+    WifiClientApiService::SlotActionStatus testSavedNetwork(const WifiClientApiService::SavedNetworkSlotRequest& request);
     int selectSlotForNetworkConnect(const String& ssid) const;
     WifiStationLifecycle::Environment stationEnvironment() const;
     bool enableWifiClientFromSavedCredentials();

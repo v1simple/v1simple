@@ -120,7 +120,9 @@ export function buildWifiEditorRequest(state, expectedSsid) {
         body.index = state.index;
         if (expectedSsid !== undefined) body.expectedSsid = expectedSsid;
     }
-    if (state.password || state.mode !== 'edit' || !state.hasExistingPassword) {
+    const keepCurrentPassword = state.mode === 'edit' &&
+        (ssid === expectedSsid || state.hasExistingPassword);
+    if (state.password || !keepCurrentPassword) {
         body.password = state.password;
     }
     return body;

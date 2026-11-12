@@ -281,9 +281,9 @@ void test_failed_maintenance_return_ack_uses_bounded_retry_cadence() {
 
 void test_saved_network_test_persists_enable_before_replacing_runtime_activity() {
     const std::string client = readFile(projectRoot() + "/src/wifi_client.cpp");
-    const std::string adapter = extractFunctionBody(client, "bool WiFiManager::testSavedNetwork(");
+    const std::string adapter = extractFunctionBody(client, "WiFiManager::testSavedNetwork(");
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          adapter.find("station_.testSavedNetwork(stationEnvironment(), index)"));
+                          adapter.find("station_.testSavedNetwork(stationEnvironment(), request.index)"));
     const std::string station = readFile(projectRoot() + "/src/modules/wifi/wifi_station_lifecycle.cpp");
     const std::string body = extractFunctionBody(station, "bool WifiStationLifecycle::testSavedNetwork(");
     const size_t persistAt = body.find("setWifiClientEnabled(true)");
@@ -300,11 +300,11 @@ void test_saved_network_test_persists_enable_before_replacing_runtime_activity()
 void test_explicit_disconnect_arms_session_suppression_and_enable_test_clear_it() {
     const std::string client = readFile(projectRoot() + "/src/wifi_client.cpp");
     const std::string disconnectAdapter = extractFunctionBody(client, "void WiFiManager::disconnectFromNetwork(");
-    const std::string testAdapter = extractFunctionBody(client, "bool WiFiManager::testSavedNetwork(");
+    const std::string testAdapter = extractFunctionBody(client, "WiFiManager::testSavedNetwork(");
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           disconnectAdapter.find("station_.disconnectFromNetwork(stationEnvironment())"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          testAdapter.find("station_.testSavedNetwork(stationEnvironment(), index)"));
+                          testAdapter.find("station_.testSavedNetwork(stationEnvironment(), request.index)"));
     const std::string station = readFile(projectRoot() + "/src/modules/wifi/wifi_station_lifecycle.cpp");
     const std::string disconnect = extractFunctionBody(station, "void WifiStationLifecycle::disconnectFromNetwork(");
     const std::string test = extractFunctionBody(station, "bool WifiStationLifecycle::testSavedNetwork(");

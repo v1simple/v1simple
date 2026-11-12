@@ -374,7 +374,9 @@ void switchFromExistingLink(bool automatic, bool sameSsid, int outcome) {
         WiFi.scanState = 1;
         manager.station_.processMaintenanceAutoConnect(manager.stationEnvironment());
     } else {
-        require(manager.testSavedNetwork(targetSlot), "saved-network test admission");
+        require(manager.testSavedNetwork({static_cast<size_t>(targetSlot), target}) ==
+                    WifiClientApiService::SlotActionStatus::Success,
+                "saved-network test admission");
     }
     WiFi.staBeginSucceeds = outcome != 0;
     WiFi.staConnectSucceeds = outcome != 1;
@@ -434,7 +436,8 @@ void unavailableSavedCredentialNeverStartsAssociation() {
     WiFi = WiFiClass{};
     manager.settings_.value.wifiStaSlots[0].ssid = "Saved";
     manager.settings_.passwordUnavailable = true;
-    require(!manager.testSavedNetwork(0), "manual Test must defer while password authority is unresolved");
+    require(manager.testSavedNetwork({0, "Saved"}) == WifiClientApiService::SlotActionStatus::Failed,
+            "manual Test must defer while password authority is unresolved");
 
     manager.station_.selectSessionMode(true);
     WiFi.scanSsids = {"Saved"};
@@ -525,5 +528,14 @@ int main() {
     run("collision_candidate_and_mask", collisionAdvancesCandidateAndRetainsMask);
     run("normal_retry_interval_and_give_up", []() { normalRetryIntervalAndGiveUp(1000u); });
     run("normal_retry_uint32_wrap", []() { normalRetryIntervalAndGiveUp(0xffffff00u); });
+    run("restored_slot_cancels_staged_test", []() { restoreDuringSavedAttempt(false, false, false); });
+    run("restored_slot_preserves_unrelated_link_before_test", []() { restoreDuringSavedAttempt(false, true, false); });
+    run("restored_slot_rejects_late_test_collision", []() { restoreDuringSavedAttempt(true, false, false); });
+    run("restored_slot_cancels_automatic_candidate", []() { restoreDuringSavedAttempt(false, false, true); });
+    run("restored_slot_rebinds_moved_connected_network", []() { restoreChangesConnectedNetwork(true); });
+    run("restored_slot_retires_removed_connected_network", []() { restoreChangesConnectedNetwork(false); });
+    run("restored_disabled_client_cancels_test", []() { restoreDisablesSavedConnection(true); });
+    run("restored_disabled_client_retires_active_link", []() { restoreDisablesSavedConnection(false); });
+    run("restored_disabled_client_retires_colliding_link", []() { restoreDisablesSavedConnection(false, true); });
     return failures == 0 ? 0 : 1;
 }

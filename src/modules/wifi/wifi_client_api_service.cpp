@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 #include "json_exact_input.h"
 #include "settings_sanitize.h"
@@ -183,11 +184,27 @@ static bool parseIndexValue(JsonVariantConst value, size_t& indexOut) {
         return false;
     }
     const int parsed = value.as<int>();
-    if (parsed < 0) {
+    if (parsed < 0 || parsed >= static_cast<int>(SAVED_NETWORK_SLOT_COUNT)) {
         return false;
     }
     indexOut = static_cast<size_t>(parsed);
     return true;
+}
+
+static JsonRequestStatus parseExpectedSsid(JsonVariantConst field, bool allowEmpty, String& ssid,
+                                          const char*& errorMessageOut) {
+    const JsonString value = field.as<JsonString>();
+    if (value.isNull() || (!allowEmpty && value.size() == 0) || value.size() > MAX_WIFI_SSID_LEN ||
+        std::strlen(value.c_str()) != value.size()) {
+        errorMessageOut = "Invalid expected slot SSID";
+        return JsonRequestStatus::Invalid;
+    }
+    ssid = value.c_str();
+    if (ssid.length() != value.size()) {
+        errorMessageOut = "Expected slot SSID memory unavailable";
+        return JsonRequestStatus::MemoryUnavailable;
+    }
+    return JsonRequestStatus::Ok;
 }
 
 static JsonRequestStatus parseNetworksSaveRequest(WebServer& server, SavedNetworkUpsertPayload& request,
@@ -209,19 +226,13 @@ static JsonRequestStatus parseNetworksSaveRequest(WebServer& server, SavedNetwor
     }
 
     const JsonVariantConst expectedSsid = doc["expectedSsid"];
-    if (!expectedSsid.isUnbound()) {
-        const JsonString value = expectedSsid.as<JsonString>();
-        if (!request.hasIndex || value.isNull() || value.size() > MAX_WIFI_SSID_LEN ||
-            std::strlen(value.c_str()) != value.size()) {
-            errorMessageOut = "Invalid expected slot SSID";
-            return JsonRequestStatus::Invalid;
-        }
-        request.expectedSsid = value.c_str();
-        if (request.expectedSsid.length() != value.size()) {
-            errorMessageOut = "Expected slot SSID memory unavailable";
-            return JsonRequestStatus::MemoryUnavailable;
-        }
+    if (request.hasIndex) {
+        const JsonRequestStatus identity = parseExpectedSsid(expectedSsid, true, request.expectedSsid, errorMessageOut);
+        if (identity != JsonRequestStatus::Ok) return identity;
         request.hasExpectedSsid = true;
+    } else if (!expectedSsid.isUnbound()) {
+        errorMessageOut = "Invalid expected slot SSID";
+        return JsonRequestStatus::Invalid;
     }
 
     request.ssid = doc["ssid"] | "";
@@ -231,8 +242,17 @@ static JsonRequestStatus parseNetworksSaveRequest(WebServer& server, SavedNetwor
     }
 
     if (doc["password"].is<const char*>()) {
+        const JsonString password = doc["password"].as<JsonString>();
+        if (std::strlen(password.c_str()) != password.size()) {
+            errorMessageOut = "Invalid WiFi password";
+            return JsonRequestStatus::Invalid;
+        }
+        request.password = password.c_str();
+        if (request.password.length() != password.size()) {
+            errorMessageOut = "WiFi password memory unavailable";
+            return JsonRequestStatus::MemoryUnavailable;
+        }
         request.hasPassword = true;
-        request.password = String(doc["password"] | "");
     }
 
     if (doc["label"].is<const char*>()) {
@@ -253,20 +273,19 @@ static JsonRequestStatus parseNetworksSaveRequest(WebServer& server, SavedNetwor
     return JsonRequestStatus::Ok;
 }
 
-static JsonRequestStatus parseSlotIndexRequest(WebServer& server, size_t& indexOut, const char*& errorMessageOut) {
-    indexOut = 0;
-
+static JsonRequestStatus parseSlotActionRequest(WebServer& server, SavedNetworkSlotRequest& request,
+                                                const char*& errorMessageOut) {
     WifiJson::Document doc;
     const JsonRequestStatus status = deserializeExactJsonRequest(server, doc, errorMessageOut);
     if (status != JsonRequestStatus::Ok) {
         return status;
     }
 
-    if (!parseIndexValue(doc["index"], indexOut)) {
+    if (!parseIndexValue(doc["index"], request.index)) {
         errorMessageOut = "Invalid slot index";
         return JsonRequestStatus::Invalid;
     }
-    return JsonRequestStatus::Ok;
+    return parseExpectedSsid(doc["expectedSsid"], false, request.expectedSsid, errorMessageOut);
 }
 
 static JsonRequestStatus parsePriorityUpdatesRequest(WebServer& server,
@@ -298,22 +317,26 @@ static JsonRequestStatus parsePriorityUpdatesRequest(WebServer& server,
             return JsonRequestStatus::Invalid;
         }
         const JsonObjectConst item = value.as<JsonObjectConst>();
-        if (!item["index"].is<int>() || !item["priority"].is<int>()) {
-            errorMessageOut = "Priority index and value must be integers";
+        SavedNetworkPriorityUpdate update;
+        if (!parseIndexValue(item["index"], update.index) || !item["priority"].is<int>() ||
+            !item["expectedPriority"].is<uint8_t>()) {
+            errorMessageOut = "Invalid priority index or value";
             return JsonRequestStatus::Invalid;
         }
-        const int index = item["index"].as<int>();
         const int priority = item["priority"].as<int>();
-        if (index < 0 || index >= static_cast<int>(SAVED_NETWORK_SLOT_COUNT) || priority < 0 ||
-            priority >= static_cast<int>(SAVED_NETWORK_SLOT_COUNT) || seenIndices[index] ||
+        if (priority < 0 || priority >= static_cast<int>(SAVED_NETWORK_SLOT_COUNT) || seenIndices[update.index] ||
             seenPriorities[priority]) {
             errorMessageOut = "Invalid or duplicate priority update";
             return JsonRequestStatus::Invalid;
         }
-        seenIndices[index] = true;
+        const JsonRequestStatus identity = parseExpectedSsid(item["expectedSsid"], false, update.expectedSsid,
+                                                            errorMessageOut);
+        if (identity != JsonRequestStatus::Ok) return identity;
+        update.expectedPriority = item["expectedPriority"].as<uint8_t>();
+        update.priority = static_cast<uint8_t>(priority);
+        seenIndices[update.index] = true;
         seenPriorities[priority] = true;
-        updatesOut.push_back(
-            SavedNetworkPriorityUpdate{static_cast<size_t>(index), static_cast<uint8_t>(priority)});
+        updatesOut.push_back(std::move(update));
     }
     return JsonRequestStatus::Ok;
 }
@@ -379,6 +402,10 @@ static void sendNetworkTestFailed(WebServer& server) {
     doc["error"] = "network_test_failed";
     doc["message"] = "Failed to start saved network connection test";
     WifiApiResponse::sendJsonDocument(server, 404, doc);
+}
+
+static void sendNetworkSlotChanged(WebServer& server) {
+    server.send(409, "application/json", "{\"success\":false,\"error\":\"network_slot_changed\"}");
 }
 
 static void sendPriorityUpdateResult(WebServer& server, PriorityUpdateStatus status) {
@@ -554,7 +581,12 @@ static void handleNetworksSaveImpl(WebServer& server, const Runtime& runtime) {
     }
 
     size_t index = 0;
-    if (!runtime.upsertSavedNetwork(request, index, runtime.upsertSavedNetworkCtx)) {
+    const auto result = runtime.upsertSavedNetwork(request, index, runtime.upsertSavedNetworkCtx);
+    if (result == SlotActionStatus::Conflict) {
+        sendNetworkSlotChanged(server);
+        return;
+    }
+    if (result != SlotActionStatus::Success) {
         sendNetworkSaveFailed(server);
         return;
     }
@@ -572,20 +604,25 @@ static void handleNetworksDeleteImpl(WebServer& server, const Runtime& runtime) 
         return;
     }
 
-    size_t index = 0;
+    SavedNetworkSlotRequest request;
     const char* errorMessage = nullptr;
-    const JsonRequestStatus parseStatus = parseSlotIndexRequest(server, index, errorMessage);
+    const JsonRequestStatus parseStatus = parseSlotActionRequest(server, request, errorMessage);
     if (parseStatus != JsonRequestStatus::Ok) {
         sendRequestParseFailure(server, parseStatus, errorMessage);
         return;
     }
 
-    if (!runtime.deleteSavedNetwork(index, runtime.deleteSavedNetworkCtx)) {
+    const auto result = runtime.deleteSavedNetwork(request, runtime.deleteSavedNetworkCtx);
+    if (result == SlotActionStatus::Conflict) {
+        sendNetworkSlotChanged(server);
+        return;
+    }
+    if (result != SlotActionStatus::Success) {
         sendNetworkDeleteFailed(server);
         return;
     }
 
-    sendNetworkDeleted(server, index);
+    sendNetworkDeleted(server, request.index);
 }
 
 static void handleNetworksPrioritiesImpl(WebServer& server, const Runtime& runtime) {
@@ -619,20 +656,25 @@ static void handleNetworksTestImpl(WebServer& server, const Runtime& runtime) {
         return;
     }
 
-    size_t index = 0;
+    SavedNetworkSlotRequest request;
     const char* errorMessage = nullptr;
-    const JsonRequestStatus parseStatus = parseSlotIndexRequest(server, index, errorMessage);
+    const JsonRequestStatus parseStatus = parseSlotActionRequest(server, request, errorMessage);
     if (parseStatus != JsonRequestStatus::Ok) {
         sendRequestParseFailure(server, parseStatus, errorMessage);
         return;
     }
 
-    if (!runtime.testSavedNetwork(index, runtime.testSavedNetworkCtx)) {
+    const auto result = runtime.testSavedNetwork(request, runtime.testSavedNetworkCtx);
+    if (result == SlotActionStatus::Conflict) {
+        sendNetworkSlotChanged(server);
+        return;
+    }
+    if (result != SlotActionStatus::Success) {
         sendNetworkTestFailed(server);
         return;
     }
 
-    sendNetworkTestStarted(server, index);
+    sendNetworkTestStarted(server, request.index);
 }
 
 void handleApiStatus(WebServer& server, const Runtime& runtime, void (*markUiActivity)(void* ctx),

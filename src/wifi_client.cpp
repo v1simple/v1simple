@@ -117,17 +117,19 @@ int WiFiManager::selectSlotForNetworkConnect(const String& ssid) const {
     return -1;
 }
 
-bool WiFiManager::upsertSavedNetwork(const WifiClientApiService::SavedNetworkUpsertPayload& request, size_t& indexOut) {
+WifiClientApiService::SlotActionStatus WiFiManager::upsertSavedNetwork(
+    const WifiClientApiService::SavedNetworkUpsertPayload& request, size_t& indexOut) {
+    using WifiClientApiService::SlotActionStatus;
     const String ssid = sanitizeWifiClientSsidValue(request.ssid);
-    if (ssid.length() == 0) {
-        return false;
+    if (ssid.length() == 0 || request.hasIndex != request.hasExpectedSsid) {
+        return SlotActionStatus::Failed;
     }
 
     int selectedIndex = -1;
     const V1Settings& settings = settings_.get();
     if (request.hasIndex) {
         if (request.index >= kWifiStaSlotCount) {
-            return false;
+            return SlotActionStatus::Failed;
         }
         selectedIndex = static_cast<int>(request.index);
     } else {
@@ -135,15 +137,15 @@ bool WiFiManager::upsertSavedNetwork(const WifiClientApiService::SavedNetworkUps
     }
 
     if (selectedIndex < 0 || static_cast<size_t>(selectedIndex) >= kWifiStaSlotCount) {
-        return false;
+        return SlotActionStatus::Failed;
     }
 
     const size_t index = static_cast<size_t>(selectedIndex);
     const WifiStaSlot& currentSlot = settings.wifiStaSlots[index];
-    // Indexed forms identify the slot they opened. An omitted priority lets
-    // this storage-resolved request use the actual current order.
-    if (request.hasExpectedSsid && (!request.hasIndex || request.expectedSsid != currentSlot.ssid)) {
-        return false;
+    // The maintenance dispatcher resolves storage before calling this owner.
+    // An unindexed request creates a new entry; a known slot needs its identity.
+    if (request.hasIndex ? request.expectedSsid != currentSlot.ssid : currentSlot.isConfigured()) {
+        return SlotActionStatus::Conflict;
     }
     uint8_t priority = currentSlot.priority;
     if (request.hasPriority) {
@@ -152,81 +154,80 @@ bool WiFiManager::upsertSavedNetwork(const WifiClientApiService::SavedNetworkUps
         priority = 0;
         for (const WifiStaSlot& slot : settings.wifiStaSlots) {
             if (slot.isConfigured()) {
-                if (slot.priority == UINT8_MAX) return false;
+                if (slot.priority == UINT8_MAX) return SlotActionStatus::Failed;
                 priority = std::max(priority, static_cast<uint8_t>(slot.priority + 1));
             }
         }
     }
     const auto mutation = station_.savedNetworkMutation(index);
     bool nvsReadFailed = false;
-    const String password = request.hasPassword ? request.password : settings_.getWifiStaSlotPassword(index, &nvsReadFailed);
-    if (nvsReadFailed) return false;
-    const String label = request.hasLabel ? request.label : currentSlot.label;
+    String savedPassword;
+    if (!request.hasPassword) savedPassword = settings_.getWifiStaSlotPassword(index, &nvsReadFailed);
+    if (nvsReadFailed) return SlotActionStatus::Failed;
+    const String& password = request.hasPassword ? request.password : savedPassword;
+    const String& label = request.hasLabel ? request.label : currentSlot.label;
     if (!settings_.setWifiStaSlotCredentials(index, ssid, password, label, priority)) {
-        return false;
+        return SlotActionStatus::Failed;
     }
     station_.savedNetworkMutationCommitted(stationEnvironment(), index, mutation, "slot_upsert");
     indexOut = index;
-    return true;
+    return SlotActionStatus::Success;
 }
 
-bool WiFiManager::deleteSavedNetwork(size_t index) {
-    if (index >= kWifiStaSlotCount) {
-        return false;
-    }
+bool WiFiManager::savedNetworkSlotMatches(const WifiClientApiService::SavedNetworkSlotRequest& request) const {
+    return request.index < kWifiStaSlotCount && request.expectedSsid.length() != 0 &&
+           settings_.get().wifiStaSlots[request.index].ssid == request.expectedSsid;
+}
+
+WifiClientApiService::SlotActionStatus WiFiManager::deleteSavedNetwork(
+    const WifiClientApiService::SavedNetworkSlotRequest& request) {
+    using WifiClientApiService::SlotActionStatus;
+    if (!savedNetworkSlotMatches(request)) return SlotActionStatus::Conflict;
+    const size_t index = request.index;
     const auto mutation = station_.savedNetworkMutation(index);
     if (!settings_.clearWifiStaSlot(index)) {
-        return false;
+        return SlotActionStatus::Failed;
     }
     station_.savedNetworkMutationCommitted(stationEnvironment(), index, mutation, "slot_delete");
-    return true;
+    return SlotActionStatus::Success;
 }
 
 WifiClientApiService::PriorityUpdateStatus WiFiManager::updateSavedNetworkPriorities(
     const std::vector<WifiClientApiService::SavedNetworkPriorityUpdate>& updates) {
-    if (updates.empty() || updates.size() > kWifiStaSlotCount) {
-        return WifiClientApiService::PriorityUpdateStatus::Invalid;
-    }
+    using WifiClientApiService::PriorityUpdateStatus;
+    if (updates.empty() || updates.size() > kWifiStaSlotCount) return PriorityUpdateStatus::Invalid;
 
     bool seenIndices[kWifiStaSlotCount] = {};
     bool seenPriorities[kWifiStaSlotCount] = {};
-    uint8_t finalPriorities[kWifiStaSlotCount];
     const V1Settings& current = settings_.get();
-    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
-        finalPriorities[index] = current.wifiStaSlots[index].priority;
-    }
 
     std::vector<WifiStaPriorityUpdate> settingsUpdates;
     settingsUpdates.reserve(updates.size());
     for (const auto& update : updates) {
         if (update.index >= kWifiStaSlotCount || update.priority >= kWifiStaSlotCount || seenIndices[update.index] ||
             seenPriorities[update.priority]) {
-            return WifiClientApiService::PriorityUpdateStatus::Invalid;
+            return PriorityUpdateStatus::Invalid;
         }
-        if (!current.wifiStaSlots[update.index].isConfigured()) {
-            return WifiClientApiService::PriorityUpdateStatus::Conflict;
+        const WifiStaSlot& slot = current.wifiStaSlots[update.index];
+        if (!slot.isConfigured() || slot.ssid != update.expectedSsid || slot.priority != update.expectedPriority) {
+            return PriorityUpdateStatus::Conflict;
         }
         seenIndices[update.index] = true;
         seenPriorities[update.priority] = true;
-        finalPriorities[update.index] = update.priority;
-        settingsUpdates.push_back(WifiStaPriorityUpdate{update.index, update.priority});
+        if (slot.priority != update.priority) {
+            settingsUpdates.push_back(WifiStaPriorityUpdate{update.index, update.priority});
+        }
     }
 
-    bool finalSeen[kWifiStaSlotCount] = {};
     for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
-        if (!current.wifiStaSlots[index].isConfigured()) {
-            continue;
+        if (current.wifiStaSlots[index].isConfigured() && !seenIndices[index]) {
+            return PriorityUpdateStatus::Conflict;
         }
-        const uint8_t priority = finalPriorities[index];
-        if (priority >= kWifiStaSlotCount || finalSeen[priority]) {
-            return WifiClientApiService::PriorityUpdateStatus::Conflict;
-        }
-        finalSeen[priority] = true;
     }
 
+    if (settingsUpdates.empty()) return PriorityUpdateStatus::Success;
     const SettingsPersistResult result = settings_.applyWifiStaPriorityUpdates(settingsUpdates);
-    return result.success ? WifiClientApiService::PriorityUpdateStatus::Success
-                          : WifiClientApiService::PriorityUpdateStatus::PersistFailed;
+    return result.success ? PriorityUpdateStatus::Success : PriorityUpdateStatus::PersistFailed;
 }
 
 bool WiFiManager::disableWifiClient() {
@@ -256,7 +257,13 @@ bool WiFiManager::connectToNetwork(const String& ssid, const String& password, b
 }
 void WiFiManager::disconnectFromNetwork() { station_.disconnectFromNetwork(stationEnvironment()); }
 void WiFiManager::checkWifiClientStatus() { station_.checkWifiClientStatus(stationEnvironment()); }
-bool WiFiManager::testSavedNetwork(size_t index) { return station_.testSavedNetwork(stationEnvironment(), index); }
+WifiClientApiService::SlotActionStatus WiFiManager::testSavedNetwork(
+    const WifiClientApiService::SavedNetworkSlotRequest& request) {
+    using WifiClientApiService::SlotActionStatus;
+    if (!savedNetworkSlotMatches(request)) return SlotActionStatus::Conflict;
+    return station_.testSavedNetwork(stationEnvironment(), request.index) ? SlotActionStatus::Success
+                                                                         : SlotActionStatus::Failed;
+}
 bool WiFiManager::enableWifiClientFromSavedCredentials() {
     return station_.enableWifiClientFromSavedCredentials(stationEnvironment());
 }

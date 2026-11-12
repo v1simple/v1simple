@@ -463,6 +463,47 @@ class MaintenanceReadinessTests(unittest.TestCase):
 
 
 class CoordinatorTests(unittest.TestCase):
+    def test_colors_save_each_palette_even_when_a_custom_palette_is_already_saved(self):
+        for matches_a in (False, True):
+            with self.subTest(matches_a=matches_a), tempfile.TemporaryDirectory() as temporary:
+                runner = bench.Runner.__new__(bench.Runner)
+                runner.directory = Path(temporary)
+                runner.journal, runner.browser, runner.http = Mock(), Mock(), Mock()
+                runner.mode, runner.preview = Mock(), Mock()
+                saved = snapshot()["display"]
+                if matches_a:
+                    saved.update(bench.trial_patch("magenta", bench.BARS_A))
+                runner.http.display.side_effect = lambda: dict(saved)
+
+                def save(change, current):
+                    self.assertEqual(saved, current)
+                    self.assertTrue(any(saved[key] != value for key, value in change.items()))
+                    saved.update(change)
+                    return {"result": "PASS", "post_count": 1}
+
+                runner.browser.save_display.side_effect = save
+                runner.colors()
+                labels = (["custom_b", "band_colors", "custom_a"] if matches_a
+                          else ["custom_a", "custom_b", "band_colors"])
+                self.assertEqual(3, runner.journal.display_intent.call_count)
+                self.assertEqual(3, runner.browser.save_display.call_count)
+                self.assertEqual(6, runner.mode.call_count)
+                self.assertEqual([label + suffix for label in labels for suffix in ("_saved", "_rebooted")],
+                                 [call.args[0] for call in runner.preview.call_args_list])
+                for label in labels:
+                    receipt = json.loads((runner.directory / f"{label}-browser.json").read_text())
+                    self.assertEqual({"result": "PASS", "post_count": 1}, receipt)
+
+    def test_required_color_save_does_not_admit_concurrent_noop(self):
+        runner = bench.Runner.__new__(bench.Runner)
+        runner.journal, runner.browser, runner.http = Mock(), Mock(), Mock()
+        runner.http.display.return_value = snapshot()["display"]
+        patch = {"freq": runner.http.display.return_value["freq"]}
+        with self.assertRaisesRegex(bench.Incomplete, "requires a settings change"):
+            runner.save_display(patch, "fixture", require_change=True)
+        runner.journal.display_intent.assert_not_called()
+        runner.browser.save_display.assert_not_called()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

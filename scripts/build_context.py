@@ -276,7 +276,7 @@ def main() -> int:
     parser.add_argument("--env", default=os.environ.get("PIO_ENV", "waveshare-349"))
     parser.add_argument("--pio", default=os.environ.get("PIO_CMD", "pio"))
     parser.add_argument("--flash-policy", action="store_true")
-    parser.add_argument("--get", choices=("build_dir", "partitions", "python", "core_dir"))
+    parser.add_argument("--get", choices=("build_dir", "partitions", "arduino_dir", "python", "core_dir"))
     parser.add_argument("--resolve-platform", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--tools-json", help=argparse.SUPPRESS)
     args = parser.parse_args()

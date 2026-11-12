@@ -11,6 +11,15 @@ edge, boot hold, phone ownership and detector-operation gates still apply.
 The forced BLE tail drain remains active; queued V1 input can preempt sliders
 on the following tick.
 
+Slider paint is throttled. A pending brightness adjustment still reaches PWM
+when BOOT closes the menu or an alert takes over, without another slider
+frame. A power warning can suspend the menu and restore its pending brightness.
+Only fields the user edited are staged for persistence. An edit made before
+settings recovery completes stays in RAM and merges into recovered settings
+before the next save. Recovery refreshes unedited sliders and preserves an
+open preview's actual edits. Alert preemption schedules pending persistence
+without opening storage on the presentation path.
+
 `PowerModule::process` also reconciles recovered settings with current presence.
 An armed, absent detector with a newly enabled interval starts a full interval
 from recovery. Repeated ticks do not renew a running timer. Disabled auto-off
@@ -93,6 +102,11 @@ Auto-Push while the operation snapshot is invalid. Drive applies the detector's
 In-the-Box policy before requesting that admission decision. An invalid record
 leaves the detector connected and alert input available; a valid empty store
 retains normal Auto-Push, and a known pending job retains its target admission.
+While settings themselves are provisional, Drive still captures observations
+for the identified detector and defers ordinary connection Auto-Push. After
+recovery, it rechecks the live BLE session, device identity and durable
+operation admission, then resolves the slot and policy from current settings.
+A retired session drops the deferred request.
 The coordinator owns transient operation deadlines, capture/session boundaries,
 factory-send latches and maintenance-return retries. Its `process()` services
 those decisions before each AutoPush executor tick; the durable store and wire
@@ -145,6 +159,33 @@ writer cannot replace a ready or unavailable journal. Installed legacy journals
 without a mode field remain compatible when that field is proven absent.
 `test_settings_persistence` covers these paths through retry and fresh-manager
 reload with bounded NVS faults, including the three-read-fault HTTP regression.
+
+Full settings restore and profile deletion reserve their local transaction in
+NVS before writing a rollback journal. They authorize external writes only
+after the journal copies have been verified. The journal identifies its board
+and its LittleFS or SD participants. A separate witness on the SD card allows
+recovery from a healthy mirror when that card's journal payload is corrupt.
+Profile startup checks the participants before reconciling catalogs, including
+on deferred startup retry. A detached or different card leaves the rollback
+pending and blocks conflicting mutations. LittleFS never receives an SD-only
+credential snapshot. An unavailable restore credential also defers saved
+network Test and automatic association.
+
+After all participants converge, recovery records completion in NVS before
+removing the journal copies. A retained copy can then be cleaned up without
+replaying its payload over a later acknowledged save. Credential rollback
+requires proven key absence or exact value readback, including for open
+networks. Tests cover missing and wrong media, interrupted preparation and
+cleanup, NVS read failure and successful retry through fresh owners. These
+checks model the stores and reboot boundaries.
+
+Version 2 and 3 rollback journals lack a board and media witness. A legacy
+credential snapshot that identifies LittleFS can recover there. Other pending
+legacy journals require matching SD and LittleFS copies. An unpaired legacy
+journal is preserved because earlier firmware could leave a stale SD copy
+after accepting newer writes. A modern pending journal whose local NVS owner
+was erased is also preserved for explicit recovery. Keep the storage and
+rollback evidence together when investigating either case.
 
 Settings mutations in `settings_setters.cpp` validate every String in the
 rollback snapshot before changing live values, including scalar-only updates.

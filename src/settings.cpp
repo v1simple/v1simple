@@ -583,7 +583,32 @@ bool SettingsManager::ensureSettingsLoaded() {
         // Publishing it as an NVS recovery would unnecessarily restart sensors.
         if (recoveredNvs || restoredSettings) ++recoveryRevision_;
     }
+    if (!recoveryPending()) mergeLocalSliderAdjustments();
     return true;
+}
+
+bool SettingsManager::saveLocalSliderAdjustments(std::optional<uint8_t> brightness,
+                                                 std::optional<uint8_t> voiceVolume,
+                                                 bool deferPersistence) {
+    if (!brightness && !voiceVolume) return true;
+    if (brightness) pendingSliderBrightness_ = brightness;
+    if (voiceVolume) pendingSliderVoiceVolume_ = voiceVolume;
+    if (deferPersistence) {
+        if (!recoveryPending()) mergeLocalSliderAdjustments();
+        return false;
+    }
+    // The merge in ensureSettingsLoaded also schedules a retry if this
+    // immediate NVS write fails.
+    return ensureSettingsLoaded() && saveDeferredBackup();
+}
+
+void SettingsManager::mergeLocalSliderAdjustments() {
+    if (!pendingSliderBrightness_ && !pendingSliderVoiceVolume_) return;
+    if (pendingSliderBrightness_) settings_.brightness = *pendingSliderBrightness_;
+    if (pendingSliderVoiceVolume_) settings_.voiceVolume = *pendingSliderVoiceVolume_;
+    pendingSliderBrightness_.reset();
+    pendingSliderVoiceVolume_.reset();
+    if (!deferredPersistPending_) requestDeferredPersist();
 }
 
 bool SettingsManager::save() {

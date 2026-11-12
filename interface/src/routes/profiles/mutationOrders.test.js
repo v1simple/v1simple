@@ -12,7 +12,7 @@ function deferred() {
     const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
     return { promise, resolve, reject };
 }
-function installCatalog() {
+function installCatalog({ commitDelete = true, readCatalog = (data) => json(data) } = {}) {
     let durable = {
         name: 'Daily', description: 'original', schemaVersion: 4,
         settings: { xBand: true, kBand: true, kaBand: true, laser: true },
@@ -21,8 +21,11 @@ function installCatalog() {
         inTheBox: createDefaultInTheBoxSettings()
     };
     const pending = [];
+    let catalogReads = 0;
     vi.stubGlobal('fetch', vi.fn(async (url, init = {}) => {
-        if (url === '/api/v1/profiles') return json({ schemaVersion: 4, profiles: durable ? [durable] : [] });
+        if (url === '/api/v1/profiles') {
+            return readCatalog({ schemaVersion: 4, profiles: durable ? [durable] : [] }, ++catalogReads);
+        }
         if (url === '/api/v1/snapshot') return json({ available: true, address: 'AA:BB:CC:DD:EE:FF',
             settings: { bytes: [255,255,255,255,255,255] }, capabilities: { versionKnown: true, gen2: true },
             observations: { userBytes: { available: true, value: [255,255,255,255,255,255] } } });
@@ -31,7 +34,8 @@ function installCatalog() {
             const response = deferred();
             const payload = JSON.parse(init.body);
             // Persistence order is independent of response arrival, as on the device.
-            durable = url.endsWith('/delete') ? null : payload;
+            if (!url.endsWith('/delete')) durable = payload;
+            else if (commitDelete) durable = null;
             pending.push({ url, payload, ...response });
             return response.promise;
         }
@@ -133,7 +137,7 @@ describe('profile mutation ordering', () => {
     });
 
     it.each(['save', 'delete'])('releases mutation controls after a failed %s response', async (operation) => {
-        const state = installCatalog();
+        const state = installCatalog({ commitDelete: false });
         await editDaily();
         await fireEvent.click(operation === 'save' ? await saveControl('editor') : browseDelete());
         await waitFor(() => expect(state.pending).toHaveLength(1));
@@ -144,7 +148,7 @@ describe('profile mutation ordering', () => {
         expect(screen.getByLabelText('Description')).toHaveValue('updated');
     });
     it.each(['save', 'delete'])('releases mutation controls after a %s connection failure', async (operation) => {
-        const state = installCatalog();
+        const state = installCatalog({ commitDelete: false });
         await editDaily();
         await fireEvent.click(operation === 'save' ? await saveControl('editor') : browseDelete());
         await waitFor(() => expect(state.pending).toHaveLength(1));
@@ -153,6 +157,54 @@ describe('profile mutation ordering', () => {
         expect(screen.getByRole('button', { name: 'Save Profile' })).toBeEnabled();
         expect(browseDelete()).toBeEnabled();
         expect(screen.getByLabelText('Description')).toHaveValue('updated');
+    });
+
+    it.each(['lost response', '404'])('reconciles a committed Delete after a %s without repeating it', async (outcome) => {
+        const readback = deferred();
+        const state = installCatalog({
+            readCatalog: (data, count) => count === 2 ? readback.promise : json(data)
+        });
+        await editDaily();
+        await fireEvent.click(browseDelete());
+        await waitFor(() => expect(state.pending).toHaveLength(1));
+        expect(state.durable()).toBeNull();
+        const apply = screen.getByRole('button', { name: 'Apply saved profile to V1' });
+        expect(apply).toBeDisabled();
+        if (outcome === '404') state.pending[0].resolve(json({ error: 'Profile not found' }, 404));
+        else state.pending[0].reject(new Error('Delete reply lost after commit'));
+        await screen.findByText('Awaiting readback');
+        expect(browseDelete()).toBeDisabled();
+        expect(apply).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Save Profile' })).toBeDisabled();
+        readback.resolve(json({ schemaVersion: 4, profiles: [] }));
+        await screen.findByText('Profile "Daily" is no longer saved');
+        expect(screen.queryByText('Daily', { selector: '.font-medium' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Apply saved profile to V1' })).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Description')).toHaveValue('updated');
+        expect(screen.getByRole('button', { name: 'Save Profile' })).toBeEnabled();
+        expect(state.pending).toHaveLength(1);
+        expect(fetch.mock.calls.filter(([url]) => url === '/api/v1/profiles')).toHaveLength(2);
+    });
+
+    it('keeps an unresolved Delete unavailable and retries only the catalog read', async () => {
+        const state = installCatalog({
+            readCatalog: (data, count) => count === 2 ? json({}, 503) : json(data)
+        });
+        await editDaily();
+        await fireEvent.click(browseDelete());
+        await waitFor(() => expect(state.pending).toHaveLength(1));
+        state.pending[0].reject(new Error('Delete reply lost after commit'));
+        const retry = await screen.findByRole('button', { name: 'Reload saved profiles' });
+        expect(screen.getByRole('button', { name: 'Apply saved profile to V1' })).toBeDisabled();
+        expect(browseDelete()).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Save Profile' })).toBeDisabled();
+        await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'newer draft' } });
+        await fireEvent.click(retry);
+        await screen.findByText('Profile "Daily" is no longer saved');
+        expect(screen.queryByText('Daily', { selector: '.font-medium' })).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Description')).toHaveValue('newer draft');
+        expect(state.pending).toHaveLength(1);
+        expect(fetch.mock.calls.filter(([url]) => url === '/api/v1/profiles')).toHaveLength(3);
     });
 
 });

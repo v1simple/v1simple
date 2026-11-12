@@ -2,8 +2,10 @@
 
 #include <ArduinoJson.h>
 #include <algorithm>
+#include <cstring>
 
 #include "json_exact_input.h"
+#include "settings_sanitize.h"
 #include "wifi_api_response.h"
 #include "wifi_json_document.h"
 
@@ -204,6 +206,22 @@ static JsonRequestStatus parseNetworksSaveRequest(WebServer& server, SavedNetwor
             errorMessageOut = "Invalid slot index";
             return JsonRequestStatus::Invalid;
         }
+    }
+
+    const JsonVariantConst expectedSsid = doc["expectedSsid"];
+    if (!expectedSsid.isUnbound()) {
+        const JsonString value = expectedSsid.as<JsonString>();
+        if (!request.hasIndex || value.isNull() || value.size() > MAX_WIFI_SSID_LEN ||
+            std::strlen(value.c_str()) != value.size()) {
+            errorMessageOut = "Invalid expected slot SSID";
+            return JsonRequestStatus::Invalid;
+        }
+        request.expectedSsid = value.c_str();
+        if (request.expectedSsid.length() != value.size()) {
+            errorMessageOut = "Expected slot SSID memory unavailable";
+            return JsonRequestStatus::MemoryUnavailable;
+        }
+        request.hasExpectedSsid = true;
     }
 
     request.ssid = doc["ssid"] | "";

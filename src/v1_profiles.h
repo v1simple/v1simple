@@ -445,7 +445,8 @@ class V1ProfileManager {
     V1ProfileManager();
 
     // Initialize with the owning storage boundary. The fs overload remains for native tests.
-    bool begin(StorageManager& storage);
+    bool begin(StorageManager& storage, bool (*canOpenStorage)(void*) = nullptr,
+               void* recoveryContext = nullptr);
     bool begin(fs::FS* filesystem, fs::FS* importFilesystem = nullptr);
     bool isReady() const { return ready_; }
     // Retry deferred startup recovery without exposing an unverified primary.
@@ -490,6 +491,8 @@ class V1ProfileManager {
     bool usingSd_;
     bool ready_;
     uint32_t recoveryRetryAtMs_ = 0;
+    bool (*canOpenStorage_)(void*) = nullptr;
+    void* recoveryContext_ = nullptr;
     String profileDir_;
     mutable String lastError_; // Last error message for detailed reporting
     uint32_t catalogRevisionCounter_ = 1;

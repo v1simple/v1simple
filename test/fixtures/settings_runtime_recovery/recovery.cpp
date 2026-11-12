@@ -2,6 +2,7 @@
 #include "test/test_settings_persistence/test_settings_persistence.cpp"
 #undef main
 #include "test/mocks/runtime_presentation_source.h"
+#include "src/modules/touch/touch_ui_module.h"
 
 #include "test/mocks/battery_manager.h"
 #include "src/modules/power/power_module.cpp"
@@ -91,6 +92,7 @@ public:
   } connectionCycle_;
   ObdSettingsSyncModule obdSettingsSync_;
   RuntimePresentationSource presentation_{settings_};
+  TouchUiModule touchUi_;
   PowerModule power_;
   BatteryManager battery_;
   V1Display powerDisplay_;
@@ -112,6 +114,7 @@ public:
     obdSettingsSync_.begin(&settings_, &obd_);
   }
   void syncRecoveredSettings();
+  void serviceDeferredConnectionAutoPush() {}
   void processPeriodicMaintenance(uint32_t nowMs, bool connected, bool pressure,
                                   bool overloaded, bool drain);
   void logDisplayConfiguration(uint32_t) {}
@@ -268,8 +271,152 @@ void test_recovered_auto_off_starts_full_interval_without_new_detector_edge() {
   TEST_ASSERT_EQUAL_INT(1, runtime.battery_.powerOffCalls);
 }
 
+
+#include "src/modules/touch/touch_ui_module.cpp"
+void play_test_voice() {}
+
+void queueBrightnessTouch(uint16_t x, uint8_t count = 1) {
+    std::vector<uint8_t> frame(32, 0);
+    frame[1] = count;
+    frame[2] = static_cast<uint8_t>(x >> 8);
+    frame[3] = static_cast<uint8_t>(x);
+    frame[5] = 100;
+    Wire.queueRequestFrom(frame.size(), frame);
+}
+
+void beginLocalSettingsRecovery() {
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
+    source.mutableSettings().brightness = 87;
+    source.mutableSettings().voiceVolume = 55;
+    TEST_ASSERT_TRUE(source.save());
+    const String newest = activeNamespaceOrEmpty();
+    mock_preferences::set_fail_begin_for_namespace(newest.c_str());
+}
+
+void exerciseLocalBrightnessRecovery(bool recoverOnClose, bool liveAlert) {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, true);
+    beginLocalSettingsRecovery();
+    SettingsManager boot(storage, profiles);
+    boot.begin();
+    TEST_ASSERT_TRUE(boot.recoveryPending());
+    TEST_ASSERT_NOT_EQUAL(55, boot.get().voiceVolume);
+    V1Display display;
+    display.activeSliderFromTouch = 0;
+    RuntimePresentationSource presentation{boot};
+    TouchHandler touch;
+    TEST_ASSERT_TRUE(touch.begin());
+    TouchUiModule ui;
+    ui.begin(&display, &touch, &boot, {}, presentation);
+    auto tick = [&](uint32_t now, bool held) {
+        mockMillis = now;
+        return ui.process(now, held);
+    };
+    tick(1000, true);
+    queueBrightnessTouch(0, 0);
+    TEST_ASSERT_TRUE(tick(1400, false));
+    queueBrightnessTouch(600);
+    TEST_ASSERT_TRUE(tick(1505, false));
+    TEST_ASSERT_EQUAL_UINT8(80, display.lastSettingsBrightness);
+    queueBrightnessTouch(0, 0);
+    tick(2100, true);
+    if (recoverOnClose) mock_preferences::set_fail_begin_for_namespace(nullptr);
+    if (liveAlert) {
+        TEST_ASSERT_TRUE(ui.preemptForLiveAlert());
+    } else {
+        TEST_ASSERT_FALSE(tick(2500, false));
+    }
+    if (!recoverOnClose) {
+        TEST_ASSERT_TRUE(boot.recoveryPending());
+        TEST_ASSERT_EQUAL_UINT8(80, boot.localSliderBrightness());
+        // A normal reopen shows the pending choice even while NVS is unreadable.
+        tick(3100, true);
+        queueBrightnessTouch(0, 0);
+        TEST_ASSERT_TRUE(tick(3500, false));
+        TEST_ASSERT_EQUAL_UINT8(80, display.lastSettingsBrightness);
+        TEST_ASSERT_TRUE(ui.preemptForLiveAlert());
+        mock_preferences::set_fail_begin_for_namespace(nullptr);
+        mockMillis = 10000;
+        boot.serviceDeferredPersist(mockMillis);
+        mockMillis = 20000;
+        boot.serviceDeferredPersist(mockMillis);
+    }
+    TEST_ASSERT_FALSE(boot.recoveryPending());
+    SettingsManager reboot(storage, profiles);
+    reboot.load();
+    TEST_ASSERT_EQUAL_UINT8(80, reboot.get().brightness);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(55, reboot.get().voiceVolume,
+        "Changing brightness persisted a provisional speaker volume over untouched recovered state");
+}
+
+void test_local_brightness_adjustment_preserves_untouched_recovered_volume() {
+    exerciseLocalBrightnessRecovery(true, false);
+}
+
+void test_local_brightness_adjustment_waits_for_unavailable_settings() {
+    exerciseLocalBrightnessRecovery(false, false);
+}
+
+void test_local_brightness_preemption_defers_recovery_and_persistence() {
+    exerciseLocalBrightnessRecovery(false, true);
+}
+
+void test_recovery_updates_untouched_sliders_and_preserves_an_open_preview() {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, true);
+    beginLocalSettingsRecovery();
+    SettingsManager boot(storage, profiles);
+    boot.begin();
+    TEST_ASSERT_TRUE(boot.recoveryPending());
+    TEST_ASSERT_EQUAL_UINT8(75, boot.get().voiceVolume);
+    DriveRuntime runtime(boot);
+    V1Display display;
+    RuntimePresentationSource presentation{boot};
+    TouchHandler touch;
+    TEST_ASSERT_TRUE(touch.begin());
+    runtime.touchUi_.begin(&display, &touch, &boot, {}, presentation);
+    auto tick = [&](uint32_t now, bool held) {
+        mockMillis = now;
+        return runtime.touchUi_.process(now, held);
+    };
+    tick(1000, true);
+    queueBrightnessTouch(0, 0);
+    TEST_ASSERT_TRUE(tick(1400, false));
+    display.activeSliderFromTouch = 1;
+    queueBrightnessTouch(180); // Touch the already shown provisional 75%.
+    TEST_ASSERT_TRUE(tick(1500, false));
+    display.activeSliderFromTouch = 0;
+    queueBrightnessTouch(600);
+    TEST_ASSERT_TRUE(tick(1560, false));
+    TEST_ASSERT_EQUAL_UINT8(80, display.lastSettingsBrightness);
+
+    mock_preferences::set_fail_begin_for_namespace(nullptr);
+    TEST_ASSERT_TRUE(boot.setStealthEnabled(true).success);
+    runtime.syncRecoveredSettings();
+    TEST_ASSERT_EQUAL_UINT8(80, display.lastBrightness);
+    TEST_ASSERT_EQUAL_UINT8(55, appliedVoiceVolume);
+    queueBrightnessTouch(0, 0);
+    TEST_ASSERT_TRUE(tick(1700, false));
+    TEST_ASSERT_EQUAL_UINT8(80, display.lastSettingsBrightness);
+    TEST_ASSERT_EQUAL_UINT8(55, display.lastSettingsVolume);
+    tick(2100, true);
+    TEST_ASSERT_FALSE(tick(2500, false));
+
+    SettingsManager reboot(storage, profiles);
+    reboot.load();
+    TEST_ASSERT_EQUAL_UINT8(80, reboot.get().brightness);
+    TEST_ASSERT_EQUAL_UINT8(55, reboot.get().voiceVolume);
+    TEST_ASSERT_TRUE(reboot.get().stealthEnabled);
+}
+
 int main() {
   UNITY_BEGIN();
+    RUN_TEST(test_local_brightness_adjustment_preserves_untouched_recovered_volume);
+    RUN_TEST(test_local_brightness_adjustment_waits_for_unavailable_settings);
+    RUN_TEST(test_local_brightness_preemption_defers_recovery_and_persistence);
+    RUN_TEST(test_recovery_updates_untouched_sliders_and_preserves_an_open_preview);
   RUN_TEST(test_recovered_auto_off_starts_full_interval_without_new_detector_edge);
   RUN_TEST(test_service_recovery_restores_runtime_before_obd_sync);
   RUN_TEST(test_setter_recovery_restores_runtime_during_persistence_pressure);

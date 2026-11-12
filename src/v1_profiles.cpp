@@ -1366,13 +1366,17 @@ bool V1ProfileManager::recoverInterruptedSavesUnlocked(fs::FS& filesystem) {
     return true;
 }
 
-bool V1ProfileManager::begin(StorageManager& storage) {
+bool V1ProfileManager::begin(StorageManager& storage, bool (*canOpenStorage)(void*), void* recoveryContext) {
     storage_ = &storage;
     usingSd_ = storage.isSDCard();
-    return begin(storage.getFilesystem(), storage.getLittleFS());
+    canOpenStorage_ = canOpenStorage;
+    recoveryContext_ = recoveryContext;
+    return initialize(storage.getFilesystem(), storage.getLittleFS(), 500);
 }
 
 bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
+    canOpenStorage_ = nullptr;
+    recoveryContext_ = nullptr;
     return initialize(filesystem, importFilesystem, 500);
 }
 
@@ -1385,6 +1389,10 @@ bool V1ProfileManager::initialize(fs::FS* filesystem, fs::FS* importFilesystem, 
     if (!filesystem) {
         Serial.println("[V1Profiles] No filesystem provided");
         ;
+        return false;
+    }
+    if (canOpenStorage_ && !canOpenStorage_(recoveryContext_)) {
+        lastError_ = "Profile transaction participants unavailable";
         return false;
     }
 

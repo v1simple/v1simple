@@ -19,7 +19,6 @@ extern "C" {
 
 namespace {
 
-constexpr const char* kBleBondBackupPath = "/v1simple_ble_bonds.bin";
 constexpr UBaseType_t kBondBackupQueueDepth = 1;
 // Keep extra headroom for the rarely exercised filesystem write and retry path.
 constexpr uint32_t kBondBackupWriterStackSize = 6144;
@@ -41,6 +40,13 @@ struct BondBackupSnapshot {
     uint32_t recoveryEpoch = 0;
 
     int totalCount() const { return static_cast<int>(ourSecs.count + peerSecs.count); }
+    BondBackupHeader header() const {
+        BondBackupHeader result{};
+        memcpy(result.magic, kBleBondMagic, sizeof(result.magic));
+        result.ourSecCount = static_cast<uint32_t>(ourSecs.count);
+        result.peerSecCount = static_cast<uint32_t>(peerSecs.count);
+        return result;
+    }
 };
 
 static_assert(std::is_trivially_destructible<BondBackupSnapshot>::value,
@@ -107,10 +113,7 @@ int writeBondBackupSnapshot(fs::FS& sdFs, const BondBackupSnapshot& snapshot) {
         return -1;
     }
 
-    BondBackupHeader header = {};
-    memcpy(header.magic, kBleBondMagic, sizeof(header.magic));
-    header.ourSecCount = static_cast<uint32_t>(snapshot.ourSecs.count);
-    header.peerSecCount = static_cast<uint32_t>(snapshot.peerSecs.count);
+    const BondBackupHeader header = snapshot.header();
 
     bool ok = file.write(reinterpret_cast<const uint8_t*>(&header), sizeof(header)) == sizeof(header);
     if (ok && snapshot.ourSecs.count > 0) {
@@ -343,7 +346,7 @@ bool enqueueLatestSnapshot(BondBackupSnapshot* snapshot) {
     return false;
 }
 
-int enqueueCurrentBondSnapshotImpl(uint32_t* sequenceOut) {
+int enqueueCurrentBondSnapshotImpl(uint32_t* sequenceOut, uint64_t* identityOut = nullptr) {
     const uint32_t recoveryEpoch = bleBondRecoveryEpoch();
     if (bleBondRecoveryPending()) return -1;
     // NimBLE owns the live bond table, so capture it on the caller while the
@@ -365,6 +368,10 @@ int enqueueCurrentBondSnapshotImpl(uint32_t* sequenceOut) {
         snapshot->sequence = gBondBackupWriterState.nextSequence.fetch_add(1, std::memory_order_relaxed) + 1;
     }
     const uint32_t snapshotSequence = snapshot->sequence;
+    if (identityOut) {
+        *identityOut = identifyBleBondBackup(snapshot->header(), snapshot->ourSecs.entries.data(),
+                                             snapshot->peerSecs.entries.data());
+    }
 
     BondBackupWriterAdmission writerAdmission;
     if (!ensureBondBackupWriterReady()) {
@@ -392,9 +399,9 @@ int enqueueCurrentBleBondBackupSnapshot() {
     return enqueueCurrentBondSnapshotImpl(nullptr);
 }
 
-int backupCurrentBleBondsViaCore0AtBoot() {
+int backupCurrentBleBondsViaCore0AtBoot(uint64_t& identity) {
     uint32_t targetSequence = 0;
-    const int bondCount = enqueueCurrentBondSnapshotImpl(&targetSequence);
+    const int bondCount = enqueueCurrentBondSnapshotImpl(&targetSequence, &identity);
     if (bondCount < 0) {
         return -1;
     }

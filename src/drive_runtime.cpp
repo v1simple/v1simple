@@ -329,10 +329,12 @@ void DriveRuntime::syncRecoveredSettings() {
     obdSettingsSync_.begin(&settings_, &obd_);
     speed_.syncEnabledInputs(recovered.obdEnabled, recovered.gpsEnabled);
     alp_.begin(recovered.alpEnabled);
-    audio_set_volume(recovered.voiceVolume);
+    const bool applyBrightness = !power_.ownsDisplayPresentation();
+    const bool slidersActive = touchUi_.syncRecoveredSliderSettings(applyBrightness);
+    if (!slidersActive) audio_set_volume(recovered.voiceVolume);
     display_.updateColorTheme(makeDisplayStyleView(settings_));
     display_.forceNextRedraw();
-    if (!power_.ownsDisplayPresentation()) display_.setBrightness(recovered.brightness);
+    if (applyBrightness && !slidersActive) display_.setBrightness(recovered.brightness);
     ble_.setProxyRuntimeEnabled(recovered.proxyBLE, recovered.proxyName.c_str());
     connectionCycle_.requestRecoveredSettingsAdmission();
     observedSettingsRecoveryRevision_ = revision;
@@ -483,18 +485,19 @@ void DriveRuntime::servicePowerDisplayOwnership(uint32_t nowMs) {
     }
     (void)preview_.consumeEnded();
     display_.forceNextRedraw();
-    if (!touchUi_.restorePresentationIfOwned() && !displayPipeline_.restoreCurrentOwner(nowMs)) {
+    const bool slidersRestored = touchUi_.restorePresentationIfOwned();
+    if (!slidersRestored && !displayPipeline_.restoreCurrentOwner(nowMs)) {
         {
             const auto inputs = presentation_.captureForPaint();
             display_.showScanning(inputs.context());
         }
         presentProfileIndicator(settings_.get().activeSlot);
     }
-    if (restoreBrightness) {
-        const uint8_t savedBrightness = settings_.get().brightness;
-        display_.setBrightness(savedBrightness);
+    if (restoreBrightness && !slidersRestored) {
+        const uint8_t brightness = settings_.localSliderBrightness();
+        display_.setBrightness(brightness);
         Serial.printf("[Power] Restored display brightness=%u after shutdown abort\n",
-                      static_cast<unsigned>(savedBrightness));
+                      static_cast<unsigned>(brightness));
     }
 }
 
@@ -778,6 +781,7 @@ void DriveRuntime::processPeriodicMaintenance(uint32_t nowMs, bool bleConnected,
     // become the caller that finishes recovery and then overwrites the pairing
     // with a snapshot captured before the runtime adopted recovered settings.
     if (!settings_.recoveryPending()) obdSettingsSync_.process(nowMs);
+    if (!hardPressure) serviceDeferredConnectionAutoPush();
     if (!hardPressure) {
         ble_.serviceDeferredBondBackup(nowMs);
     }
@@ -1097,14 +1101,30 @@ void DriveRuntime::onV1Connected() {
         (void)self.devices_.getInTheBoxForAddressChecked(appSettingsAddress, appSettings);
     }
     self.quiet_.setInTheBoxSettings(appSettings, self.ble_.sessionGeneration());
+    self.pendingConnectionAutoPushSession_ = 0;
     if (self.settingsOperationCoordinator_.onStableConnection() !=
         SettingsOperationCoordinator::StableAdmission::AllowOrdinaryAutoPush) return;
-    const V1Settings& settings = self.settings_.get();
-    const int activeSlot = std::max(0, std::min(2, settings.activeSlot));
-    int selectedSlot = activeSlot;
+    self.processStableDetector(false);
+}
+
+void DriveRuntime::serviceDeferredConnectionAutoPush() {
+    if (pendingConnectionAutoPushSession_ == 0) return;
+    if (!ble_.isConnected() || pendingConnectionAutoPushSession_ != ble_.sessionGeneration()) {
+        pendingConnectionAutoPushSession_ = 0;
+        return;
+    }
+    if (settings_.recoveryPending()) return;
+    pendingConnectionAutoPushSession_ = 0;
+    if (settingsOperationCoordinator_.allowsOrdinaryAutoPush()) {
+        processStableDetector(true);
+    }
+}
+
+void DriveRuntime::processStableDetector(bool requireLiveAddress) {
+    const bool settingsReady = !settings_.recoveryPending();
     uint8_t defaultProfile = 0;
     String linkAddress;
-    NimBLEAddress connected = self.ble_.getConnectedAddress();
+    NimBLEAddress connected = ble_.getConnectedAddress();
     if (!connected.isNull()) {
         bool exactLiveIdentity = false;
         try {
@@ -1132,6 +1152,10 @@ void DriveRuntime::onV1Connected() {
     String fallbackAddress;
     const String* profileAddress = &linkAddress;
     if (connected.isNull()) {
+        // The saved fallback has no authority until recovery finishes. A
+        // deferred write also needs an identified live detector session.
+        if (!settingsReady || requireLiveAddress) return;
+        const V1Settings& settings = settings_.get();
         profileAddress = &fallbackAddress;
         if (settings.lastV1Address.length() != 0) {
             if (settings.lastV1Address.length() != 17u) {
@@ -1145,51 +1169,60 @@ void DriveRuntime::onV1Connected() {
             }
         }
     }
+    if (!settingsReady) {
+        pendingConnectionAutoPushSession_ = ble_.sessionGeneration();
+    }
     if (profileAddress->length() > 0) {
         const V1DeviceDefaultProfileResult lookup =
-            self.devices_.getDeviceDefaultProfileChecked(*profileAddress);
+            devices_.getDeviceDefaultProfileChecked(*profileAddress);
         if (lookup.status == V1DeviceDefaultProfileStatus::Unavailable ||
-            !self.devices_.touchDeviceInMemory(*profileAddress)) {
+            !devices_.touchDeviceInMemory(*profileAddress)) {
             Serial.println("[AutoPush] NOT_QUEUED reason=device_catalog_unavailable");
             return;
         }
         if (lookup.status == V1DeviceDefaultProfileStatus::Found) {
             defaultProfile = lookup.profile;
-            selectedSlot = static_cast<int>(defaultProfile) - 1;
         }
-    } else if (settings.autoPushEnabled) {
+    } else if (settings_.get().autoPushEnabled) {
         Serial.println("[AutoPush] NOT_QUEUED reason=device_identity_unavailable");
         return;
     }
-    if (linkAddress.length() > 0) {
-        self.settings_.setLastV1Address(linkAddress);
-        if (!self.devices_.isReady()) {
-            self.settings_.requestLastV1AddressFallbackPersist(linkAddress);
+    if (settingsReady && linkAddress.length() > 0) {
+        settings_.setLastV1Address(linkAddress);
+        if (!devices_.isReady()) {
+            settings_.requestLastV1AddressFallbackPersist(linkAddress);
         }
     }
 
     // The stable callback runs only after the bounded connect-followup read.
     // Copy the detector observation into the address-keyed store before
     // Auto-Push can write any desired profile state back to the V1.
-    const V1DetectorSnapshot snapshot = self.captureDetectorSnapshot(SnapshotPurpose::StableConnection);
-    self.autoPush_.setPreApplySnapshot(snapshot);
+    const V1DetectorSnapshot snapshot = captureDetectorSnapshot(SnapshotPurpose::StableConnection);
+    autoPush_.setPreApplySnapshot(snapshot);
 
-    if (linkAddress.length() > 0 && self.devices_.isReady()) {
-        if (!self.devices_.recordSnapshotInMemory(linkAddress, snapshot)) {
+    if (linkAddress.length() > 0 && devices_.isReady()) {
+        if (!devices_.recordSnapshotInMemory(linkAddress, snapshot)) {
             Serial.println("[AutoPush] NOT_QUEUED reason=device_snapshot_unavailable");
             return;
         }
     }
 
-    const AutoPushSlot& slot = self.settings_.getSlot(selectedSlot);
+    if (!settingsReady) {
+        Serial.println("[AutoPush] DEFERRED reason=settings_recovery_pending");
+        return;
+    }
+    const V1Settings& settings = settings_.get();
+    const int activeSlot = std::max(0, std::min(2, settings.activeSlot));
+    const int selectedSlot = defaultProfile == 0 ? activeSlot : static_cast<int>(defaultProfile) - 1;
+    const AutoPushSlot& slot = settings_.getSlot(selectedSlot);
     Serial.printf("[AutoPush] onV1Connected autoPush=%s activeSlot=%d selectedSlot=%d defaultProfile=%u mode=%d\n",
                   settings.autoPushEnabled ? "on" : "off", activeSlot, selectedSlot,
                   static_cast<unsigned>(defaultProfile), static_cast<int>(slot.mode));
     if (!settings.autoPushEnabled) {
         return;
     }
-    self.display_.setProfileIndicatorSlot(selectedSlot, static_cast<uint32_t>(millis()));
-    (void)self.autoPush_.queueSlotPush(selectedSlot, false, false);
+    display_.setProfileIndicatorSlot(selectedSlot, static_cast<uint32_t>(millis()));
+    (void)autoPush_.queueSlotPush(selectedSlot, false, false);
 }
 
 void DriveRuntime::observeAlertTable(const AlertData* alerts, size_t count, uint8_t priorityIndex,

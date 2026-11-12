@@ -114,6 +114,8 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     void initializeTouchAndUi();
     void initializeRuntimeModules();
     void syncRecoveredSettings();
+    void processStableDetector(bool requireLiveAddress);
+    void serviceDeferredConnectionAutoPush();
     void finalizeBoot(uint32_t setupStartMs, uint32_t& stageStartedMs);
     bool requestMaintenanceBootRestart();
     DriveLoopTiming beginDriveLoop();
@@ -232,6 +234,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     uint32_t connectedPersistenceWindowStartedMs_ = 0;
     uint32_t bootId_ = 0;
     bool usbTailBusy_ = true;
+    uint32_t pendingConnectionAutoPushSession_ = 0;
     uint32_t lastDisplayConfigurationLogMs_ = 0;
     bool active_ = false;
 };

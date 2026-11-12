@@ -563,10 +563,11 @@ describe('settings route page', () => {
         expect(body).toMatchObject({
             index: 0,
             ssid: 'HomeWifi',
-            label: 'Garage Updated',
-            priority: 0
+            expectedSsid: 'HomeWifi',
+            label: 'Garage Updated'
         });
         expect(body).not.toHaveProperty('password');
+        expect(body).not.toHaveProperty('priority');
 
         unmount();
     });
@@ -601,8 +602,8 @@ describe('settings route page', () => {
             expect(jsonBodies(fetchMock, '/api/wifi/networks').at(-1)).toMatchObject({
                 index: 0,
                 ssid: '   ',
-                label: 'Whitespace Updated',
-                priority: 0
+                expectedSsid: '   ',
+                label: 'Whitespace Updated'
             });
         });
 
@@ -984,7 +985,7 @@ describe('settings route page', () => {
                 const { index, ssid, password, label, priority } = JSON.parse(init.body);
                 slots = slots.map((slot) => slot.index === index
                     ? { ...slot, ssid, label: label || ssid, configured: true,
-                        hasPassword: password === undefined ? slot.hasPassword : Boolean(password), priority }
+                        hasPassword: password === undefined ? slot.hasPassword : Boolean(password), priority: priority ?? slot.priority }
                     : slot);
                 if (writes === 1) throw new Error('reply lost after commit');
                 return jsonResponse({ success: true, index });
@@ -1018,8 +1019,8 @@ describe('settings route page', () => {
             await fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
             await screen.findByText('Travel WiFi');
             expect(jsonBodies(fetchMock, '/api/wifi/networks')).toEqual([
-                expect.objectContaining({ index: 2, ssid: 'Scanned network', password: 'changeme' }),
-                { index: 2, ssid: 'Scanned network', label: 'Travel WiFi', priority: 2 }
+                { index: 2, expectedSsid: '', ssid: 'Scanned network', password: 'changeme' },
+                { index: 2, expectedSsid: 'Scanned network', ssid: 'Scanned network', label: 'Travel WiFi' }
             ]);
         } finally { unmount(); }
     });
@@ -1829,6 +1830,89 @@ describe('settings route page', () => {
         unmount();
     });
 
+    it.each(['acknowledged', 'lost'])('keeps a label-only draft from overwriting a reorder with %s reply', async (reply) => {
+        let slots = defaultSlots;
+        const priorityAck = createDeferred();
+        const calls = installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/networks', respond: () => jsonResponse({ slots }) },
+            { method: 'POST', match: '/api/wifi/networks/priorities', respond: ({ init }) => {
+                const { updates } = JSON.parse(init.body);
+                slots = slots.map((slot) => ({ ...slot, ...updates.find(({ index }) => index === slot.index) }));
+                return priorityAck.promise;
+            } },
+            { method: 'POST', match: '/api/wifi/networks', respond: ({ init }) => {
+                const { index, expectedSsid, ...changes } = JSON.parse(init.body);
+                if (slots[index]?.ssid !== expectedSsid) return jsonResponse({}, 409);
+                slots = slots.map((slot) => slot.index === index ? { ...slot, ...changes } : slot);
+                return jsonResponse({ success: true, index });
+            } }
+        ]);
+        const { unmount } = render(Page);
+        try {
+            const garage = (await screen.findByText('Garage')).closest('.rounded-box');
+            await fireEvent.click(screen.getByRole('button', { name: 'Move PhoneHotspot up' }));
+            await fireEvent.click(within(garage).getByRole('button', { name: 'Edit' }));
+            const priority = screen.getByLabelText('Priority');
+            expect(priority).toHaveValue(0);
+            await fireEvent.input(screen.getByLabelText('Label'), { target: { value: 'Garage renamed' } });
+            if (reply === 'acknowledged') priorityAck.resolve(jsonResponse({ success: true }));
+            else priorityAck.reject(new Error('Reorder reply lost after commit'));
+            await waitFor(() => expect(priority).toHaveValue(1));
+            expect(screen.getByLabelText('Label')).toHaveValue('Garage renamed');
+            await fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Save', exact: true }));
+            await screen.findByText('Saved HomeWifi');
+            expect(jsonBodies(calls, '/api/wifi/networks')).toEqual([
+                { index: 0, expectedSsid: 'HomeWifi', ssid: 'HomeWifi', label: 'Garage renamed' }
+            ]);
+            expect(slots.filter((slot) => slot.configured).map((slot) => slot.priority)).toEqual([1, 0]);
+        } finally { unmount(); }
+    });
+
+    it('reconciles an indexed editor when the server rejects a replaced slot', async () => {
+        let slots = defaultSlots;
+        let writes = 0;
+        const calls = installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/networks', respond: () => jsonResponse({ slots }) },
+            { method: 'POST', match: '/api/wifi/networks', respond: ({ init }) => {
+                const { index, expectedSsid } = JSON.parse(init.body);
+                if (slots[index]?.ssid !== expectedSsid) return jsonResponse({}, 409);
+                writes += 1;
+                return jsonResponse({ success: true, index });
+            } }
+        ]);
+        const { unmount } = render(Page);
+        try {
+            const garage = (await screen.findByText('Garage')).closest('.rounded-box');
+            await fireEvent.click(within(garage).getByRole('button', { name: 'Edit' }));
+            slots = [{ ...slots[0], ssid: 'ReplacementWifi', label: 'Replacement', priority: 3 }, ...slots.slice(1)];
+            await fireEvent.input(screen.getByLabelText('Label'), { target: { value: 'Stale name' } });
+            const save = within(screen.getByRole('dialog')).getByRole('button', { name: 'Save', exact: true });
+            await fireEvent.click(save);
+            await screen.findByText(/This saved network slot changed/);
+            expect(save).toBeDisabled();
+            expect(screen.getByLabelText('Label')).toHaveValue('Stale name');
+            expect(writes).toBe(0);
+            expect(jsonBodies(calls, '/api/wifi/networks')).toHaveLength(1);
+        } finally { unmount(); }
+    });
+
+    it('asks for an explicit choice if an implicit priority cannot append', async () => {
+        const slots = [{ ...defaultSlots[0], priority: 255 }, ...defaultSlots.slice(1)];
+        const calls = installDefaultFetch([], { slots });
+        const { unmount } = render(Page);
+        try {
+            await openManualEditor();
+            await fireEvent.input(screen.getByLabelText('SSID'), { target: { value: 'NewWifi' } });
+            const save = within(screen.getByRole('dialog')).getByRole('button', { name: 'Save', exact: true });
+            expect(screen.getByText('Choose a priority for this network or reorder saved networks first.')).toBeInTheDocument();
+            expect(save).toBeDisabled();
+            await fireEvent.input(screen.getByLabelText('Priority'), { target: { value: '5' } });
+            await fireEvent.click(save);
+            await screen.findByText('Saved NewWifi');
+            expect(jsonBodies(calls, '/api/wifi/networks').at(-1)).toMatchObject({ ssid: 'NewWifi', priority: 5 });
+        } finally { unmount(); }
+    });
+
     for (const [label, response] of [
         ['400 response', () => jsonResponse({ error: 'invalid update' }, 400)],
         ['500 response', () => jsonResponse({ error: 'persistence failed' }, 500)],
@@ -1971,10 +2055,9 @@ describe('settings route page', () => {
         await fireEvent.click(screen.getByRole('button', { name: /^Save Network$/i }));
 
         await screen.findByText('Saved BenchAP');
-        expect(jsonBodies(fetchMock, '/api/wifi/networks').at(-1)).toMatchObject({
+        expect(jsonBodies(fetchMock, '/api/wifi/networks').at(-1)).toEqual({
             ssid: 'BenchAP',
-            password: 'bench-secret',
-            priority: 2
+            password: 'bench-secret'
         });
 
         unmount();

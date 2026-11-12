@@ -11,7 +11,9 @@ void PersistentBootstrap::run(StorageManager& storage, SettingsManager& settings
     Serial.println("[Setup] Mounting storage...");
     if (storage.begin()) {
         Serial.printf("[Setup] Storage ready: %s\n", storage.statusText().c_str());
-        profiles.begin(storage);
+        profiles.begin(storage, [](void* context) {
+            return static_cast<SettingsManager*>(context)->canOpenProfileStorage();
+        }, &settings);
         devices.begin(storage.getFilesystem(), storage.getLittleFS());
         effects.afterCatalogMounted(effects.context);
 

@@ -10,6 +10,7 @@
 #include <memory>
 
 #include "ble_alert_request_gate.h"
+#include "config.h"
 #include "ble_volume_write_receipt.h"
 #include "v1_request_flow_control.h"
 #include "ble_log_rate_limit.h"
@@ -232,13 +233,21 @@ class V1BLEClient {
     }
     void onV1RequestNotProcessed(uint8_t packetId, uint32_t ingressSequence = 0) {
         v1RequestFlowControl_.onRequestNotProcessed(packetId);
-        if (packetId == 0x41) { // reqStartAlertData
+        if (packetId == PACKET_ID_REQ_START_ALERT) {
             alertDataRequestGate_.invalidate(sessionGeneration());
         }
-        if (commandActive_ && commandTaskContext_.length > 3 && commandTaskContext_.data[3] == packetId &&
-            commandWorkerStarted_.load(std::memory_order_acquire) && ingressSequence != 0 &&
-            static_cast<int32_t>(ingressSequence - commandWorkerIngress_.load(std::memory_order_relaxed)) > 0) {
+        const bool alertRequest = packetId == PACKET_ID_REQ_START_ALERT || packetId == PACKET_ID_REQ_STOP_ALERT;
+        const bool directWrite = alertRequest && synchronousAlertRequestId_ == packetId &&
+            BleAlertDataRequestGate::follows(ingressSequence, synchronousAlertIngress_);
+        const bool workerWrite = commandActive_ &&
+            (alertRequest ? commandTaskContext_.alertRequestId == packetId
+                          : commandTaskContext_.length > 3 && commandTaskContext_.data[3] == packetId) &&
+            commandWorkerStarted_.load(std::memory_order_acquire) &&
+            BleAlertDataRequestGate::follows(ingressSequence, commandWorkerIngress_.load(std::memory_order_relaxed));
+        if ((directWrite || workerWrite) && commandRejectionIngress_ == 0) {
             commandRejectionIngress_ = ingressSequence;
+        } else if (packetId == PACKET_ID_REQ_STOP_ALERT) {
+            alertDataRequestGate_.rejectStop(sessionGeneration(), ingressSequence);
         } else {
             volumeWriteReceipt_.reject(packetId, sessionGeneration(), ingressSequence);
         }
@@ -442,6 +451,7 @@ class V1BLEClient {
         V1CommandOwner commandOwner = V1CommandOwner::Legacy;
         uint32_t alertInputRevision = 0;
         bool requiresContinuousAlertInput = false;
+        uint8_t alertRequestId = 0;
         uint8_t data[64] = {};
         size_t length = 0;
         bool response = true;
@@ -450,6 +460,8 @@ class V1BLEClient {
     uint32_t commandStartedMs_ = 0;
     uint32_t commandLastSentMs_ = 0;
     uint32_t commandRejectionIngress_ = 0;
+    uint32_t synchronousAlertIngress_ = 0;
+    uint8_t synchronousAlertRequestId_ = 0;
     std::atomic<bool> commandWorkerStarted_{false};
     std::atomic<uint32_t> commandWorkerIngress_{0};
     std::atomic<bool> commandWorkerResult_{false};
@@ -458,7 +470,8 @@ class V1BLEClient {
     static void commandTaskFunc(void* param);
     void serviceCommandWrite();
     SendResult sendCharacteristicCommand(NimBLERemoteCharacteristic* characteristic, const uint8_t* data,
-                                         size_t length, bool response, uint32_t phoneGeneration = 0);
+                                         size_t length, bool response, uint32_t phoneGeneration = 0,
+                                         uint8_t indexedAlertRequestId = 0);
     void publishCommandSuccess(const uint8_t* data, size_t length, uint32_t session, uint32_t ingress,
                                uint32_t rejectedIngress = 0);
     void promoteCommandCaptureBoundary(uint8_t requestId, uint32_t boundary);
@@ -625,6 +638,13 @@ class V1BLEClient {
         uint8_t requestId = 0;
         uint8_t count = 0;
         uint16_t sentMask = 0;
+        // START and STOP are seven bytes. Collect their parts in index order
+        // to verify the complete request before granting stream authority.
+        std::array<uint8_t, 7> alertBytes{};
+        std::array<uint8_t, 7> alertPartSizes{};
+        size_t alertSize = 0;
+        bool malformedAlert = false;
+        uint8_t collectAlertRequest(const ProxyPacket& packet, uint16_t chunkBit);
     } phoneLongCommandOwner_;
     std::atomic<size_t> proxyQueueHead_{0};  // Next write position
     std::atomic<size_t> proxyQueueTail_{0};  // Next read position

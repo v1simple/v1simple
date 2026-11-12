@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import release_publication as publication
 
@@ -63,7 +64,8 @@ class PublicationDecisionTests(unittest.TestCase):
             ),
             (
                 "push succeeded",
-                facts(push_attempted=True, push_succeeded=True),
+                facts(push_attempted=True, push_succeeded=True, updated_main_sha=SHA_A,
+                      updated_tag_sha=SHA_A, updated_marker_matches=True),
                 publication.Action.PUBLISHED,
                 True,
             ),
@@ -74,7 +76,6 @@ class PublicationDecisionTests(unittest.TestCase):
                     push_succeeded=False,
                     updated_main_sha=SHA_A,
                     updated_tag_sha=SHA_A,
-                    release_is_ancestor_of_updated_main=True,
                     updated_marker_matches=True,
                 ),
                 publication.Action.RECOVER,
@@ -87,7 +88,6 @@ class PublicationDecisionTests(unittest.TestCase):
                     push_succeeded=False,
                     updated_main_sha=SHA_A,
                     updated_tag_sha=SHA_A,
-                    release_is_ancestor_of_updated_main=True,
                     updated_marker_matches=False,
                 ),
                 publication.Action.FAIL,
@@ -267,6 +267,7 @@ class PublicationIntegrationTests(unittest.TestCase):
             release_tag="v1.0.1",
             release_run_id="12345",
             output_path=output,
+            has_public_release=lambda tag: tag == "v1.0.1",
         )
 
         self.assertEqual(result.action, publication.Action.REUSE)
@@ -296,6 +297,67 @@ class PublicationIntegrationTests(unittest.TestCase):
             self.repo.publish()
 
         self.assertEqual(self.repo.git("show-ref", "--heads", "--tags"), refs_before)
+
+    def advance_remote_commit(self) -> str:
+        (self.repo.root / "advance.txt").write_text("advance\n", encoding="utf-8")
+        self.repo.git("add", "advance.txt")
+        self.repo.git("commit", "-qm", "advance main")
+        advanced = self.repo.head
+        self.repo.git("push", "-q", "origin", "main")
+        self.repo.git("reset", "--hard", "HEAD^")
+        return advanced
+
+    def test_main_advance_after_advertisement_skips_release_and_retry(self) -> None:
+        release_sha = self.repo.head
+        advanced = self.advance_remote_commit()
+        # Simulate a concurrent fast-forward after push's initial advertisement
+        # using the disposable remote directly from Git's pre-push hook.
+        self.repo.git_at(self.repo.remote, "update-ref", "refs/heads/main", release_sha)
+        hook = self.repo.root / ".git/hooks/pre-push"
+        hook.write_text(
+            "#!/bin/sh\n"
+            f'git -C "$2" update-ref refs/heads/main {advanced} {release_sha}\n',
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+        first = self.repo.publish()
+        hook.unlink()
+        self.assertEqual(first.action, publication.Action.SKIP_MAIN_ADVANCED)
+        self.assertFalse(first.published or first.deploy_pages)
+        self.assertEqual(self.repo.git_at(self.repo.remote, "rev-parse", "refs/heads/main"), advanced)
+        self.assertEqual(self.repo.git_at(self.repo.remote, "rev-parse", "v1.0.1^{commit}"), release_sha)
+        retry = self.repo.publish()
+        self.assertEqual(retry.action, publication.Action.SKIP_MAIN_ADVANCED)
+        self.assertFalse(retry.published or retry.deploy_pages)
+
+    def test_main_advance_while_checking_release_status_suppresses_publication(self) -> None:
+        self.repo.publish()
+        release_sha = self.repo.head
+
+        def advance_during_lookup(_tag: str) -> bool:
+            self.advance_remote_commit()
+            return False
+
+        result = publication.publish_release(
+            self.repo.root, release_sha=release_sha, base_sha=release_sha,
+            release_tag="v1.0.1", release_run_id="12345", check_only=True,
+            has_public_release=advance_during_lookup,
+        )
+        self.assertFalse(result.published or result.deploy_pages)
+
+    def test_lost_push_result_recovers_matching_tag(self) -> None:
+        real_git = publication.run_git
+
+        def lose_push_reply(root: Path, *args: str, **kwargs):
+            response = real_git(root, *args, **kwargs)
+            if args[0] == "push":
+                return subprocess.CompletedProcess(args, 1, response.stdout, "lost reply")
+            return response
+
+        with mock.patch.object(publication, "run_git", side_effect=lose_push_reply):
+            result = self.repo.publish()
+        self.assertEqual(result.action, publication.Action.RECOVER)
+        self.assertTrue(result.published and result.deploy_pages)
 
     def test_advanced_main_skips_without_creating_release_tag(self) -> None:
         release_sha = self.repo.head

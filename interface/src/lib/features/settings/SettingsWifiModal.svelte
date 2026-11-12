@@ -14,6 +14,7 @@
         wifiConnecting = false,
         saveBlocked = false,
         slotChanged = false,
+        appendUnavailable = false,
         recovery,
         onstartWifiScan,
         onselectNetwork,
@@ -59,6 +60,9 @@
             {@render recovery?.()}
             {#if slotChanged}
                 <p class="surface-note" role="status">This saved network slot changed. Close the picker and select the current slot again.</p>
+            {/if}
+            {#if appendUnavailable}
+                <p class="surface-note" role="status">Reorder saved networks or add this network manually with a chosen priority.</p>
             {/if}
 
             {#if wifiScanning}

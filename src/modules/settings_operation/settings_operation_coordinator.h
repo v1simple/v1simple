@@ -30,6 +30,7 @@ class SettingsOperationCoordinator {
     void beginNormalBoot();
     void process(uint32_t nowMs);
     StableAdmission onStableConnection();
+    bool allowsOrdinaryAutoPush() const;
     bool beginSlotApply(int slot);
     bool acknowledgePendingMaintenanceReturn();
 

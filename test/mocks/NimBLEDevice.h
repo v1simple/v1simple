@@ -668,7 +668,7 @@ public:
         g_mock_nimble_state.stopAdvertisingCalls++;
     }
     static uint8_t getNumBonds() { return g_mock_nimble_state.bondCount; }
-    static void deleteAllBonds() {}
+    static bool deleteAllBonds() { return true; }
     static bool isBonded(const NimBLEAddress&) { return g_mock_nimble_state.bonded; }
     static bool deleteBond(const NimBLEAddress& address) {
         ++g_mock_nimble_state.deleteBondCalls;

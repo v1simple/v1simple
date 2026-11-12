@@ -287,7 +287,7 @@ void test_already_parsed_alert_preempts_real_slider_owner() {
     deliver(makeAlertFrame(1, 1, 34700, 0x22, 0x80), 1, 1500);
     r.tick(1500);
     TEST_ASSERT_EQUAL_INT(1, r.display_.hideBrightnessSliderCalls);
-    TEST_ASSERT_EQUAL_INT(1, r.settings_.requestDeferredPersistCalls);
+    TEST_ASSERT_EQUAL_INT(0, r.settings_.requestDeferredPersistCalls);
     TEST_ASSERT_EQUAL_UINT(1, r.presentations);
 }
 
@@ -403,8 +403,45 @@ void test_tail_refreshes_in_the_box_policy_before_pending_voice_service() {
     TEST_ASSERT_EQUAL_UINT(1, voiceAdmissions);
     TEST_ASSERT_EQUAL_UINT(0, runtime.presentations);
 }
+
+void queueBrightnessTouch(uint16_t x, uint8_t count = 1) {
+    std::vector<uint8_t> frame(32, 0);
+    frame[1] = count;
+    frame[2] = static_cast<uint8_t>(x >> 8);
+    frame[3] = static_cast<uint8_t>(x);
+    frame[5] = 100;
+    Wire.queueRequestFrom(frame.size(), frame);
+}
+
+void test_recent_slider_sample_reaches_hardware_before_live_preemption() {
+    Runtime r;
+    r.display_.activeSliderFromTouch = 0;
+    r.boot = true;
+    r.tick(1000);
+    r.boot = false;
+    queueBrightnessTouch(0, 0);
+    r.tick(1400);
+    queueBrightnessTouch(40);
+    r.tick(1505);
+    TEST_ASSERT_EQUAL_INT(255, r.display_.lastSettingsBrightness);
+    TEST_ASSERT_EQUAL_INT(1, r.display_.updateSettingsSlidersCalls);
+    queueBrightnessTouch(600);
+    deliver(makeAlertFrame(1, 1, 34700, 0x22, 0x80), 1, 1525);
+    r.tick(1525);
+    TEST_ASSERT_EQUAL_INT(1, r.display_.hideBrightnessSliderCalls);
+    TEST_ASSERT_EQUAL_INT(1, r.display_.updateSettingsSlidersCalls);
+    TEST_ASSERT_EQUAL_UINT(1, r.presentations);
+    TEST_ASSERT_EQUAL_INT(1, r.settings_.requestDeferredPersistCalls);
+    TEST_ASSERT_EQUAL_INT(80, r.settings_.get().brightness);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(80,
+        r.display_.setBrightnessCalls ? r.display_.lastBrightness : r.display_.lastSettingsBrightness,
+        "Newest touch was accepted into saved state but never sent to display brightness");
+}
+
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_recent_slider_sample_reaches_hardware_before_live_preemption);
     RUN_TEST(test_tail_soft_mute_cancels_pending_voice_after_clear_under_sliders);
     RUN_TEST(test_no_frame_proxy_takeover_cancels_cleared_voice_under_each_screen_owner);
     RUN_TEST(test_tail_policy_service_never_admits_new_speech);

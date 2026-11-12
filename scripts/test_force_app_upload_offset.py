@@ -8,9 +8,12 @@ import configparser
 from contextlib import redirect_stdout
 import csv
 import io
+import os
 from pathlib import Path
 import re
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 
 SOURCE = Path(__file__).with_name("force_app_upload_offset.py")
@@ -37,6 +40,7 @@ def load_testable_symbols() -> dict[str, object]:
     }
     admitted_functions = {
         "force_before_upload",
+        "verify_bench_upload_target",
         "force_flash_layout",
         "strip_boot_app0_flags",
         "patch_upload_command",
@@ -46,8 +50,9 @@ def load_testable_symbols() -> dict[str, object]:
         for node in tree.body
         if (
             isinstance(node, ast.Import)
-            and any(alias.name in {"re"} for alias in node.names)
+            and any(alias.name in {"os", "re", "sys"} for alias in node.names)
         )
+        or (isinstance(node, ast.ImportFrom) and node.module == "pathlib")
         or (
             isinstance(node, (ast.Assign, ast.AnnAssign))
             and any(
@@ -79,6 +84,9 @@ class FakeBoardConfig:
     def update(self, key: str, value: object) -> None:
         self.values[key] = value
 
+    def get(self, key: str, default=None):
+        return self.values.get(key, default)
+
 
 class FakeSConsEnvironment(dict):
     """Exercise the hook against the symbolic state exposed by PlatformIO."""
@@ -90,6 +98,8 @@ class FakeSConsEnvironment(dict):
     def __init__(self) -> None:
         super().__init__(
             PIOENV="waveshare-349",
+            PROJECT_DIR=str(ROOT),
+            UPLOAD_PORT="/fixture/usb/target",
             UPLOADERFLAGS=[
                 "--chip",
                 "esp32s3",
@@ -131,15 +141,35 @@ class FakeSConsEnvironment(dict):
         self.update(values)
 
     def subst(self, value: str) -> str:
-        if value != "$PIOENV":
-            raise AssertionError(f"unexpected substitution request: {value}")
-        return str(self["PIOENV"])
+        return str(self[value.removeprefix("$")])
 
 
 class ForceAppUploadOffsetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.symbols = load_testable_symbols()
+
+    def test_managed_bench_pre_upload_verifies_same_board_at_exact_port(self):
+        from serial.tools import list_ports
+
+        build_env = FakeSConsEnvironment()
+        selected = SimpleNamespace(vid=0x303A, pid=0x1001, device=build_env["UPLOAD_PORT"],
+                                   serial_number="fixture-target")
+        wrong = SimpleNamespace(**{**vars(selected), "serial_number": "fixture-other"})
+        other_path = SimpleNamespace(**{**vars(selected), "device": "/fixture/usb/renamed"})
+        with mock.patch.dict(os.environ, {"V1SIMPLE_BENCH_USB_SERIAL": selected.serial_number}), \
+                mock.patch.object(list_ports, "comports", return_value=[selected]) as ports:
+            pre_upload = self.symbols["force_before_upload"]
+            pre_upload([], [], build_env)
+            for current in ([wrong], [other_path], [selected, other_path], []):
+                with self.subTest(ports=current):
+                    ports.return_value = current
+                    with self.assertRaisesRegex(RuntimeError, "pinned bench USB target|unique ESP32"):
+                        pre_upload([], [], build_env)
+            ports.return_value = [selected]
+            build_env.board.update("upload", {"wait_for_upload_port": True})
+            with self.assertRaisesRegex(RuntimeError, "cannot let PlatformIO switch ports"):
+                pre_upload([], [], build_env)
 
     def test_board_environments_keep_shipping_partitions_and_app_location(self) -> None:
         config = configparser.ConfigParser(interpolation=None)

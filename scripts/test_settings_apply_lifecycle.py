@@ -45,15 +45,21 @@ def build_and_run(build: Path) -> None:
     deps = ROOT / ".pio/libdeps/native-sanitized"
     includes = [build, ROOT, ROOT / "test/mocks", ROOT / "include", ROOT / "src",
                 deps / "Unity/src", deps / "ArduinoJson/src"]
-    for fixture in ("recovery", "detector_snapshot", "restart"):
+    for fixture in ("recovery", "detector_snapshot", "restart", "ordinary_autopush_recovery"):
         executable = build / fixture
+        fixture_includes = includes
+        support = []
+        if fixture == "ordinary_autopush_recovery":
+            fixture_includes = [build, ROOT, ROOT / "src", ROOT / "include", ROOT / "test/mocks",
+                                deps / "Unity/src", deps / "ArduinoJson/src"]
+            support = [str(ROOT / "test/test_settings_persistence/display_nvs_persistence_tests.cpp")]
         subprocess.run(compiler + [
-            "-std=c++17", "-DUNIT_TEST", "-fsanitize=address,undefined",
+            "-std=c++17", "-DUNIT_TEST", f'-DPROJECT_DIR="{ROOT}"', "-fsanitize=address,undefined",
             "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-g",
-            *["-I" + str(path) for path in includes], str(FIXTURE / (fixture + ".cpp")),
+            *["-I" + str(path) for path in fixture_includes], str(FIXTURE / (fixture + ".cpp")), *support,
             "-x", "c++", str(deps / "Unity/src/unity.c"), "-o", str(executable),
         ], check=True)
-        subprocess.run([str(executable)], check=True)
+        subprocess.run([str(executable)], check=True, env={**os.environ, "TMPDIR": str(build)})
 
 
 if __name__ == "__main__":

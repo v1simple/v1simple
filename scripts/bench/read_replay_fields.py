@@ -28,11 +28,11 @@ from PIL import Image
 
 if __package__:
     from .camera_artifacts import (
-        CameraArtifactError, load_capture_manifest, resolve_manifest_artifact, verify_capture_files,
+        CameraArtifactError, resolve_manifest_artifact, validate_capture_manifest, verify_capture_files,
     )
 else:
     from camera_artifacts import (
-        CameraArtifactError, load_capture_manifest, resolve_manifest_artifact, verify_capture_files,
+        CameraArtifactError, resolve_manifest_artifact, validate_capture_manifest, verify_capture_files,
     )
 
 
@@ -337,36 +337,73 @@ def secondary_identities(stimulus):
                   if not alert["priority"] and alert["band"] in ("k", "ka", "x"))
 
 
-def read_replay_stimuli(run, window):
-    """Read expectations only from the retained display contract's exact file."""
-    artifacts = window.get("artifacts", {})
+def verified_replay_artifact(directory, entry):
+    if not isinstance(entry, dict):
+        raise ValueError("replay artifact ownership is invalid")
+    name, size, digest = (entry.get(key) for key in ("path", "size_bytes", "sha256"))
+    if (not isinstance(name, str) or not name or Path(name).name != name or
+            name in {".", ".."} or type(size) is not int or size <= 0 or
+            not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
+        raise ValueError("replay artifact ownership is invalid")
+    path = directory / name
+    if not path.is_file():
+        raise ValueError("replay artifact disappeared")
+    data = path.read_bytes()
+    if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+        raise ValueError("replay artifact changed")
+    return data
+
+
+def read_replay_contract(run, artifacts):
+    """Load the exact display contract and its retained expectations."""
     if not isinstance(artifacts, dict) or "replay_display_contract" not in artifacts:
         raise ValueError("replay artifact ownership is invalid")
-
-    def verified_file(entry):
-        if not isinstance(entry, dict):
-            raise ValueError("replay artifact ownership is invalid")
-        name, size, digest = (entry.get(key) for key in ("path", "size_bytes", "sha256"))
-        if (not isinstance(name, str) or not name or Path(name).name != name or
-                name in {".", ".."} or type(size) is not int or size <= 0 or
-                not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
-            raise ValueError("replay artifact ownership is invalid")
-        path = run / name
-        if not path.is_file():
-            raise ValueError("replay artifact disappeared")
-        data = path.read_bytes()
-        if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
-            raise ValueError("replay artifact changed")
-        return path, data
-
     entry = artifacts["replay_display_contract"]
-    _, data = verified_file(entry)
-    contract = json.loads(data)
-    if (not isinstance(contract, dict) or contract.get("schema_version") != 1 or
+    contract = json.loads(verified_replay_artifact(run, entry))
+    if (not isinstance(contract, dict) or type(contract.get("schema_version")) is not int or
+            contract["schema_version"] not in (1, 2) or
             contract.get("kind") != "bench_replay_display_contract"):
         raise ValueError("replay display contract is invalid")
-    _, data = verified_file(contract.get("expected_display_rubric"))
-    return [json.loads(line) for line in data.splitlines()], entry["sha256"]
+    data = verified_replay_artifact(run, contract.get("expected_display_rubric"))
+    return contract, [json.loads(line) for line in data.splitlines()], entry["sha256"]
+
+
+def replay_runtime_source(run, window, contract):
+    camera = window["camera"]
+    if (contract["schema_version"] == 1 and "runtime" not in contract and
+            "camera" not in contract and "capture_manifest" not in camera):
+        return {"gitSha": None, "imageId": None, "bootId": None,
+                "runtimeIntegrity": "legacy-unverified"}
+
+    runtime = contract.get("runtime")
+    observed = window.get("runtime_identity")
+    commit = window.get("git_sha")
+    if not isinstance(runtime, dict) or not isinstance(observed, dict):
+        raise ValueError("replay runtime identity is missing from the display contract or window")
+    boot_id, git_sha, image_id = (runtime.get(key) for key in ("boot_id", "git_sha", "image_id"))
+    if (type(boot_id) is not int or not 1 <= boot_id <= 0xFFFFFFFF or
+            not isinstance(git_sha, str) or not re.fullmatch(r"[0-9a-f]{7,40}", git_sha) or
+            not isinstance(image_id, str) or not re.fullmatch(r"[0-9a-f]{9}", image_id) or
+            not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{7,40}", commit) or
+            not commit.startswith(git_sha) or type(observed.get("boot_id")) is not int or
+            any(runtime[key] != observed.get(key) for key in ("boot_id", "git_sha", "image_id"))):
+        raise ValueError("replay runtime identity disagrees with the display contract")
+    if contract["schema_version"] == 2:
+        if len(commit) != 40 or commit != runtime.get("source_git_sha"):
+            raise ValueError("replay source commit disagrees with the display contract runtime identity")
+    else:
+        # Version 1 binds the firmware-reported commit abbreviation only.
+        commit = git_sha
+
+    entry = window["artifacts"].get("build_upload")
+    if (not isinstance(entry, dict) or
+            entry.get("sha256") != runtime.get("build_upload_manifest_sha256")):
+        raise ValueError("replay build artifact disagrees with the display contract")
+    build = json.loads(verified_replay_artifact(run, entry))
+    if not isinstance(build, dict) or build.get("expected_runtime_image_id") != image_id:
+        raise ValueError("replay build artifact has a different runtime image identity")
+    return {"gitSha": commit, "imageId": image_id, "bootId": boot_id,
+            "runtimeIntegrity": "verified"}
 
 
 def compare_run(run, limit=None, progress=None):
@@ -378,12 +415,28 @@ def compare_run(run, limit=None, progress=None):
         raise ValueError("replay capture is not complete and qualified")
     camera_dir = run / "camera"
     camera = window["camera"]
+    contract, stimuli, contract_sha = read_replay_contract(run, window.get("artifacts"))
+    source = replay_runtime_source(run, window, contract)
+    camera_link = contract.get("camera")
     if "capture_manifest" in camera:
         name = camera["capture_manifest"]
         if not isinstance(name, str) or not name or Path(name).name != name or name in {".", ".."}:
             raise CameraArtifactError("camera capture manifest name is invalid")
-        manifest = load_capture_manifest(camera_dir / name)
-        if manifest["identity"]["suite"] != "replay" or manifest["capture_id"] != camera.get("capture_id"):
+        entry = camera_link.get("manifest") if isinstance(camera_link, dict) else None
+        if not isinstance(entry, dict) or entry.get("path") != f"camera/{name}":
+            raise CameraArtifactError("camera capture manifest disagrees with the display contract")
+        data = verified_replay_artifact(camera_dir, {**entry, "path": name})
+        manifest = json.loads(data)
+        if not isinstance(manifest, dict):
+            raise CameraArtifactError("camera capture manifest is not an object")
+        validate_capture_manifest(manifest)
+        capture = manifest.get("capture")
+        timing = capture.get("video_timing_verification_result") if isinstance(capture, dict) else None
+        if not isinstance(timing, dict) or timing.get("status") != "verified":
+            raise CameraArtifactError("camera capture manifest does not record verified video timing")
+        capture_id = manifest["capture_id"]
+        if (manifest["identity"]["suite"] != "replay" or
+                capture_id != camera_link.get("capture_id") or capture_id != camera.get("capture_id")):
             raise CameraArtifactError("camera capture identity does not match replay")
         verify_capture_files(camera_dir, manifest)
         video, timing_path, preflight_path = (
@@ -396,15 +449,17 @@ def compare_run(run, limit=None, progress=None):
     else:
         # Older recordings have no declared manifest. Preserve their reading
         # path, but do not claim that their raw files passed integrity checks.
+        if camera_link is not None or contract["schema_version"] == 2:
+            raise CameraArtifactError("camera capture manifest declared by the display contract is missing")
         videos = list(camera_dir.glob("evidence_*.mov"))
         if len(videos) != 1:
             raise ValueError("expected exactly one recorded camera video")
         video = videos[0]
         timing_path = camera_dir / "frame_timing.ndjson"
         preflight_path = camera_dir / "camera_preflight.json"
+        capture_id = None
         camera_integrity = "legacy-unverified"
 
-    stimuli, contract_sha = read_replay_stimuli(run, window)
     if len(stimuli) < 3:
         raise ValueError("too few replay stimuli")
     frames = [row for row in ndjson(timing_path) if row["status"] == "written"]
@@ -486,9 +541,7 @@ def compare_run(run, limit=None, progress=None):
                        "INCONCLUSIVE" if cards["unreadable"] or any(v["unreadable"] for v in totals.values()) or
                        any(not v["matched"] for v in totals.values()) else "PASS"),
             "scope": "registered 1280x720 view; unmuted, stable K/Ka/X radar states; one camera frame per replay step; blink-off arrows and bands are permitted",
-            "source": {"gitSha": window["git_sha"],
-                       "imageId": window["runtime_identity"]["image_id"],
-                       "cameraCaptureId": window["camera"]["capture_id"],
+            "source": {**source, "cameraCaptureId": capture_id,
                        "cameraIntegrity": camera_integrity,
                        "displayContractSha256": contract_sha},
             "framesChecked": len(eligible), "fields": totals, "secondaryCardTextDirection": cards,

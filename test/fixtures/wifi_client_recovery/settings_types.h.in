@@ -49,6 +49,7 @@ class SettingsManager {
     uint32_t recoveredRevision = 0;
     uint32_t recoveryRevision() const { return recoveredRevision; }
     bool pendingRecovery = false;
+    bool passwordUnavailable = false;
     bool recoveryPending() const { return pendingRecovery; }
     int credentialWrites = 0;
     int markCalls = 0;
@@ -56,9 +57,9 @@ class SettingsManager {
     const V1Settings& get() const { return value; }
     bool resolveStorageTransactionsForMutation() { stationEffects.push_back("storage:resolve"); return resolveSucceeds; }
     String getWifiStaSlotPassword(size_t index, bool* failed = nullptr) const {
-        if (failed) *failed = false;
+        if (failed) *failed = passwordUnavailable;
         stationEffects.push_back("password:" + std::to_string(index));
-        return "password";
+        return passwordUnavailable ? "" : "password";
     }
     String getWifiClientPassword() const { stationEffects.push_back("password:legacy"); return "password"; }
     bool setWifiStaSlotCredentials(size_t index, const String& ssid, const String&, const String&, uint8_t) {

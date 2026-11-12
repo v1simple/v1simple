@@ -1,6 +1,7 @@
 #include "touch_ui_module.h"
 
 #include "audio_beep.h"
+#include <optional>
 namespace {
 constexpr int kObdBadgeFlushX = 360;
 constexpr int kObdBadgeFlushY = 0;
@@ -150,11 +151,22 @@ bool TouchUiModule::restorePresentationIfOwned() {
     if (!brightnessAdjustMode_ || !display_) {
         return false;
     }
+    display_->setBrightness(brightnessAdjustValue_);
     {
         const auto inputs = presentation_->captureForPaint();
         display_->showSettingsSliders(inputs.context(), brightnessAdjustValue_, volumeAdjustValue_);
     }
     sliderRedrawPending_ = false;
+    return true;
+}
+
+bool TouchUiModule::syncRecoveredSliderSettings(bool applyBrightness) {
+    if (!brightnessAdjustMode_) return false;
+    if (!brightnessEdited_) brightnessAdjustValue_ = settings_->localSliderBrightness();
+    if (!volumeEdited_) volumeAdjustValue_ = settings_->localSliderVoiceVolume();
+    if (applyBrightness) display_->setBrightness(brightnessAdjustValue_);
+    audio_set_volume(volumeAdjustValue_);
+    sliderRedrawPending_ = true;
     return true;
 }
 
@@ -179,10 +191,11 @@ void TouchUiModule::updateObdIndicatorAttention(bool attention) {
 
 void TouchUiModule::enterAdjustMode() {
     touchHandler_->requireRelease();
-    const V1Settings& s = settings_->get();
     brightnessAdjustMode_ = true;
-    brightnessAdjustValue_ = s.brightness;
-    volumeAdjustValue_ = s.voiceVolume;
+    brightnessAdjustValue_ = settings_->localSliderBrightness();
+    volumeAdjustValue_ = settings_->localSliderVoiceVolume();
+    brightnessEdited_ = false;
+    volumeEdited_ = false;
     activeSlider_ = 0;
     lastVolumeChangeMs_ = 0;
     sliderRedrawPending_ = false;
@@ -197,29 +210,25 @@ void TouchUiModule::enterAdjustMode() {
 void TouchUiModule::exitAdjustModeAndSave(bool deferPersistence) {
     touchHandler_->requireRelease();
     brightnessAdjustMode_ = false;
-    sliderRedrawPending_ = false;
-    settings_->updateBrightness(brightnessAdjustValue_);
-    settings_->updateVoiceVolume(volumeAdjustValue_);
-    bool persisted = false;
-    if (deferPersistence) {
-        settings_->requestDeferredPersist();
-    } else {
-        persisted = settings_->saveDeferredBackup();
-        if (!persisted && !settings_->deferredPersistPending()) {
-            // Keep the chosen values until NVS recovers. An existing deferred
-            // save already owns a retry/deadline; do not postpone that work.
-            settings_->requestDeferredPersist();
-        }
+    if (brightnessEdited_ && sliderRedrawPending_) {
+        // A live alert can take ownership before the throttled slider paint.
+        // Apply the latest PWM without drawing another slider frame.
+        display_->setBrightness(brightnessAdjustValue_);
     }
-    audio_set_volume(volumeAdjustValue_);
+    sliderRedrawPending_ = false;
+    if (brightnessEdited_ || volumeEdited_) {
+        const bool persisted = settings_->saveLocalSliderAdjustments(
+            brightnessEdited_ ? std::optional<uint8_t>{brightnessAdjustValue_} : std::nullopt,
+            volumeEdited_ ? std::optional<uint8_t>{volumeAdjustValue_} : std::nullopt,
+            deferPersistence);
+        Serial.printf("[Settings] Slider changes %s\n", persisted ? "saved" : "pending save");
+    }
     {
         const auto inputs = presentation_->captureForPaint();
         display_->hideBrightnessSlider(inputs.context());
     }
     if (callbacks_.restoreDisplay)
         callbacks_.restoreDisplay(callbacks_.restoreDisplayCtx);
-    Serial.printf("[Settings] %s brightness: %d, volume: %d\n", persisted ? "Saved" : "Pending save for",
-                  brightnessAdjustValue_, volumeAdjustValue_);
 }
 
 bool TouchUiModule::handleSliderTouch(unsigned long nowMs) {
@@ -240,7 +249,6 @@ bool TouchUiModule::handleSliderTouch(unsigned long nowMs) {
     }
 
     activeSlider_ = touchedSlider;
-
     if (activeSlider_ == 0) {
         int newLevel = 255 - (((touchX - sliderX) * 175) / sliderWidth);
         if (newLevel < 80)
@@ -248,6 +256,7 @@ bool TouchUiModule::handleSliderTouch(unsigned long nowMs) {
         if (newLevel > 255)
             newLevel = 255;
         if (newLevel != brightnessAdjustValue_) {
+            brightnessEdited_ = true;
             brightnessAdjustValue_ = newLevel;
             sliderRedrawPending_ = true;
         }
@@ -258,6 +267,7 @@ bool TouchUiModule::handleSliderTouch(unsigned long nowMs) {
         if (newVolume > 100)
             newVolume = 100;
         if (newVolume != volumeAdjustValue_) {
+            volumeEdited_ = true;
             volumeAdjustValue_ = static_cast<uint8_t>(newVolume);
             audio_set_volume(volumeAdjustValue_);
             sliderRedrawPending_ = true;

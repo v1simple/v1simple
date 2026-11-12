@@ -545,7 +545,7 @@ public:
 
     size_t putBytes(const char* key, const void* value, size_t len) {
         if (!started_ || readOnly_ || !key || (!value && len > 0) ||
-            mock_preferences::failWrites() ||
+            mock_preferences::writesFailForKey(key) ||
             mock_preferences::wouldExceedEntryLimit(namespaceName_, key)) {
             return 0;
         }

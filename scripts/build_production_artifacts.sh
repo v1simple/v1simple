@@ -21,6 +21,10 @@ PIO_CMD="${PIO_CMD:-pio}"
 PIO_JOBS="${PLATFORMIO_RUN_JOBS:-}"
 PIO_ENV="${PIO_ENV:-waveshare-349}"
 PIO_BUILD_ARGS=(-e "$PIO_ENV")
+RELEASE_SOURCE_SHA=""
+if [[ -n "${V1_RELEASE_VERSION:-}" ]]; then
+  RELEASE_SOURCE_SHA="$(python3 scripts/stage_release_source.py --check-source)"
+fi
 
 if [[ -n "$PIO_JOBS" && ! "$PIO_JOBS" =~ ^[1-9][0-9]*$ ]]; then
   echo -e "${RED}Invalid PLATFORMIO_RUN_JOBS: $PIO_JOBS${NC}" >&2
@@ -111,6 +115,12 @@ run_step "LittleFS image/runtime compatibility" \
   python3 scripts/check_littlefs_image_compatibility.py \
   --pio "$PIO_CMD" --env "$PIO_ENV" --partition-table "$PARTITION_TABLE" \
   --candidate "$BUILD_DIR/littlefs.bin"
+if [[ -n "$RELEASE_SOURCE_SHA" ]]; then
+  ARDUINO_SOURCE_DIR="$(python3 scripts/build_context.py --pio "$PIO_CMD" --env "$PIO_ENV" --get arduino_dir)"
+  run_step "Record release source identity" python3 scripts/stage_release_source.py \
+    --build-dir "$BUILD_DIR" --arduino-source-dir "$ARDUINO_SOURCE_DIR" \
+    --source-sha "$RELEASE_SOURCE_SHA" --tag "v$V1_RELEASE_VERSION"
+fi
 END_TIME="$(date +%s)"
 ELAPSED="$((END_TIME - START_TIME))"
 

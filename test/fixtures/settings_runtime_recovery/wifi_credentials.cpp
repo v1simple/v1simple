@@ -150,6 +150,75 @@ void test_healthy_omitted_and_explicit_empty_passwords_keep_their_meaning() {
     }
 }
 
+void test_implicit_priority_uses_current_saved_order_and_appends_after_legacy_ties() {
+    resetRuntimeState();
+    fs::FS filesystem(g_tempRoot / "priority_order");
+    SettingsManager manager(storage, profiles);
+    seedWifiPasswordWithStaleSd(manager, filesystem, 0);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "LookupNet", "first", "First", 7));
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(2, "Second", "second", "Second", 7));
+    WiFiManager wifi(manager);
+    size_t selected = kWifiStaSlotCount;
+    auto edit = labelEdit(0);
+    edit.hasPriority = false;
+    edit.hasExpectedSsid = true;
+    edit.expectedSsid = "LookupNet";
+    TEST_ASSERT_TRUE(wifi.upsertSavedNetwork(edit, selected));
+    TEST_ASSERT_EQUAL_UINT(0, selected);
+
+    WifiClientApiService::SavedNetworkUpsertPayload add;
+    add.ssid = "New network";
+    add.hasPassword = true;
+    add.password = "<fixture-password>";
+    TEST_ASSERT_TRUE(wifi.upsertSavedNetwork(add, selected));
+    TEST_ASSERT_EQUAL_UINT(1, selected);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(7, rebooted.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_UINT8(8, rebooted.get().wifiStaSlots[1].priority);
+    TEST_ASSERT_EQUAL_UINT8(7, rebooted.get().wifiStaSlots[2].priority);
+    TEST_ASSERT_EQUAL_STRING("Renamed", rebooted.get().wifiStaSlots[0].label.c_str());
+    TEST_ASSERT_EQUAL_STRING("first", rebooted.getWifiStaSlotPassword(0).c_str());
+}
+
+void test_stale_identity_and_full_priority_range_cannot_write() {
+    resetRuntimeState();
+    fs::FS filesystem(g_tempRoot / "stale_or_full_priority");
+    SettingsManager manager(storage, profiles);
+    seedWifiPasswordWithStaleSd(manager, filesystem, 0);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "Replacement", "replacement", "Current", 255));
+    WiFiManager wifi(manager);
+    auto edit = labelEdit(0);
+    edit.hasExpectedSsid = true;
+    edit.expectedSsid = "LookupNet";
+    WifiClientApiService::SavedNetworkUpsertPayload add;
+    add.ssid = "New network";
+    add.hasPassword = true;
+    add.password = "new";
+    size_t writes = 0;
+    mock_preferences::afterWrite() = [&](const char*) { ++writes; };
+    size_t selected = kWifiStaSlotCount;
+    const bool staleSaved = wifi.upsertSavedNetwork(edit, selected);
+    const bool implicitSaved = wifi.upsertSavedNetwork(add, selected);
+    mock_preferences::afterWrite() = {};
+    TEST_ASSERT_FALSE(staleSaved);
+    TEST_ASSERT_FALSE(implicitSaved);
+    TEST_ASSERT_EQUAL_UINT(kWifiStaSlotCount, selected);
+    TEST_ASSERT_EQUAL_UINT(0, writes);
+    TEST_ASSERT_EQUAL_UINT(0, wifi.radioChanges);
+
+    add.hasPriority = true;
+    add.priority = 4;
+    TEST_ASSERT_TRUE(wifi.upsertSavedNetwork(add, selected));
+    TEST_ASSERT_EQUAL_UINT(1, selected);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_STRING("Replacement", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("replacement", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_EQUAL_UINT8(255, rebooted.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_UINT8(4, rebooted.get().wifiStaSlots[1].priority);
+}
+
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
     editorSlotPath = argv[1];
@@ -157,5 +226,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_omitted_password_failure_refuses_edit_and_retry_preserves_credentials);
     RUN_TEST(test_unavailable_password_listing_keeps_blank_editor_preservation);
     RUN_TEST(test_healthy_omitted_and_explicit_empty_passwords_keep_their_meaning);
+    RUN_TEST(test_implicit_priority_uses_current_saved_order_and_appends_after_legacy_ties);
+    RUN_TEST(test_stale_identity_and_full_priority_range_cannot_write);
     return UNITY_END();
 }

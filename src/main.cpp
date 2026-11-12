@@ -99,8 +99,10 @@ esp_reset_reason_t initializeResetReason(uint32_t setupStartMs) {
 
     const esp_reset_reason_t resetReason = esp_reset_reason();
     Serial.printf("Reset reason: %d ", resetReason);
-    if (resetReason == ESP_RST_SW || resetReason == ESP_RST_UNKNOWN) {
-        Serial.println("(SW/Upload - will clear BLE bonds for clean reconnect)");
+    if (resetReason == ESP_RST_SW) {
+        Serial.println("(Software reset)");
+    } else if (resetReason == ESP_RST_UNKNOWN) {
+        Serial.println("(Unknown)");
     } else if (resetReason == ESP_RST_POWERON) {
         Serial.println("(Power-on)");
     } else if (resetReason == ESP_RST_DEEPSLEEP) {

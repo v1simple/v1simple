@@ -135,6 +135,8 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
     proxyEnabled_ = enableProxy;
     proxyName_ = proxyName ? proxyName : "V1C-LE-S3";
     bool needsBondSchemaMigration = false;
+    bool resumingBondSchemaMigration = false;
+    bool needsBondSchemaRestore = false;
 
     if (!bleMutex_) {
         bleMutex_ = xSemaphoreCreateMutex();
@@ -151,13 +153,22 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
     // releases must not destructively clear otherwise-compatible bonds.
     {
         Preferences blePrefs;
-        if (blePrefs.begin(BleFreshFlashPolicy::kNamespace, false)) { // Read-write mode
-            const BleFreshFlashPolicy::BondSchemaState schemaState = BleFreshFlashPolicy::prepareBondSchema(blePrefs);
-            needsBondSchemaMigration = schemaState == BleFreshFlashPolicy::BondSchemaState::MigrationRequired;
-            if (schemaState == BleFreshFlashPolicy::BondSchemaState::BootstrapPending) {
-                Serial.print(" bond-schema metadata pending...");
-            }
-            blePrefs.end();
+        if (!blePrefs.begin(BleFreshFlashPolicy::kNamespace, false)) {
+            Serial.println("[BLE] Bond schema metadata unavailable; preserving saved bonds");
+            return false;
+        }
+        const BleFreshFlashPolicy::BondSchemaState schemaState = BleFreshFlashPolicy::prepareBondSchema(blePrefs);
+        blePrefs.end();
+        if (schemaState == BleFreshFlashPolicy::BondSchemaState::Unavailable) {
+            Serial.println("[BLE] Bond schema metadata unreadable; preserving saved bonds");
+            return false;
+        }
+        resumingBondSchemaMigration = schemaState == BleFreshFlashPolicy::BondSchemaState::MigrationResumeRequired;
+        needsBondSchemaMigration = schemaState == BleFreshFlashPolicy::BondSchemaState::MigrationRequired ||
+                                   resumingBondSchemaMigration;
+        needsBondSchemaRestore = schemaState == BleFreshFlashPolicy::BondSchemaState::MigrationRestoreRequired;
+        if (schemaState == BleFreshFlashPolicy::BondSchemaState::BootstrapPending) {
+            Serial.print(" bond-schema metadata pending...");
         }
     }
 
@@ -186,23 +197,49 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
     NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
     NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
 
+    if (resumingBondSchemaMigration && bleBondRecoveryPending()) {
+        Serial.println("[BLE] Bond recovery metadata pending during migration; retry on reboot");
+        return false;
+    }
     if (needsBondSchemaMigration && !bleBondRecoveryPending()) {
         Preferences blePrefs;
-        if (blePrefs.begin(BleFreshFlashPolicy::kNamespace, false)) {
-            Serial.printf(" bond-schema migration...");
-            const BleFreshFlashPolicy::BondResetResult resetResult = BleFreshFlashPolicy::migrateBondSchema(
-                blePrefs, backupCurrentBleBondsViaCore0AtBoot, []() { NimBLEDevice::deleteAllBonds(); });
-            if (resetResult.backedUpBondCount > 0) {
-                Serial.printf(" backed up %d bond(s)...", resetResult.backedUpBondCount);
-            }
-            if (!resetResult.clearedBonds) {
-                Serial.printf(" backup failed; bonds retained...");
-            }
-            blePrefs.end();
+        if (!blePrefs.begin(BleFreshFlashPolicy::kNamespace, false)) {
+            Serial.println("[BLE] Bond migration metadata unavailable; retry on reboot");
+            return false;
         }
+        Serial.printf(" bond-schema migration...");
+        const BleFreshFlashPolicy::BondResetResult resetResult = BleFreshFlashPolicy::migrateBondSchema(
+            blePrefs, [](void*, uint64_t& identity) { return backupCurrentBleBondsViaCore0AtBoot(identity); },
+            []() { return NimBLEDevice::deleteAllBonds(); },
+            [](void* context) { return currentBleBondBackupIdentity(*static_cast<StorageManager*>(context)); },
+            &storage);
+        blePrefs.end();
+        if (resetResult.migrationInterrupted) {
+            Serial.println("[BLE] Bond migration unfinished; preserving backup and retrying on reboot");
+            return false;
+        }
+        if (resetResult.backedUpBondCount > 0) {
+            Serial.printf(" backed up %d bond(s)...", resetResult.backedUpBondCount);
+        }
+        if (!resetResult.clearedBonds) {
+            Serial.printf(" backup unavailable; bonds retained...");
+        }
+        needsBondSchemaRestore = resetResult.recordedVersion;
     }
 
-    restoreOrBackupBleBondsAtBoot(storage, NimBLEDevice::getNumBonds());
+    if (needsBondSchemaRestore) {
+        Preferences blePrefs;
+        const auto restore = [](void* context, uint64_t identity) {
+            return restoreMatchingBleBondBackup(*static_cast<StorageManager*>(context), identity);
+        };
+        if (!blePrefs.begin(BleFreshFlashPolicy::kNamespace, false) ||
+            !BleFreshFlashPolicy::finishBondSchemaMigration(blePrefs, restore, &storage)) {
+            Serial.println("[BLE] Bond migration restore unfinished; preserving backup and retrying on reboot");
+            return false;
+        }
+    } else {
+        restoreOrBackupBleBondsAtBoot(storage, NimBLEDevice::getNumBonds());
+    }
     lastBondBackupCount_ = static_cast<uint8_t>(NimBLEDevice::getNumBonds());
 
     // Create and briefly advertise the proxy GATT server before scanning, even

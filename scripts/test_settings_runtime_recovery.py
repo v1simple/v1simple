@@ -92,13 +92,15 @@ import { readFileSync } from 'node:fs';
 const { openWifiEditorState, buildWifiEditorRequest } = await import(process.argv[1]);
 const slot = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const editor = openWifiEditorState(slot.index, {
-    mode: 'edit', ssid: slot.ssid, label: 'Renamed', priority: slot.priority,
+    mode: 'edit', ssid: slot.ssid, label: 'Renamed',
     hasExistingPassword: slot.hasPassword
 });
-const request = buildWifiEditorRequest(editor);
+const request = buildWifiEditorRequest(editor, slot.ssid);
 assert.equal(request.ssid, slot.ssid);
+assert.equal(request.expectedSsid, slot.ssid);
 assert.equal(request.label, 'Renamed');
 assert.equal(Object.hasOwn(request, 'password'), false);
+assert.equal(Object.hasOwn(request, 'priority'), false);
 console.log('Unavailable WiFi password listing preserves blank editor credentials: PASS');
 """, (ROOT / "interface/src/lib/features/settings/wifiNetworkUiModel.js").as_uri(),
                 str(editor_slot)], check=True)

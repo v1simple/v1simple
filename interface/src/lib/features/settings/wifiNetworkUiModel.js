@@ -79,22 +79,20 @@ export function createWifiEditorState() {
         label: '',
         ssid: '',
         password: '',
-        priority: 0,
+        priority: null,
         showPassword: false,
         hasExistingPassword: false
     };
 }
 
-export function openWifiEditorState(slotIndex = null, seed = {}, defaultPriority = 0) {
+export function openWifiEditorState(slotIndex = null, seed = {}) {
     return {
+        ...createWifiEditorState(),
         open: true,
         mode: seed.mode || 'add',
         index: slotIndex,
         label: seed.label || '',
         ssid: seed.ssid || '',
-        password: '',
-        priority: Number.isFinite(Number(seed.priority)) ? Number(seed.priority) : defaultPriority,
-        showPassword: false,
         hasExistingPassword: Boolean(seed.hasExistingPassword)
     };
 }
@@ -106,18 +104,21 @@ export function closeWifiEditorState(state, { force = false, actionInFlight = fa
     return { state: createWifiEditorState(), closed: true };
 }
 
-export function buildWifiEditorRequest(state) {
+export function buildWifiEditorRequest(state, expectedSsid) {
     // Spaces are part of a network's identity, including during label-only edits.
     const ssid = state.ssid;
     if (!ssid) return null;
 
     const body = {
         ssid,
-        label: state.label.trim(),
-        priority: Math.max(0, Math.min(255, Number(state.priority) || 0))
+        label: state.label.trim()
     };
+    if (Number.isFinite(state.priority)) {
+        body.priority = Math.max(0, Math.min(255, Math.trunc(state.priority)));
+    }
     if (state.index !== null) {
         body.index = state.index;
+        if (expectedSsid !== undefined) body.expectedSsid = expectedSsid;
     }
     if (state.password || state.mode !== 'edit' || !state.hasExistingPassword) {
         body.password = state.password;

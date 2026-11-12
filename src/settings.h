@@ -9,6 +9,7 @@
 #include <Preferences.h>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "settings_types.h"
@@ -128,6 +129,12 @@ class SettingsManager {
     void updateVoiceVolume(uint8_t volume) {
         if (ensureSettingsLoaded()) settings_.voiceVolume = volume;
     }
+    uint8_t localSliderBrightness() const { return pendingSliderBrightness_.value_or(settings_.brightness); }
+    uint8_t localSliderVoiceVolume() const { return pendingSliderVoiceVolume_.value_or(settings_.voiceVolume); }
+    // Missing fields are untouched. User edits survive pending startup recovery
+    // in RAM and merge into authoritative settings before the next save.
+    bool saveLocalSliderAdjustments(std::optional<uint8_t> brightness, std::optional<uint8_t> voiceVolume,
+                                    bool deferPersistence);
     // Persist settings atomically to NVS, then synchronously back them up to SD.
     // Reserve this for explicit durability boundaries outside latency-sensitive
     // loop paths.
@@ -179,6 +186,7 @@ class SettingsManager {
     // Before starting a new external mutation, converge every recoverable
     // storage transaction or fail closed while its rollback evidence remains.
     bool resolveStorageTransactionsForMutation();
+    bool canOpenProfileStorage();
 
     struct NvsDiagnostic {
         String activeNamespace;
@@ -205,6 +213,8 @@ class SettingsManager {
     bool deferredPersistPending_ = false;
     bool deferredPersistRetryScheduled_ = false;
     uint32_t deferredPersistNextAttemptAtMs_ = 0;
+    std::optional<uint8_t> pendingSliderBrightness_;
+    std::optional<uint8_t> pendingSliderVoiceVolume_;
     String pendingLastV1AddressFallback_;
     bool lastV1AddressFallbackPending_ = false;
     uint32_t lastV1AddressFallbackNextAttemptAtMs_ = 0;
@@ -221,6 +231,7 @@ class SettingsManager {
     // Boot profile migration, reference cleanup and incomplete transaction
     // rollback wait for recovery. Recomputed by the next SD recovery attempt.
     bool profileReferenceRecoveryPending_ = false;
+    bool restoreCredentialRecoveryPending_ = false;
     uint64_t restoreCommitWatermark_ = 0;
     uint64_t profileDeleteCommitWatermark_ = 0;
     uint32_t wifiCredentialCommitGeneration_ = 0;
@@ -250,11 +261,12 @@ class SettingsManager {
                                                   SettingsPersistMode persistMode);
     void noteDisplayConfigurationMutation();
     bool ensureSettingsLoaded();
+    void mergeLocalSliderAdjustments();
     void markRestorePending(const char* reason);
     void clearRestorePending();
     bool resolveWifiCredentialTransaction();
-    bool resolveRestoreTransaction();
-    bool resolveProfileDeleteTransaction();
+    bool resolveRestoreTransaction(bool apply = true);
+    bool resolveProfileDeleteTransaction(bool apply = true);
     bool prepareBackupSnapshot();
     bool persistSettingsAtomically();
     bool writeSettingsToNamespace(const char* ns, uint32_t generation);

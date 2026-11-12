@@ -306,7 +306,7 @@ class ReleaseFirmwareVersionTests(unittest.TestCase):
     def test_selected_version_is_present_without_stale_source_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             firmware = Path(temporary) / "firmware.bin"
-            firmware.write_bytes(b"prefix\0" + b"1.0.2\0" + b"suffix\0")
+            firmware.write_bytes(b"prefix\0Firmware: 1.0.2\0suffix\0")
 
             errors = check_release_firmware_version.check_firmware_version(
                 firmware,
@@ -319,7 +319,7 @@ class ReleaseFirmwareVersionTests(unittest.TestCase):
     def test_missing_selected_version_and_stale_source_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             firmware = Path(temporary) / "firmware.bin"
-            firmware.write_bytes(b"prefix\0" + b"1.0.1\0" + b"suffix\0")
+            firmware.write_bytes(b"prefix\0Firmware: 1.0.1\0suffix\0unrelated: 1.0.2\0")
 
             errors = check_release_firmware_version.check_firmware_version(
                 firmware,
@@ -327,8 +327,14 @@ class ReleaseFirmwareVersionTests(unittest.TestCase):
                 "1.0.1",
             )
 
-        self.assertTrue(any("does not contain" in error for error in errors), errors)
-        self.assertTrue(any("still contains" in error for error in errors), errors)
+        self.assertTrue(any("exactly one boot version" in error for error in errors), errors)
+        self.assertTrue(any("still reports" in error for error in errors), errors)
+
+    def test_conflicting_firmware_version_records_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            firmware = Path(temporary) / "firmware.bin"
+            firmware.write_bytes(b"Firmware: 1.0.2\0Firmware: 1.0.1\0")
+            self.assertTrue(check_release_firmware_version.check_firmware_version(firmware, "1.0.2"))
 
 
 if __name__ == "__main__":

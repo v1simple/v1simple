@@ -121,7 +121,7 @@ constexpr int NIMBLE_CONN_LATENCY = 0, NIMBLE_CONN_SUPERVISION_TIMEOUT = 400;
 constexpr int NIMBLE_CONNECT_TIMEOUT_INIT_MS = 5000;
 int bondRecoveryCallbacks = 0;
 int advertisingCalls = 0, clientCalls = 0, clearCalls = 0;
-bool initFails = false;
+bool initFails = false, partialClear = false;
 struct ClientCallbacks {};
 struct TestBleClient {
     void setClientCallbacks(ClientCallbacks*) {}
@@ -146,7 +146,19 @@ struct NimBLEDevice {
     static void setSecurityRespKey(int) {}
     // Pinned NimBLE's utility counts unique OUR_SEC addresses; ours are unique.
     static int getNumBonds() { return static_cast<int>(gOurSecs.size()); }
-    static void deleteAllBonds() { ++clearCalls; gOurSecs.clear(); gPeerSecs.clear(); }
+    static bool deleteAllBonds() {
+        ++clearCalls;
+        if (partialClear) {
+            gOurSecs.erase(gOurSecs.begin());
+            PinnedNimble::durableOur.erase(PinnedNimble::durableOur.begin());
+            return false;
+        }
+        gOurSecs.clear();
+        gPeerSecs.clear();
+        PinnedNimble::durableOur.clear();
+        PinnedNimble::durablePeer.clear();
+        return true;
+    }
     static TestBleClient* createClient() { ++clientCalls; static TestBleClient client; return &client; }
 };
 class V1BLEClient {
@@ -246,12 +258,102 @@ void test_bootstrap_admission_and_recovery() {
     PinnedNimble::initialize();
     TEST_ASSERT_EQUAL_INT(0, v1simple_nimble_bond_bootstrap_status());
 }
+
+void test_incomplete_migration_preserves_original_archive_until_restored() {
+    const bool emptyArchive = scenario == "empty-migration";
+    if (emptyArchive) {
+        TEST_ASSERT_EQUAL_INT(0, enqueueCurrentBleBondBackupSnapshot());
+        TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+        TEST_ASSERT_EQUAL_UINT32(0, readHeader().ourSecCount);
+        TEST_ASSERT_EQUAL_UINT32(0, readHeader().peerSecCount);
+    } else {
+        seedCompleteBootBackup();
+    }
+    const std::string original = readBackupBytes();
+    const auto originalIdentity = currentBleBondBackupIdentity(storage);
+    TEST_ASSERT_TRUE(originalIdentity.has_value());
+
+    Preferences schema;
+    TEST_ASSERT_TRUE(schema.begin(BleFreshFlashPolicy::kNamespace, false));
+    schema.putUInt(BleFreshFlashPolicy::kBondSchemaVersionKey, 99);
+    // Model a reset after the actual policy commits the pre-clear marker.
+    // The existing writer above made the real archive from modeled bonds.
+    const auto seeded = BleFreshFlashPolicy::migrateBondSchema(
+        schema, [](void* context, uint64_t& identity) {
+            identity = *currentBleBondBackupIdentity(*static_cast<StorageManager*>(context));
+            return 0;
+        }, []() { return false; },
+        [](void* context) { return currentBleBondBackupIdentity(*static_cast<StorageManager*>(context)); }, &storage);
+    TEST_ASSERT_TRUE(seeded.migrationInterrupted);
+    schema.end();
+
+    V1BLEClient client;
+    if (!emptyArchive) {
+        partialClear = true;
+        TEST_ASSERT_FALSE(client.initBLE(storage, true, "Test"));
+        TEST_ASSERT_EQUAL_INT(1, clearCalls);
+        TEST_ASSERT_EQUAL_UINT32(1, PinnedNimble::durableOur.size());
+        TEST_ASSERT_EQUAL_UINT32(2, PinnedNimble::durablePeer.size());
+        TEST_ASSERT_EQUAL_UINT32(0, bleBondBackupQueueDepthForTest());
+        TEST_ASSERT_EQUAL_INT(0, advertisingCalls);
+        TEST_ASSERT_EQUAL_INT(0, clientCalls);
+        TEST_ASSERT_TRUE(original == readBackupBytes());
+        TEST_ASSERT_TRUE(schema.begin(BleFreshFlashPolicy::kNamespace, false));
+        TEST_ASSERT_EQUAL_UINT32(99, schema.getUInt(BleFreshFlashPolicy::kBondSchemaVersionKey, 0));
+        schema.end();
+
+        partialClear = false;
+        storage.setFilesystem(&gFs, false);
+        TEST_ASSERT_FALSE(client.initBLE(storage, true, "Test"));
+        TEST_ASSERT_EQUAL_INT(1, clearCalls);
+        storage.setFilesystem(&gFs, true);
+        // A different, structurally valid archive cannot authorize a retry.
+        std::string unrelated = original;
+        unrelated.back() ^= 1;
+        std::ofstream(bondPath(), std::ios::binary | std::ios::trunc) << unrelated;
+        TEST_ASSERT_EQUAL(BleBondBackupStatus::Valid, inspectBleBondBackup(gFs, kBleBondBackupPath));
+        TEST_ASSERT_FALSE(client.initBLE(storage, true, "Test"));
+        TEST_ASSERT_EQUAL_INT(1, clearCalls);
+        std::ofstream(bondPath(), std::ios::binary | std::ios::trunc) << original;
+
+        gModelBondPersistence = true;
+        gFailBondWriteCall = 2;
+        TEST_ASSERT_FALSE(client.initBLE(storage, true, "Test"));
+        TEST_ASSERT_EQUAL_INT(2, clearCalls);
+        TEST_ASSERT_EQUAL_INT(0, advertisingCalls);
+        TEST_ASSERT_EQUAL_INT(0, clientCalls);
+        TEST_ASSERT_TRUE(original == readBackupBytes());
+        TEST_ASSERT_TRUE(schema.begin(BleFreshFlashPolicy::kNamespace, false));
+        TEST_ASSERT_EQUAL_UINT32(1, schema.getUInt(BleFreshFlashPolicy::kBondSchemaVersionKey, 0));
+        TEST_ASSERT_TRUE(schema.isKey(BleFreshFlashPolicy::kBondMigrationBackupIdentityKey));
+        schema.end();
+        PinnedNimble::durableOur = gDurableOurSecs;
+        PinnedNimble::durablePeer = gDurablePeerSecs;
+        gFailBondWriteCall = 0;
+    }
+
+    TEST_ASSERT_TRUE(client.initBLE(storage, true, "Test"));
+    TEST_ASSERT_EQUAL_INT(emptyArchive ? 1 : 2, clearCalls);
+    TEST_ASSERT_EQUAL_INT(1, advertisingCalls);
+    TEST_ASSERT_EQUAL_INT(1, clientCalls);
+    TEST_ASSERT_EQUAL_UINT32(emptyArchive ? 0 : 2, gOurSecs.size());
+    TEST_ASSERT_EQUAL_UINT32(emptyArchive ? 0 : 2, gPeerSecs.size());
+    TEST_ASSERT_TRUE(original == readBackupBytes());
+    TEST_ASSERT_TRUE(schema.begin(BleFreshFlashPolicy::kNamespace, false));
+    TEST_ASSERT_EQUAL_UINT32(1, schema.getUInt(BleFreshFlashPolicy::kBondSchemaVersionKey, 0));
+    TEST_ASSERT_FALSE(schema.isKey(BleFreshFlashPolicy::kBondMigrationBackupIdentityKey));
+}
+
 int main(int argc, char** argv) {
     if (argc != 4) return 2;
     scenario = argv[1];
     scenarioType = std::atoi(argv[2]);
     scenarioIndex = std::atoi(argv[3]);
     UNITY_BEGIN();
-    RUN_TEST(test_bootstrap_admission_and_recovery);
+    if (scenario == "partial-clear" || scenario == "empty-migration") {
+        RUN_TEST(test_incomplete_migration_preserves_original_archive_until_restored);
+    } else {
+        RUN_TEST(test_bootstrap_admission_and_recovery);
+    }
     return UNITY_END();
 }

@@ -89,8 +89,9 @@ The real detector must remain off throughout emulator testing, and the named
 microphone must hear the DUT speaker. Acceptance reserves 24 GB per requested
 cycle. Each cycle restores and rechecks the original configuration before the
 next begins. A failure or incomplete cycle stops the campaign; no partly completed
-mutation phase is retried. One shared DUT lease covers serial reopen gaps and all
-cycles, preventing another behavior run from taking the device between phases.
+mutation phase is retried. Both bench commands acquire the same DUT lease before
+device work and before any radio lease. It covers serial reopen gaps and all
+cycles, preventing a raw upload or another preserving run between phases.
 
 Audio capture uses the native macOS recorder with microphone permission already
 granted. It retains each source buffer's timestamp and sample count, the local
@@ -103,7 +104,9 @@ unavailable or digitally flat microphone cannot pass a silence case.
 
 The colors suite checks two different custom frequency colors, band-color mode,
 all six primary and secondary meter colors, independent Save readback, and
-retention across reboots. The clearance suite tests zero- and three-second
+retention across reboots. Each palette requires a state-changing browser Save
+with its own receipt. If the first palette already matches the saved settings,
+the suite runs it last. The clearance suite tests zero- and three-second
 persistence, secondary-card expiry, a primary clear followed by connected silence,
 and a fresh alert on the same BLE connection. Pixel observations require visible
 control regions and distinct frames; a black screen or missing evidence cannot
@@ -207,3 +210,16 @@ The actual-component regressions in `routes/colors/readback.test.js` and
 accepted and lost replies, cancel/reopen, later drafts and different slots. They
 substitute HTTP responses and assert subsequent write payloads; production
 storage, reboot retention and visible pixels remain the device bench's checks.
+
+Saved Wi-Fi network edits display the current priority until the user chooses
+a value. Omitting priority preserves a configured slot's current order, or
+appends an empty slot after the existing priorities. If the range is full,
+choose an explicit priority or reorder before adding. Indexed edits and scan
+saves carry the SSID that occupied the slot when opened, so a later replacement
+cannot receive the stale write.
+
+An uncertain profile Delete refreshes the saved catalog before releasing its
+mutation controls. An unavailable catalog leaves the target's Apply action
+disabled and exposes **Reload saved profiles**, which retries only the read.
+A catalog that confirms absence removes the row and Apply action while keeping
+the editor draft available for an intentional save.

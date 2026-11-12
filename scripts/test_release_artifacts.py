@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -14,6 +18,10 @@ import check_web_installer_page as installer
 from build_context import FlashPolicy
 import package_release_artifacts as package
 import write_release_manifests as manifests
+import stage_release_source as source
+
+
+FIRMWARE = b"firmware\0Firmware: 2.0.3\0"
 
 
 class ReleaseArtifactTests(unittest.TestCase):
@@ -24,7 +32,7 @@ class ReleaseArtifactTests(unittest.TestCase):
         for name, content in {
             manifests.BOOTLOADER_IMAGE: b"bootloader",
             manifests.PARTITION_TABLE_IMAGE: b"partition-table",
-            manifests.APP_IMAGE: b"firmware",
+            manifests.APP_IMAGE: FIRMWARE,
             "littlefs.bin": b"l" * partitions["storage"].size,
         }.items():
             (build / name).write_bytes(content)
@@ -77,6 +85,10 @@ class ReleaseArtifactTests(unittest.TestCase):
             with (
                 mock.patch.object(package.shutil, "which", return_value="/fixture/esptool"),
                 mock.patch.object(
+                    source, "stage_source",
+                    side_effect=lambda *_args: (release / source.ARCHIVE_NAME).write_bytes(b"source"),
+                ),
+                mock.patch.object(
                     package,
                     "run_checked",
                     self.emulate_external_tools(release, calls),
@@ -89,6 +101,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     environment="waveshare-349",
                     partitions_path=manifests.DEFAULT_PARTITIONS,
                     flash=FlashPolicy("dio", "80m", "16MB"),
+                    arduino_source_dir=root / "framework",
                 )
 
             manifests.validate_release_images(
@@ -103,8 +116,8 @@ class ReleaseArtifactTests(unittest.TestCase):
             )
             self.assertEqual(update["version"], "v2.0.3")
             self.assertEqual(update["builds"][0]["parts"][0]["path"], manifests.UPDATE_IMAGE)
-            self.assertEqual(update["builds"][0]["parts"][0]["size"], len(b"firmware"))
-            self.assertEqual(update["builds"][0]["parts"][0]["sha256"], hashlib.sha256(b"firmware").hexdigest())
+            self.assertEqual(update["builds"][0]["parts"][0]["size"], len(FIRMWARE))
+            self.assertEqual(update["builds"][0]["parts"][0]["sha256"], hashlib.sha256(FIRMWARE).hexdigest())
             self.assertEqual(fresh["builds"][0]["parts"], [{"path": manifests.FRESH_IMAGE, "offset": 0}])
             self.assertTrue((release / "pages" / manifests.UPDATE_IMAGE).is_file())
             self.assertEqual(
@@ -112,6 +125,8 @@ class ReleaseArtifactTests(unittest.TestCase):
                 (installer.ROOT / "web-installer" / "preserve-install.mjs").read_bytes(),
             )
             self.assertTrue((release / "pages" / "licenses" / "ArduinoJson-LICENSE.txt").is_file())
+            self.assertEqual((release / "LGPL-2.1.txt").read_bytes(), (release / "pages/licenses/LGPL-2.1.txt").read_bytes())
+            self.assertEqual((release / source.ARCHIVE_NAME).read_bytes(), (release / "pages" / source.ARCHIVE_NAME).read_bytes())
             self.assertEqual(
                 (release / "pages" / "first-use.html").read_bytes(),
                 (package.ROOT / "interface" / "static" / "first-use.html").read_bytes(),
@@ -144,6 +159,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                         environment="waveshare-349",
                         partitions_path=manifests.DEFAULT_PARTITIONS,
                         flash=FlashPolicy("dio", "80m", "16MB"),
+                        arduino_source_dir=root / "framework",
                     )
 
             self.assertEqual(len(calls), 1)
@@ -182,6 +198,7 @@ class ReleaseArtifactTests(unittest.TestCase):
     def test_standalone_package_cli_needs_no_platformio(self) -> None:
         arguments = ["package_release_artifacts.py", "--version", "v2.0.3", "--build-dir", "/fixture/build",
                      "--partitions", "/fixture/geometry.csv", "--release-dir", "/fixture/release",
+                     "--arduino-source-dir", "/fixture/arduino",
                      "--flash-mode", "dio", "--flash-freq", "80m", "--flash-size", "16MB"]
         with (mock.patch.object(package.sys, "argv", arguments),
               mock.patch.object(package, "resolve", side_effect=AssertionError("must remain package-only")),
@@ -189,6 +206,7 @@ class ReleaseArtifactTests(unittest.TestCase):
             self.assertEqual(package.main(), 0)
         self.assertEqual(build.call_args.kwargs["flash"], FlashPolicy("dio", "80m", "16MB"))
         self.assertEqual(build.call_args.kwargs["partitions_path"], Path("/fixture/geometry.csv"))
+        self.assertEqual(build.call_args.kwargs["arduino_source_dir"], Path("/fixture/arduino"))
 
     def test_package_refuses_mixed_or_missing_inputs(self) -> None:
         with tempfile.TemporaryDirectory(prefix="release_refusal_") as temporary:
@@ -205,6 +223,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     environment="waveshare-349",
                     partitions_path=manifests.DEFAULT_PARTITIONS,
                     flash=FlashPolicy("dio", "80m", "16MB"),
+                    arduino_source_dir=root / "framework",
                 )
 
             release.joinpath("old.bin").unlink()
@@ -217,7 +236,111 @@ class ReleaseArtifactTests(unittest.TestCase):
                     environment="waveshare-349",
                     partitions_path=manifests.DEFAULT_PARTITIONS,
                     flash=FlashPolicy("dio", "80m", "16MB"),
+                    arduino_source_dir=root / "framework",
                 )
+
+    def test_mislabeled_image_cannot_be_packaged_or_given_manifests(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="release_wrong_version_") as temporary:
+            root = Path(temporary)
+            build = self.make_build(root)
+            release = root / "release"
+            with mock.patch.object(package, "run_checked") as command:
+                with self.assertRaisesRegex(ValueError, "selected version '2.0.4'"):
+                    package.package_release(
+                        build_dir=build, release_dir=release, version="v2.0.4", environment="waveshare-349",
+                        partitions_path=manifests.DEFAULT_PARTITIONS, flash=FlashPolicy("dio", "80m", "16MB"),
+                        arduino_source_dir=root / "framework",
+                    )
+                command.assert_not_called()
+            self.write_merged_image(release)
+            with self.assertRaisesRegex(ValueError, "selected version '2.0.4'"):
+                manifests.write_manifests(release, "v2.0.4", manifests.DEFAULT_PARTITIONS)
+            self.assertFalse((release / manifests.UPDATE_MANIFEST).exists())
+
+    def test_corresponding_source_checks_build_receipt_and_full_framework(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="release_source_") as temporary:
+            root = Path(temporary)
+            project = root / "project"
+            for name, content in {
+                ".gitignore": "local-note.txt\nsrc/captures/\n__pycache__/\n",
+                "src/main.cpp": "int main() {}\n",
+                "licenses/LGPL-2.1.txt": "verbatim license fixture\n",
+                "docs/ARDUINO_ESP32_REBUILD.md": "build steps\n",
+            }.items():
+                file = project / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(content, encoding="utf-8")
+            (project / "scripts").mkdir()
+            for name in (
+                "build_production_artifacts.sh", "stage_release_source.py",
+                "check_release_firmware_version.py", "verify_esp32s3_framework.py",
+            ):
+                shutil.copyfile(source.ROOT / "scripts" / name, project / "scripts" / name)
+            subprocess.run(["git", "init", "-q", str(project)], check=True)
+            subprocess.run(["git", "-C", str(project), "add", "."], check=True)
+            subprocess.run([
+                "git", "-C", str(project), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-qm", "Fixture",
+            ], check=True)
+            sha = source.clean_source_sha(project)
+            (project / "local-note.txt").write_text("local state\n", encoding="utf-8")
+
+            framework = root / "framework"
+            expected = {}
+            for key, name in source.ARDUINO_INPUTS.items():
+                file = framework / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(f"patched {name}\n", encoding="utf-8")
+                expected[key] = hashlib.sha256(file.read_bytes()).hexdigest()
+            extra = framework / "cores/esp32/main.cpp"
+            extra.parent.mkdir(parents=True)
+            extra.write_text("unmodified library source\n", encoding="utf-8")
+            (framework / ".piopm").write_text("local install state\n", encoding="utf-8")
+            build = self.make_build(root)
+            (build / "framework_contract.json").write_text(json.dumps(expected), encoding="utf-8")
+            release = root / "release"
+            release.mkdir()
+            package.copy_build_outputs(build, release)
+
+            with mock.patch.object(source, "EXPECTED", expected):
+                source.record_build(project, build, framework, sha, "v2.0.3")
+                for name in ("src/extra.cpp", "src/captures/extra.cpp"):
+                    with self.subTest(untracked_source=name):
+                        rogue = project / name
+                        rogue.parent.mkdir(parents=True, exist_ok=True)
+                        rogue.write_text("void extra() {}\n", encoding="utf-8")
+                        build_attempt = subprocess.run(
+                            ["bash", str(project / "scripts/build_production_artifacts.sh")],
+                            env={**os.environ, "V1_RELEASE_VERSION": "2.0.3", "PIO_CMD": "unavailable-fixture-pio"},
+                            capture_output=True, text=True,
+                        )
+                        self.assertNotEqual(build_attempt.returncode, 0)
+                        self.assertIn("untracked build inputs", build_attempt.stderr)
+                        self.assertNotIn("unavailable-fixture-pio", build_attempt.stderr)
+                        with self.assertRaisesRegex(ValueError, "untracked build inputs"):
+                            source.record_build(project, build, framework, sha, "v2.0.3")
+                        with self.assertRaisesRegex(ValueError, "untracked build inputs"):
+                            source.stage_source(project, build, framework, release, "v2.0.3")
+                        rogue.unlink()
+                source.stage_source(project, build, framework, release, "v2.0.3")
+                with tarfile.open(release / source.ARCHIVE_NAME) as archive:
+                    names = archive.getnames()
+                    self.assertNotIn("v1simple/local-note.txt", names)
+                    self.assertNotIn(f"{source.FRAMEWORK_DIR}/.piopm", names)
+                    self.assertIn("v1simple/src/main.cpp", names)
+                    self.assertIn("README.md", names)
+                    self.assertIn("LGPL-2.1.txt", names)
+                    self.assertIn(f"{source.FRAMEWORK_DIR}/cores/esp32/main.cpp", names)
+                    receipt = json.load(archive.extractfile(source.RECEIPT_NAME))
+                    self.assertEqual(receipt["tag"], "v2.0.3")
+                    self.assertEqual(receipt["source_sha"], sha)
+                    self.assertEqual(receipt["firmware_sha256"], hashlib.sha256(FIRMWARE).hexdigest())
+
+                extra.write_text("changed after the build\n", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "tree changed"):
+                    source.stage_source(project, build, framework, release, "v2.0.3")
+                with self.assertRaisesRegex(ValueError, "receipt disagrees"):
+                    source.stage_source(project, build, framework, release, "v2.0.4")
 
     def test_manifest_rejects_nonidentical_or_oversized_update(self) -> None:
         with tempfile.TemporaryDirectory(prefix="release_manifest_") as temporary:

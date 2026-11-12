@@ -797,6 +797,26 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
     return true;
 }
 
+uint8_t V1BLEClient::PhoneLongCommandOwner::collectAlertRequest(const ProxyPacket& packet, uint16_t chunkBit) {
+    if (malformedAlert || destination != 0xDA ||
+        (requestId != PACKET_ID_REQ_START_ALERT && requestId != PACKET_ID_REQ_STOP_ALERT)) return 0;
+    const size_t size = packet.length - 1;
+    if (count > alertPartSizes.size() || size > alertBytes.size() - alertSize) {
+        malformedAlert = true;
+        return 0;
+    }
+
+    const size_t index = (packet.data[0] >> 4) - 1;
+    size_t offset = 0;
+    for (size_t part = 0; part < index; ++part) offset += alertPartSizes[part];
+    memmove(alertBytes.data() + offset + size, alertBytes.data() + offset, alertSize - offset);
+    memcpy(alertBytes.data() + offset, packet.data + 1, size);
+    alertPartSizes[index] = size;
+    alertSize += size;
+    if ((sentMask | chunkBit) != ((uint16_t{1} << count) - 1)) return 0;
+    return v1AlertRequestId(alertBytes.data(), alertSize);
+}
+
 int V1BLEClient::processPhoneCommandQueue() {
     CommandScope commandScope(*this, V1CommandOwner::PhoneProxy);
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !connected_.load(std::memory_order_relaxed)) {
@@ -952,6 +972,7 @@ int V1BLEClient::processPhoneCommandQueue() {
     const bool heldOff = indexed
         ? !hasHeader || isV1RequestHeldOff(longOwner.destination, longOwner.requestId)
         : isV1WriteHeldOff(pktCopy.data, pktCopy.length);
+    const uint8_t indexedAlertRequestId = indexed && hasHeader ? longOwner.collectAlertRequest(pktCopy, chunkBit) : 0;
 
     // Send outside queue lock - BLE write can take time
     // HOT PATH: try-lock only, skip if busy
@@ -979,7 +1000,7 @@ int V1BLEClient::processPhoneCommandQueue() {
             charUUID == V1_SHORT_UUID_COMMAND_LONG && pCommandCharLong_ ? pCommandCharLong_ : pCommandChar_;
         const bool response = characteristic && characteristic == pCommandChar_ && characteristic->canWrite();
         result = sendCharacteristicCommand(characteristic, pktCopy.data, pktCopy.length, response,
-                                           pktCopy.phoneSessionGeneration);
+                                           pktCopy.phoneSessionGeneration, indexedAlertRequestId);
     } else {
         // Handles are main-loop-owned. The shared worker gate pins them until
         // completion, including raw B8D2 frames larger than MTU - 3.
@@ -987,41 +1008,15 @@ int V1BLEClient::processPhoneCommandQueue() {
             charUUID == V1_SHORT_UUID_COMMAND_LONG && pCommandCharLong_ ? pCommandCharLong_ : pCommandChar_;
         const bool response = characteristic && characteristic == pCommandChar_ && characteristic->canWrite();
         result = sendCharacteristicCommand(characteristic, pktCopy.data, pktCopy.length, response,
-                                           pktCopy.phoneSessionGeneration);
+                                           pktCopy.phoneSessionGeneration, indexedAlertRequestId);
     }
 
     switch (result) {
     case SendResult::SENT: {
-        // Exclude notifications received during the write: they need not
-        // reflect the stop yet. Retirement can wait for the next display.
-        const uint32_t ingressBoundary = latestV1NotificationIngressSequence();
         if (indexed) {
             longOwner.sentMask |= chunkBit;
             const bool complete = longOwner.sentMask == ((uint16_t{1} << longOwner.count) - 1);
-            // Indexed writes bypass sendCommandWithResult. Publish stream
-            // state only once the complete command has been forwarded.
-            if (complete && longOwner.destination == 0xDA) {
-                if (longOwner.requestId == 0x42)
-                    alertDataRequestGate_.recordStop(pktCopy.sessionGeneration, pktCopy.phoneSessionGeneration,
-                                                     ingressBoundary);
-                else if (longOwner.requestId == PACKET_ID_REQ_START_ALERT)
-                    alertDataRequestGate_.recordSuccessfulSend(pktCopy.sessionGeneration, static_cast<uint32_t>(millis()));
-            }
             phoneLongCommandOwner_ = complete ? PhoneLongCommandOwner{} : longOwner;
-        } else if (pktCopy.length == 7 &&
-                   pktCopy.data[0] == ESP_PACKET_START && pktCopy.data[1] == 0xDA &&
-                   pktCopy.data[2] == 0xE6 && pktCopy.data[4] == 1 &&
-                   pktCopy.data[5] == static_cast<uint8_t>(
-                       pktCopy.data[0] + pktCopy.data[1] + pktCopy.data[2] +
-                       pktCopy.data[3] + pktCopy.data[4]) &&
-                   pktCopy.data[6] == ESP_PACKET_END) {
-            // Bind a stop to the queued sender, even if phone callbacks retire
-            // that sender during the write. Raw long-handle starts need the
-            // same bookkeeping as starts sent through the short handle.
-            if (pktCopy.data[3] == 0x42)
-                alertDataRequestGate_.recordStop(pktCopy.sessionGeneration, pktCopy.phoneSessionGeneration,
-                                                 ingressBoundary);
-            // Raw START success/rejection is published by the command transport.
         }
         hasPending = false;
         return 1;

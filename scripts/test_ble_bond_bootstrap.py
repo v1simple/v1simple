@@ -76,7 +76,8 @@ def build_and_run(build: Path) -> None:
         "-x", "c++", str(deps / "Unity/src/unity.c"), "-o", str(executable),
     ], check=True)
     cases = [("healthy", 0, 0), ("empty", 0, 0), ("our-only", 0, 0),
-             ("peer-only", 0, 0), ("init-failure", 0, 0), ("open", 1, 1), ("payload", 1, 2)]
+             ("peer-only", 0, 0), ("init-failure", 0, 0), ("open", 1, 1), ("payload", 1, 2),
+             ("partial-clear", 0, 0), ("empty-migration", 0, 0)]
     # Both a first read/open error and a later error after successful records,
     # plus every remaining table participating in complete NVS initialization.
     cases += [("our", 1, index) for index in (1, 2)]

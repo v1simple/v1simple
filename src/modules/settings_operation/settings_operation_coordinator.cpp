@@ -408,11 +408,15 @@ void SettingsOperationCoordinator::attemptFactoryReset(const V1SettingsOperation
         V1SettingsOperationStore::Reason::FactoryResetScopeUnverified);
 }
 
+bool SettingsOperationCoordinator::allowsOrdinaryAutoPush() const {
+    return settingsOperations_.snapshot().valid && !settingsOperations_.requiresExclusiveDetectorAdmission();
+}
+
 SettingsOperationCoordinator::StableAdmission SettingsOperationCoordinator::onStableConnection() {
     // An unreadable durable job cannot authorize a competing automatic Apply.
     // Keep the connection for alerts; there is no known target to disconnect.
+    if (allowsOrdinaryAutoPush()) return StableAdmission::AllowOrdinaryAutoPush;
     if (!settingsOperations_.snapshot().valid) return StableAdmission::OwnedOrBlocked;
-    if (!settingsOperations_.requiresExclusiveDetectorAdmission()) return StableAdmission::AllowOrdinaryAutoPush;
     String address;
     if (!effects_.readConnectedAddress(address, effects_.context) || !settingsOperations_.targetMatches(address.c_str())) {
         // A target-bound job owns detector mutation admission until it finishes

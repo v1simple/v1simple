@@ -101,7 +101,17 @@ on either command characteristic. After phone departure, the existing recovery
 cadence sends a new start even if display packets stay fresh. The last
 successful start still owns the minimum send
 interval. An ordinary connected phone that did not stop the stream retains the
-existing initial-start and silence recovery. `test_ble_proxy_alert_stream`
+existing initial-start and silence recovery. A canonical StopAlertData rejection
+must follow the actual write start. It prevents ownership during synchronous or
+worker completion and revokes a matching transmitted stop when it arrives later.
+A rejected duplicate preserves the preceding valid stop. Indexed STOP ownership
+requires a complete canonical request, including the checksum. Stop rejection
+uses the send-start ingress boundary. Idle clearance still requires receipt
+after final successful transmission. The receipt history covers a full burst of
+the phone queue. Older receipts retain a count and same-phone ownership while
+idle clearance stays disabled until exact attribution is available again.
+Early indexed START rejection follows the same rule as raw START and
+preserves the preceding stop. `test_ble_proxy_alert_stream`
 executes the production proxy, command sender, queue, parser and connection
 owner; detector responses and NimBLE remain host models.
 

@@ -66,6 +66,15 @@ releases these guards, including intentional deletion. `test_ble_bond_backup_wri
 models separate volatile and durable tables, interrupted writes, reboot, storage
 failure and snapshot delivery; it does not establish physical flash durability.
 
+Bond schema migration binds its pending marker to the exact SD archive before
+asking NimBLE to clear bonds. A failed clear retains the old schema and blocks
+radio and backup admission until the original archive is available for a retry.
+After the new schema is recorded, boot completes restoration from that archive
+before enabling the radio, including after power loss between clear and restore.
+A legacy pending marker without archive identity requires manual review before
+destructive continuation. `test_ble_bond_bootstrap.py` exercises the actual
+startup, writer and restore owners against modeled NVS and NimBLE outcomes.
+
 ## Where the proof ends
 
 Delayed settings recovery also reconciles connection admission. If provisional

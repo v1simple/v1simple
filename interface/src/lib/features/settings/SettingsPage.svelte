@@ -75,6 +75,10 @@
         wifiScan.targetIndex !== null && wifiSlotSsid(wifiScan.targetIndex) !== wifiScanSlotSsid);
     const wifiEditorSlotChanged = $derived(
         wifiEditor.index !== null && wifiSlotSsid(wifiEditor.index) !== wifiEditorSlotSsid);
+    const wifiEditorAppendUnavailable = $derived(wifiEditor.priority === null &&
+        wifiAppendUnavailable(wifiUpsertSlotIndex(wifiEditor.index, wifiEditor.ssid)));
+    const wifiScanAppendUnavailable = $derived(wifiScan.selectedNetwork &&
+        wifiAppendUnavailable(wifiUpsertSlotIndex(wifiScan.targetIndex, wifiScan.selectedNetwork.ssid)));
     let wifiPoll = null;
     let wifiStatusFetchPromise = null;
     let wifiStatusRunId = 0;
@@ -453,9 +457,17 @@
     }
 
     function nextWifiPriority() {
-        const configured = sortedConfiguredWifiSlots();
-        if (configured.length === 0) return 0;
-        return Math.min(255, Math.max(...configured.map((slot) => slot.priority)) + 1);
+        return Math.max(-1, ...savedWifiSlots.filter(slotConfigured).map((slot) => slot.priority)) + 1;
+    }
+
+    function wifiAppendUnavailable(index) {
+        return nextWifiPriority() > 255 && !slotConfigured(savedWifiSlots.find((slot) => slot.index === index));
+    }
+
+    function wifiEditorDefaultPriority() {
+        const index = wifiUpsertSlotIndex(wifiEditor.index, wifiEditor.ssid);
+        return savedWifiSlots.find((slot) => slot.index === index && slotConfigured(slot))?.priority ??
+            Math.min(255, nextWifiPriority());
     }
 
     function wifiPriorityUpdates(slot, direction) {
@@ -558,6 +570,7 @@
         if (
             wifiControlsDisabled ||
             wifiScanSlotChanged ||
+            wifiScanAppendUnavailable ||
             !wifiScan.selectedNetwork ||
             wifiScan.saving ||
             (wifiScan.selectedNetwork.secure && !wifiScan.password)
@@ -579,12 +592,12 @@
         try {
             const body = {
                 ssid,
-                priority: nextWifiPriority(),
                 // Omission preserves old credentials; an open scan result clears them.
                 password: secure ? password : ''
             };
             if (targetIndex !== null) {
                 body.index = targetIndex;
+                body.expectedSsid = wifiScanSlotSsid ?? '';
             }
 
             const res = await fetchWithTimeout('/api/wifi/networks', {
@@ -701,7 +714,7 @@
     function openWifiEditor(slotIndex = null, seed = {}) {
         if (wifiControlsDisabled || wifiSlotChangePending(slotIndex)) return;
         wifiEditorSlotSsid = wifiSlotSsid(slotIndex);
-        wifiEditor = openWifiEditorState(slotIndex, seed, nextWifiPriority());
+        wifiEditor = openWifiEditorState(slotIndex, seed);
     }
 
     function openWifiEditorForSlot(slot) {
@@ -709,7 +722,6 @@
             mode: 'edit',
             label: slot.label,
             ssid: slot.ssid,
-            priority: slot.priority,
             hasExistingPassword: slot.hasPassword
         });
     }
@@ -725,8 +737,9 @@
     }
 
     async function saveWifiEditor() {
-        const body = buildWifiEditorRequest(wifiEditor);
-        if (wifiControlsDisabled || wifiEditorSlotChanged || !body || wifiNetworkActionInFlight) return;
+        const body = buildWifiEditorRequest(wifiEditor, wifiEditorSlotSsid ?? '');
+        if (wifiControlsDisabled || wifiEditorSlotChanged || wifiEditorAppendUnavailable || !body || wifiNetworkActionInFlight ||
+            (wifiOrdering && Object.hasOwn(body, 'priority'))) return;
         const pendingIndex = wifiUpsertSlotIndex(wifiEditor.index, body.ssid);
         if (wifiSlotChangePending(pendingIndex)) return;
 
@@ -1376,9 +1389,10 @@
                     bind:selectedNetwork={wifiScan.selectedNetwork}
                     bind:wifiPassword={wifiScan.password}
                     wifiConnecting={wifiScan.saving}
-                    saveBlocked={wifiControlsDisabled || wifiScanSlotChanged ||
+                    saveBlocked={wifiControlsDisabled || wifiScanSlotChanged || wifiScanAppendUnavailable ||
                         wifiSlotChangePending(wifiUpsertSlotIndex(wifiScan.targetIndex, wifiScan.selectedNetwork?.ssid))}
                     slotChanged={wifiScanSlotChanged}
+                    appendUnavailable={Boolean(wifiScanAppendUnavailable)}
                     recovery={wifiReadbackNotice}
                     onstartWifiScan={startWifiScan}
                     onselectNetwork={selectNetwork}
@@ -1480,13 +1494,17 @@
                                 min="0"
                                 max="255"
                                 class="input w-full"
-                                bind:value={wifiEditor.priority}
+                                bind:value={() => wifiEditor.priority ?? wifiEditorDefaultPriority(),
+                                    (priority) => { wifiEditor.priority = priority ?? null; }}
                             />
                             <div class="label">
                                 <span class="field-hint"
                                     >0 is tried first; higher numbers are lower priority.</span
                                 >
                             </div>
+                            {#if wifiEditorAppendUnavailable}
+                                <p class="surface-note" role="status">Choose a priority for this network or reorder saved networks first.</p>
+                            {/if}
                         </div>
                     </div>
 
@@ -1501,9 +1519,9 @@
                         <button
                             class="btn btn-primary"
                             onclick={saveWifiEditor}
-                            disabled={wifiControlsDisabled || wifiEditorSlotChanged ||
+                            disabled={wifiControlsDisabled || wifiEditorSlotChanged || wifiEditorAppendUnavailable ||
                                 wifiSlotChangePending(wifiUpsertSlotIndex(wifiEditor.index, wifiEditor.ssid)) ||
-                                wifiNetworkActionInFlight || !wifiEditor.ssid}
+                                wifiNetworkActionInFlight || (wifiOrdering && wifiEditor.priority !== null) || !wifiEditor.ssid}
                         >
                             {#if wifiNetworkActionInFlight}
                                 <span class="loading loading-sm loading-spinner"></span>

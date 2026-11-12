@@ -3,7 +3,7 @@
 
 ``prepare_release.py`` owns version and tag selection. This module owns the
 publication decision after a tag has been selected: exact checkout identity,
-same-run retries, main-advance handling, atomic publication, ambiguous push
+same-run retries, main-advance handling, tag reservation, ambiguous push
 recovery, and Pages eligibility.
 """
 
@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import prepare_release
 
@@ -47,11 +51,11 @@ class PublicationFacts:
     remote_main_sha: str
     existing_tag_sha: str | None = None
     existing_marker_matches: bool = False
+    existing_release_public: bool = False
     push_attempted: bool = False
     push_succeeded: bool | None = None
     updated_main_sha: str | None = None
     updated_tag_sha: str | None = None
-    release_is_ancestor_of_updated_main: bool = False
     updated_marker_matches: bool = False
 
 
@@ -68,6 +72,14 @@ class PublicationResult:
     published: bool
     deploy_pages: bool
     release_sha: str
+
+
+@dataclass(frozen=True)
+class RemoteReleaseRefs:
+    main: str
+    tag_commit: str | None
+    marker_matches: bool
+    latest_tag: str
 
 
 def decide_publication(facts: PublicationFacts) -> Decision:
@@ -93,6 +105,11 @@ def decide_publication(facts: PublicationFacts) -> Decision:
                 Action.FAIL,
                 f"{facts.release_tag} does not carry this run's publication marker.",
             )
+        if facts.remote_main_sha != facts.base_sha and not facts.existing_release_public:
+            return Decision(
+                Action.SKIP_MAIN_ADVANCED,
+                f"main advanced before {facts.release_tag} was released; its tag remains reserved.",
+            )
         return Decision(
             Action.REUSE,
             f"Tag {facts.release_tag} already points at tested commit "
@@ -108,43 +125,31 @@ def decide_publication(facts: PublicationFacts) -> Decision:
         )
 
     if not facts.push_attempted:
-        return Decision(Action.ATTEMPT_PUBLISH, "Remote state permits atomic publication.")
+        return Decision(Action.ATTEMPT_PUBLISH, "Remote state permits a release tag reservation.")
 
-    if facts.push_succeeded:
-        return Decision(
-            Action.PUBLISHED,
-            f"Published {facts.release_tag} at {facts.release_sha}.",
-            published=True,
-        )
-
-    updated_main = facts.updated_main_sha or ""
-    if (
-        facts.updated_tag_sha == facts.release_sha
-        and facts.release_is_ancestor_of_updated_main
-    ):
+    if facts.updated_tag_sha == facts.release_sha:
         if not facts.updated_marker_matches:
             return Decision(
                 Action.FAIL,
                 f"{facts.release_tag} reached the expected commit without this run's "
                 "publication marker.",
             )
-        return Decision(
-            Action.RECOVER,
-            "Recovered successful atomic publication after the client lost its "
-            f"response; main is at {updated_main}.",
-            published=True,
-        )
-
-    if updated_main != facts.base_sha:
+    if facts.updated_main_sha != facts.base_sha:
         return Decision(
             Action.SKIP_MAIN_ADVANCED,
-            f"main advanced from {facts.base_sha} to {updated_main} during publication; "
+            f"main advanced from {facts.base_sha} to {facts.updated_main_sha} during tag reservation; "
             "the newer merge has its own queued release.",
+        )
+    if facts.updated_tag_sha == facts.release_sha:
+        return Decision(
+            Action.PUBLISHED if facts.push_succeeded else Action.RECOVER,
+            f"Verified tag {facts.release_tag} at {facts.release_sha} after the push.",
+            published=True,
         )
 
     return Decision(
         Action.FAIL,
-        f"Atomic release publication failed while main remained at {facts.base_sha}.",
+        f"Could not verify the release tag while main remained at {facts.base_sha}.",
     )
 
 
@@ -207,26 +212,49 @@ def is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
     return result.returncode == 0
 
 
-def remote_annotated_tag_sha(root: Path, remote: str, release_tag: str) -> str | None:
-    result = run_git(
-        root,
-        "ls-remote",
-        "--tags",
-        remote,
-        f"refs/tags/{release_tag}^{{}}",
-    )
-    first = result.stdout.splitlines()
-    return first[0].split()[0] if first else None
-
-
-def fetch_release_refs(root: Path, remote: str) -> None:
+def read_release_refs(root: Path, remote: str, tag: str, run_id: str) -> RemoteReleaseRefs:
     run_git(root, "fetch", "--force", remote, "main")
     run_git(root, "fetch", "--force", "--tags", remote)
+    # One advertisement captures main, the tag object, its peeled target and
+    # competing semantic tags together. Never use a local-only tag as proof.
+    advertisement = run_git(root, "ls-remote", remote, "refs/heads/main", "refs/tags/*")
+    refs = dict(line.split("\t")[::-1] for line in advertisement.stdout.splitlines())
+    main = refs.get("refs/heads/main")
+    if not main:
+        raise PublicationError("remote main is unavailable")
+    tag_ref = f"refs/tags/{tag}"
+    tag_object = refs.get(tag_ref)
+    peeled = refs.get(f"{tag_ref}^{{}}")
+    local_tag = run_git(root, "rev-parse", "--verify", tag_ref, check=False).stdout.strip()
+    matches = bool(peeled and tag_object == local_tag and marker_matches(root, tag, run_id))
+    tags = [ref.removeprefix("refs/tags/v") for ref in refs if ref.startswith("refs/tags/v")]
+    versions = [prepare_release.Version.parse(value) for value in tags if prepare_release.SEMVER_RE.fullmatch(value)]
+    latest = f"v{max(versions)}" if versions else ""
+    return RemoteReleaseRefs(main, peeled or tag_object, matches, latest)
 
 
-def latest_release_tag(root: Path) -> str:
-    tags = prepare_release.strict_version_tags(root)
-    return tags[-1].name if tags else ""
+def public_github_release(tag: str) -> bool:
+    repository = os.environ.get("GITHUB_REPOSITORY")
+    if not repository:
+        return False
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise PublicationError("missing GitHub credentials for Release lookup")
+    api = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    request = Request(
+        f"{api}/repos/{repository}/releases/tags/{tag}",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+    )
+    try:
+        with urlopen(request, timeout=15) as response:
+            data = json.load(response)
+    except HTTPError as exc:
+        if exc.code == 404:
+            return False
+        raise PublicationError(f"GitHub Release lookup failed with HTTP {exc.code}") from exc
+    if data.get("tag_name") != tag or type(data.get("draft")) is not bool:
+        raise PublicationError("GitHub Release lookup returned an unexpected tag or status")
+    return not data["draft"]
 
 
 def write_outputs(path: Path | None, values: dict[str, str]) -> None:
@@ -245,6 +273,8 @@ def publication_inputs_are_valid(
 ) -> None:
     if not release_sha or not base_sha:
         raise PublicationError("release and base SHAs are required")
+    if release_sha != base_sha:
+        raise PublicationError("release SHA must be the qualified main SHA")
     if not release_tag.startswith("v") or not prepare_release.SEMVER_RE.fullmatch(
         release_tag[1:]
     ):
@@ -253,6 +283,23 @@ def publication_inputs_are_valid(
         )
     if not prepare_release.RUN_ID_RE.fullmatch(release_run_id):
         raise PublicationError(f"invalid GitHub Actions run ID: {release_run_id!r}")
+
+
+def report_eligibility(
+    decision: Decision, refs: RemoteReleaseRefs, tag: str, sha: str, output_path: Path | None,
+    already_public: bool | None = None,
+) -> PublicationResult:
+    if decision.action is Action.FAIL:
+        raise PublicationError(decision.diagnostic)
+    print(decision.diagnostic if decision.published else f"::notice::{decision.diagnostic}")
+    deploy = decision.published and refs.main == sha and should_deploy_pages(tag, refs.latest_tag)
+    values = {"published": str(decision.published).lower(), "deploy_pages": str(deploy).lower()}
+    if decision.published:
+        values["sha"] = sha
+    if already_public is not None:
+        values["already_public"] = str(already_public).lower()
+    write_outputs(output_path, values)
+    return PublicationResult(decision.action, decision.published, deploy, sha)
 
 
 def publish_release(
@@ -265,8 +312,10 @@ def publish_release(
     github_token: str = "",
     remote: str = "origin",
     output_path: Path | None = None,
+    has_public_release: Callable[[str], bool] = lambda _tag: False,
+    check_only: bool = False,
 ) -> PublicationResult:
-    """Gather repository facts, perform at most one atomic push, and report outputs."""
+    """Reserve an append-only tag and independently confirm publication eligibility."""
 
     root = root.resolve()
     publication_inputs_are_valid(release_sha, base_sha, release_tag, release_run_id)
@@ -286,9 +335,15 @@ def publish_release(
         )
         raise PublicationError(decision.diagnostic)
 
-    fetch_release_refs(root, remote)
-    remote_main_sha = run_git(root, "rev-parse", f"{remote}/main").stdout.strip()
-    existing_tag_sha = resolve_commit(root, release_tag)
+    refs = read_release_refs(root, remote, release_tag, release_run_id)
+    already_public = (
+        refs.tag_commit == release_sha and refs.marker_matches
+        and (check_only or refs.main != release_sha) and has_public_release(release_tag)
+    )
+    # A public-release lookup can take time. Check refs again before deciding
+    # to create or deploy, and require the same owned tag on that fresh view.
+    if check_only:
+        refs = read_release_refs(root, remote, release_tag, release_run_id)
     pre_push = decide_publication(
         PublicationFacts(
             release_sha=release_sha,
@@ -296,27 +351,21 @@ def publish_release(
             release_tag=release_tag,
             head_sha=head_sha,
             dirty=False,
-            remote_main_sha=remote_main_sha,
-            existing_tag_sha=existing_tag_sha,
-            existing_marker_matches=(
-                marker_matches(root, release_tag, release_run_id)
-                if existing_tag_sha is not None
-                else False
-            ),
+            remote_main_sha=refs.main,
+            existing_tag_sha=refs.tag_commit,
+            existing_marker_matches=refs.marker_matches,
+            existing_release_public=already_public and is_ancestor(root, release_sha, refs.main),
         )
     )
+    if pre_push.action is not Action.ATTEMPT_PUBLISH:
+        return report_eligibility(
+            pre_push, refs, release_tag, release_sha, output_path, already_public if check_only else None,
+        )
+    if check_only:
+        raise PublicationError(f"Could not verify reservation for {release_tag}.")
 
-    if pre_push.action is Action.FAIL:
-        raise PublicationError(pre_push.diagnostic)
-    if pre_push.action is Action.SKIP_MAIN_ADVANCED:
-        print(f"::notice::{pre_push.diagnostic}")
-        write_outputs(output_path, {"published": "false", "deploy_pages": "false"})
-        return PublicationResult(pre_push.action, False, False, release_sha)
-
-    terminal = pre_push
-    if pre_push.action is Action.REUSE:
-        print(pre_push.diagnostic)
-    else:
+    local_target = resolve_commit(root, f"refs/tags/{release_tag}")
+    if local_target is None:
         run_git(
             root,
             "tag",
@@ -329,91 +378,35 @@ def publish_release(
             f"Release-Run-ID: {release_run_id}",
         )
 
-        push_config: tuple[str, ...] = ()
-        if github_token:
-            auth = base64.b64encode(
-                f"x-access-token:{github_token}".encode("utf-8")
-            ).decode("ascii")
-            push_config = (
-                f"http.https://github.com/.extraheader=AUTHORIZATION: basic {auth}",
-            )
-        push = run_git(
-            root,
-            "push",
-            "--atomic",
-            remote,
-            "HEAD:refs/heads/main",
-            f"refs/tags/{release_tag}:refs/tags/{release_tag}",
-            check=False,
-            extra_config=push_config,
-        )
-        if push.returncode == 0:
-            terminal = decide_publication(
-                PublicationFacts(
-                    release_sha=release_sha,
-                    base_sha=base_sha,
-                    release_tag=release_tag,
-                    head_sha=head_sha,
-                    dirty=False,
-                    remote_main_sha=remote_main_sha,
-                    push_attempted=True,
-                    push_succeeded=True,
-                )
-            )
-        else:
-            fetch_release_refs(root, remote)
-            updated_main_sha = run_git(
-                root, "rev-parse", f"{remote}/main"
-            ).stdout.strip()
-            updated_tag_sha = remote_annotated_tag_sha(root, remote, release_tag)
-            terminal = decide_publication(
-                PublicationFacts(
-                    release_sha=release_sha,
-                    base_sha=base_sha,
-                    release_tag=release_tag,
-                    head_sha=head_sha,
-                    dirty=False,
-                    remote_main_sha=remote_main_sha,
-                    push_attempted=True,
-                    push_succeeded=False,
-                    updated_main_sha=updated_main_sha,
-                    updated_tag_sha=updated_tag_sha,
-                    release_is_ancestor_of_updated_main=is_ancestor(
-                        root, release_sha, f"{remote}/main"
-                    ),
-                    updated_marker_matches=(
-                        marker_matches(root, release_tag, release_run_id)
-                        if updated_tag_sha is not None
-                        else False
-                    ),
-                )
-            )
+    elif local_target != release_sha or not marker_matches(root, release_tag, release_run_id):
+        raise PublicationError(f"Conflicting local reservation for {release_tag}.")
 
-        if terminal.action is Action.FAIL:
-            raise PublicationError(terminal.diagnostic)
-        if terminal.action is Action.SKIP_MAIN_ADVANCED:
-            print(f"::notice::{terminal.diagnostic}")
-            write_outputs(output_path, {"published": "false", "deploy_pages": "false"})
-            return PublicationResult(terminal.action, False, False, release_sha)
-        prefix = "::notice::" if terminal.action is Action.RECOVER else ""
-        print(f"{prefix}{terminal.diagnostic}")
+    push_config: tuple[str, ...] = ()
+    if github_token:
+        auth = base64.b64encode(f"x-access-token:{github_token}".encode("utf-8")).decode("ascii")
+        push_config = (f"http.https://github.com/.extraheader=AUTHORIZATION: basic {auth}",)
+    tag_ref = f"refs/tags/{release_tag}"
+    push = run_git(root, "push", remote, f"{tag_ref}:{tag_ref}", check=False, extra_config=push_config)
 
-    latest_tag = latest_release_tag(root)
-    deploy_pages = should_deploy_pages(release_tag, latest_tag)
-    if not deploy_pages:
-        print(
-            f"::notice::Repairing {release_tag} assets without replacing the newer "
-            f"{latest_tag} Pages installer."
+    # An unchanged main ref would be omitted by git push even with --atomic.
+    # Recheck both refs after positive and ambiguous push results.
+    updated = read_release_refs(root, remote, release_tag, release_run_id)
+    terminal = decide_publication(
+        PublicationFacts(
+            release_sha=release_sha,
+            base_sha=base_sha,
+            release_tag=release_tag,
+            head_sha=head_sha,
+            dirty=False,
+            remote_main_sha=refs.main,
+            push_attempted=True,
+            push_succeeded=push.returncode == 0,
+            updated_main_sha=updated.main,
+            updated_tag_sha=updated.tag_commit,
+            updated_marker_matches=updated.marker_matches,
         )
-    write_outputs(
-        output_path,
-        {
-            "deploy_pages": "true" if deploy_pages else "false",
-            "sha": release_sha,
-            "published": "true",
-        },
     )
-    return PublicationResult(terminal.action, True, deploy_pages, release_sha)
+    return report_eligibility(terminal, updated, release_tag, release_sha, output_path)
 
 
 def parse_args() -> argparse.Namespace:
@@ -426,6 +419,7 @@ def parse_args() -> argparse.Namespace:
         "--release-run-id", default=os.environ.get("RELEASE_RUN_ID", "")
     )
     parser.add_argument("--remote", default="origin")
+    parser.add_argument("--check-eligibility", action="store_true")
     parser.add_argument(
         "--github-output",
         type=Path,
@@ -448,8 +442,10 @@ def main() -> int:
             github_token=os.environ.get("GITHUB_TOKEN", ""),
             remote=args.remote,
             output_path=args.github_output,
+            has_public_release=public_github_release,
+            check_only=args.check_eligibility,
         )
-    except (OSError, PublicationError) as exc:
+    except (OSError, ValueError, PublicationError) as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 1
     return 0

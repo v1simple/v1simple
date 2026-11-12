@@ -203,6 +203,47 @@ BleBondBackupStatus inspectBleBondBackup(fs::FS& fs, const char* path) {
     return readBleBondBackup(fs, path, contents);
 }
 
+uint64_t identifyBleBondBackup(const BondBackupHeader& header, const ble_store_value_sec* ourSecs,
+                               const ble_store_value_sec* peerSecs) {
+    // FNV-1a identifies the exact validated archive bytes, including an empty
+    // archive. The marker is for accidental removal or substitution of media.
+    uint64_t identity = 14695981039346656037ull;
+    const auto add = [&identity](const void* data, size_t size) {
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        for (size_t i = 0; i < size; ++i) identity = (identity ^ bytes[i]) * 1099511628211ull;
+    };
+    add(&header, sizeof(header));
+    add(ourSecs, header.ourSecCount * sizeof(ble_store_value_sec));
+    add(peerSecs, header.peerSecCount * sizeof(ble_store_value_sec));
+    return identity;
+}
+
+namespace {
+
+bool readCurrentBackup(StorageManager& storage, BondBackupContents& contents) {
+    if (!storage.isReady() || !storage.isSDCard()) return false;
+    StorageManager::SDLockBlocking sdLock(storage.getSDMutex());
+    fs::FS* sdFs = sdLock ? storage.getFilesystem() : nullptr;
+    return sdFs && readBleBondBackup(*sdFs, kBleBondBackupPath, contents) == BleBondBackupStatus::Valid;
+}
+
+} // namespace
+
+std::optional<uint64_t> currentBleBondBackupIdentity(StorageManager& storage) {
+    BondBackupContents contents;
+    if (!readCurrentBackup(storage, contents)) return std::nullopt;
+    return identifyBleBondBackup(contents.header, contents.ourSecs.data(), contents.peerSecs.data());
+}
+
+bool restoreMatchingBleBondBackup(StorageManager& storage, uint64_t identity) {
+    if (gRestoreAttempted || gBondRecoveryState.load(std::memory_order_acquire) == RecoveryState::Unavailable)
+        return false;
+    BondBackupContents contents;
+    if (!readCurrentBackup(storage, contents) ||
+        identifyBleBondBackup(contents.header, contents.ourSecs.data(), contents.peerSecs.data()) != identity) return false;
+    return restoreBleBondBackupContents(contents, bleBondRecoveryPending()) >= 0;
+}
+
 int restoreBleBondBackup(fs::FS& fs, const char* livePath) {
     if (!livePath || livePath[0] == '\0') {
         return -1;
@@ -243,7 +284,7 @@ void restoreOrBackupBleBondsAtBoot(StorageManager& storage, size_t bondCount) {
         StorageManager::SDLockBlocking sdLock(storage.getSDMutex());
         fs::FS* sdFs = sdLock ? storage.getFilesystem() : nullptr;
         if (sdFs) {
-            const int restored = restoreBleBondBackup(*sdFs, "/v1simple_ble_bonds.bin");
+            const int restored = restoreBleBondBackup(*sdFs, kBleBondBackupPath);
             if (restored > 0) Serial.printf("[BLE] Restored %d bond(s) from SD backup\n", restored);
         }
     }

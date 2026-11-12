@@ -17,7 +17,7 @@ int enqueueCurrentBleBondBackupSnapshot();
 
 // Fresh-flash migration waits for its queued Core-0 write before deleting
 // NimBLE's NVS bonds. The caller performs no SD I/O and the wait is bounded.
-int backupCurrentBleBondsViaCore0AtBoot();
+int backupCurrentBleBondsViaCore0AtBoot(uint64_t& identity);
 
 // Drains/stops the Core-0 writer during graceful power-off. A blocked SD
 // subsystem is bounded by timeoutMs from the caller's perspective.

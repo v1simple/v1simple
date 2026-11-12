@@ -85,11 +85,6 @@ void V1BLEClient::publishCommandSuccess(const uint8_t* data, size_t length, uint
                            data[2] == 0xE6 && data[4] + 6u == length &&
                            data[length - 1] == ESP_PACKET_END &&
                            data[length - 2] == calcV1Checksum(data, length - 2);
-    if (canonical && length == 7) {
-        if (data[3] == 0x42) alertDataRequestGate_.recordStop(sentSession);
-        else if (data[3] == PACKET_ID_REQ_START_ALERT && rejectedIngress == 0)
-            alertDataRequestGate_.recordSuccessfulSend(sentSession, static_cast<uint32_t>(millis()));
-    }
     if (canonical && length == 10 && data[3] == PACKET_ID_REQ_WRITE_VOLUME) {
         volumeWriteReceipt_.sent(sentSession, ingressBoundary);
         if (rejectedIngress) volumeWriteReceipt_.reject(data[3], sentSession, rejectedIngress);
@@ -97,24 +92,36 @@ void V1BLEClient::publishCommandSuccess(const uint8_t* data, size_t length, uint
 }
 
 SendResult V1BLEClient::sendCharacteristicCommand(NimBLERemoteCharacteristic* characteristic,
-    const uint8_t* data, size_t length, bool response, uint32_t phoneGeneration) {
+    const uint8_t* data, size_t length, bool response, uint32_t phoneGeneration, uint8_t indexedAlertRequestId) {
     if (!data || length == 0 || length > sizeof(commandTaskContext_.data)) return SendResult::FAILED;
     serviceCommandWrite();
     if (!isConnected() || !characteristic || bleState_ == BLEState::QUIESCING) return SendResult::FAILED;
+    const uint8_t alertRequestId = indexedAlertRequestId ? indexedAlertRequestId : v1AlertRequestId(data, length);
+    const auto publish = [&](uint32_t generation, uint32_t boundary, uint32_t rejected) {
+        commandCompletedIngress_[static_cast<size_t>(commandOwner_)] = boundary;
+        if (alertRequestId == PACKET_ID_REQ_STOP_ALERT) {
+            if (rejected) alertDataRequestGate_.recordRejectedStop(generation);
+            else alertDataRequestGate_.recordStop(generation, phoneGeneration, boundary,
+                                                  latestV1NotificationIngressSequence());
+        } else if (alertRequestId == PACKET_ID_REQ_START_ALERT && !rejected) {
+            alertDataRequestGate_.recordSuccessfulSend(generation, static_cast<uint32_t>(millis()));
+        }
+        publishCommandSuccess(data, length, generation, boundary, rejected);
+    };
     if (commandActive_) {
         const auto& context = commandTaskContext_;
         if (context.commandOwner != commandOwner_) return SendResult::NOT_YET;
         if (context.characteristic != characteristic || context.length != length || context.response != response ||
-            context.phoneGeneration != phoneGeneration || memcmp(context.data, data, length) != 0) {
+            context.phoneGeneration != phoneGeneration || context.alertRequestId != alertRequestId ||
+            memcmp(context.data, data, length) != 0) {
             // A changed intent cannot leave the previous write queued for later.
             cancelCommand(commandOwner_);
             return SendResult::FAILED;
         }
         if (discoveryTaskRunning_.load(std::memory_order_acquire)) return SendResult::IN_FLIGHT;
         const uint32_t boundary = commandWorkerIngress_.load(std::memory_order_relaxed);
-        commandCompletedIngress_[static_cast<size_t>(commandOwner_)] = boundary;
         if (length > 3) promoteCommandCaptureBoundary(data[3], boundary);
-        publishCommandSuccess(data, length, context.generation, boundary, commandRejectionIngress_);
+        publish(context.generation, boundary, commandRejectionIngress_);
         commandActive_ = false;
         return SendResult::SENT;
     }
@@ -139,13 +146,18 @@ SendResult V1BLEClient::sendCharacteristicCommand(NimBLERemoteCharacteristic* ch
         const uint32_t boundary = latestV1NotificationIngressSequence();
         if (requiresContinuousAlertInput && !permitsInTheBoxMute(alertInputRevision))
             return SendResult::NOT_YET;
-        if (!characteristic->writeValue(data, length, false)) return SendResult::NOT_YET;
+        if (alertRequestId) {
+            synchronousAlertIngress_ = boundary;
+            commandRejectionIngress_ = 0;
+            synchronousAlertRequestId_ = alertRequestId;
+        }
+        const bool sent = characteristic->writeValue(data, length, false);
+        synchronousAlertRequestId_ = 0;
+        if (!sent) return SendResult::NOT_YET;
         if (!sessionPublicationGate_.accepts(generation)) return SendResult::FAILED;
-        // A synchronous write already reached this V1 session. The phone queue
-        // binds STOP ownership to its captured sender, so a phone replacement
-        // cannot inherit it and recovery still observes the delivered STOP.
-        commandCompletedIngress_[static_cast<size_t>(commandOwner_)] = boundary;
-        publishCommandSuccess(data, length, generation, boundary);
+        // A synchronous write already reached this V1 session. Any STOP
+        // authority belongs to the captured sender, even after phone replacement.
+        publish(generation, boundary, alertRequestId ? commandRejectionIngress_ : 0);
         return SendResult::SENT;
     }
     commandTaskContext_ = {};
@@ -156,6 +168,7 @@ SendResult V1BLEClient::sendCharacteristicCommand(NimBLERemoteCharacteristic* ch
     commandTaskContext_.commandOwner = commandOwner_;
     commandTaskContext_.alertInputRevision = alertInputRevision;
     commandTaskContext_.requiresContinuousAlertInput = requiresContinuousAlertInput;
+    commandTaskContext_.alertRequestId = alertRequestId;
     commandTaskContext_.length = length;
     commandTaskContext_.response = response;
     memcpy(commandTaskContext_.data, data, length);
@@ -195,18 +208,7 @@ bool V1BLEClient::requestAlertData() {
         return true;
     }
 
-    // Keep protocol bytes explicit for direct verification.
-    uint8_t packet[] = {ESP_PACKET_START,
-                        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
-                        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
-                        PACKET_ID_REQ_START_ALERT,
-                        0x01,
-                        0x00,
-                        ESP_PACKET_END};
-
-    packet[5] = calcV1Checksum(packet, 5);
-
-    return sendCommand(packet, sizeof(packet));
+    return sendCommand(kV1AlertStartRequest, sizeof(kV1AlertStartRequest));
 }
 
 void V1BLEClient::onV1FirmwareVersionReceived(uint32_t version) {

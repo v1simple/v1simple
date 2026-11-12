@@ -142,6 +142,10 @@ bool WifiStationLifecycle::testSavedNetwork(const Environment& environment, size
         return false;
     }
 
+    bool credentialUnavailable = false;
+    const String password = settings_.getWifiStaSlotPassword(index, &credentialUnavailable);
+    if (credentialUnavailable) return false;
+
     if (!settings_.setWifiClientEnabled(true).success) {
         return false;
     }
@@ -149,7 +153,7 @@ bool WifiStationLifecycle::testSavedNetwork(const Environment& environment, size
     cancelMaintenanceAutoConnect(environment, "slot_test");
     state_.candidates.collisionMask &= static_cast<uint8_t>(~(1U << index));
     resetReconnectFailures();
-    return connectToNetwork(environment, slot.ssid, settings_.getWifiStaSlotPassword(index), false, static_cast<int>(index));
+    return connectToNetwork(environment, slot.ssid, password, false, static_cast<int>(index));
 }
 
 bool WifiStationLifecycle::connectToNetwork(const Environment& environment, const String& ssid, const String& password, bool persistCredentialsOnSuccess,
@@ -422,8 +426,11 @@ bool WifiStationLifecycle::queueNextMaintenanceAutoConnectSlot(const Environment
             continue;
         }
 
+        bool credentialUnavailable = false;
+        const String password = settings_.getWifiStaSlotPassword(slotIndex, &credentialUnavailable);
+        if (credentialUnavailable) continue;
         Serial.printf("[WiFiClient] Maintenance STA auto-connect trying slot %u\n", static_cast<unsigned>(slotIndex));
-        if (connectToNetwork(environment, slot.ssid, settings_.getWifiStaSlotPassword(slotIndex), false,
+        if (connectToNetwork(environment, slot.ssid, password, false,
                              static_cast<int>(slotIndex), true)) {
             return true;
         }

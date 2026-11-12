@@ -54,11 +54,13 @@ The reader derives X/Y mapping coefficients from that registered crop; this is
 not a perspective, rotation or arbitrary camera-layout solver.
 
 The reader also verifies the retained display contract against the window's
-recorded size and hash, then verifies and consumes the exact stimulus bytes named
-by that contract. A missing contract or changed expectation file cannot receive
-a visual pass, even when the camera files remain intact. This prevents a stale
-or edited expectation file from being graded under the original contract hash.
-It does not add authentication against coordinated rewriting of all metadata.
+recorded size and hash. That contract binds the consumed stimulus bytes, camera
+manifest path and bytes, capture identity, build receipt and firmware boot, git
+and image identities. Disagreement with the summary prevents decoding. New
+contracts also bind the full source commit. The reader reports the observed git
+abbreviation for older bound contracts, and marks runtime identity unverified
+when an old recording lacks that binding. Coordinated rewriting of all metadata
+remains outside the hash-integrity claim.
 
 ## What a verdict establishes
 

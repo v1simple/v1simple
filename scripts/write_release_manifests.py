@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from build_context import Partition, read_partitions
+from check_release_firmware_version import require_release_firmware_version
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,10 +129,9 @@ def manifest(version: str, image: str, offset: int) -> dict[str, object]:
 
 
 def write_manifests(release_dir: Path, version: str, partitions_path: Path) -> None:
-    if not version or version.strip() != version:
-        raise ValueError("release version must be a non-empty trimmed string")
     partitions = read_partitions(partitions_path)
     validate_release_images(release_dir, partitions)
+    require_release_firmware_version(release_dir / APP_IMAGE, version)
 
     documents = {
         FRESH_MANIFEST: manifest(version, FRESH_IMAGE, 0),

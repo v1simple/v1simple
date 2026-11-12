@@ -151,10 +151,10 @@ void test_preempt_closes_active_adjust_session() {
     TEST_ASSERT_EQUAL(1, gDisplay.hideBrightnessSliderCalls);
     TEST_ASSERT_EQUAL(1, gRestoreDisplayCalls);
     TEST_ASSERT_EQUAL(0, gSettings.saveDeferredBackupCalls);
-    TEST_ASSERT_EQUAL(1, gSettings.requestDeferredPersistCalls);
+    TEST_ASSERT_EQUAL(0, gSettings.requestDeferredPersistCalls);
     TEST_ASSERT_EQUAL(180, gSettings.settings.brightness);
     TEST_ASSERT_EQUAL(60, gSettings.settings.voiceVolume);
-    TEST_ASSERT_EQUAL(60, gLastAudioVolume);
+    TEST_ASSERT_EQUAL(0, gAudioSetVolumeCalls);
 
     // The menu stays closed: the loop is no longer consumed, and nothing
     // re-enters adjust mode without a fresh user gesture.
@@ -170,7 +170,7 @@ void test_preempt_is_single_shot() {
     TEST_ASSERT_EQUAL(1, gDisplay.hideBrightnessSliderCalls);
     TEST_ASSERT_EQUAL(1, gRestoreDisplayCalls);
     TEST_ASSERT_EQUAL(0, gSettings.saveDeferredBackupCalls);
-    TEST_ASSERT_EQUAL(1, gSettings.requestDeferredPersistCalls);
+    TEST_ASSERT_EQUAL(0, gSettings.requestDeferredPersistCalls);
 }
 
 void test_maintenance_long_press_saves_active_slider_edits_before_request() {
@@ -345,12 +345,47 @@ void test_obd_release_uses_current_safety_and_status_with_maintenance_fallback()
 void test_ten_second_hold_in_settings_keeps_maintenance_save_fallback() {
     gObdStatus.enabled = true;
     enterAdjustMode(1000);
+    gDisplay.activeSliderFromTouch = 0;
+    queueTouch(600, 100);
+    TEST_ASSERT_TRUE(processInput(1700, false));
     processInput(2000, true);
     processInput(12000, true);
     processInput(12002, false);
     TEST_ASSERT_EQUAL_INT(0, gObdPairRequests);
     TEST_ASSERT_EQUAL_INT(1, gMaintenanceBootCalls);
     TEST_ASSERT_EQUAL_INT(1, gSettings.saveDeferredBackupCalls);
+}
+
+void test_latest_brightness_is_applied_when_boot_exits_before_repaint() {
+    enterAdjustMode(1000);
+    gDisplay.activeSliderFromTouch = 0;
+    processInput(1800, true);
+    queueTouch(40, 100);
+    TEST_ASSERT_TRUE(processInput(2170, true));
+    queueTouch(600, 100);
+    TEST_ASSERT_TRUE(processInput(2180, true));
+    TEST_ASSERT_EQUAL_INT(1, gDisplay.updateSettingsSlidersCalls);
+    TEST_ASSERT_FALSE(processInput(2200, false));
+    TEST_ASSERT_EQUAL_INT(1, gDisplay.updateSettingsSlidersCalls);
+    TEST_ASSERT_EQUAL_UINT8(80, gDisplay.lastBrightness);
+    TEST_ASSERT_EQUAL_UINT8(80, gSettings.get().brightness);
+    TEST_ASSERT_EQUAL_INT(1, gSettings.saveDeferredBackupCalls);
+}
+
+void test_warning_restores_latest_slider_brightness_before_repaint() {
+    enterAdjustMode(1000);
+    gDisplay.activeSliderFromTouch = 0;
+    queueTouch(40, 100);
+    TEST_ASSERT_TRUE(processInput(1505, false));
+    queueTouch(600, 100);
+    TEST_ASSERT_TRUE(processInput(1525, false));
+    TEST_ASSERT_EQUAL_INT(1, gDisplay.updateSettingsSlidersCalls);
+    gModule.suspendForPresentationOwner();
+    gDisplay.setBrightness(255); // Warning temporarily owns PWM.
+    TEST_ASSERT_TRUE(gModule.restorePresentationIfOwned());
+    TEST_ASSERT_EQUAL_UINT8(80, gDisplay.lastBrightness);
+    TEST_ASSERT_EQUAL_UINT8(80, gDisplay.lastSettingsBrightness);
+    TEST_ASSERT_EQUAL_UINT8(180, gSettings.get().brightness);
 }
 
 void test_short_and_double_boot_thresholds_are_unchanged() {
@@ -543,6 +578,8 @@ int main(int, char**) {
     RUN_TEST(test_preempt_is_noop_when_menu_closed);
     RUN_TEST(test_preempt_closes_active_adjust_session);
     RUN_TEST(test_preempt_is_single_shot);
+    RUN_TEST(test_latest_brightness_is_applied_when_boot_exits_before_repaint);
+    RUN_TEST(test_warning_restores_latest_slider_brightness_before_repaint);
     RUN_TEST(test_maintenance_long_press_saves_active_slider_edits_before_request);
     RUN_TEST(test_released_boot_never_requests_maintenance);
     RUN_TEST(test_boot_hold_requests_maintenance_only_once_on_release);

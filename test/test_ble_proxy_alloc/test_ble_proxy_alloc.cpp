@@ -164,7 +164,7 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
 }
 
 SendResult V1BLEClient::sendCharacteristicCommand(NimBLERemoteCharacteristic* characteristic,
-    const uint8_t* data, size_t length, bool response, uint32_t) {
+    const uint8_t* data, size_t length, bool response, uint32_t, uint8_t) {
     if (characteristic && characteristic == pCommandCharLong_)
         return characteristic->writeValue(data, length, response) ? SendResult::SENT : SendResult::NOT_YET;
     return sendCommandWithResult(data, length);

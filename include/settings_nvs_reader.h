@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <nvs.h>
 #include <cstring>
 #include <memory>
@@ -30,6 +31,14 @@ public:
     uint32_t getUInt(const char* key, uint32_t fallback = 0) { return scalar(key, fallback, nvs_get_u32); }
     int64_t getLong64(const char* key, int64_t fallback = 0) { return scalar(key, fallback, nvs_get_i64); }
     bool getBool(const char* key, bool fallback = false) { return getUChar(key, fallback ? 1 : 0) == 1; }
+
+    bool getFixedBlob(const char* key, void* buffer, size_t expectedSize) {
+        size_t size = expectedSize;
+        if (!accept(nvs_get_blob(handle_, key, buffer, &size))) return false;
+        if (size == expectedSize) return true;
+        error_ = ESP_ERR_INVALID_SIZE;
+        return false;
+    }
 
     String getString(const char* key, const char* fallback = "", bool required = false) {
         size_t bytes = 0;
@@ -73,3 +82,26 @@ private:
     nvs_handle_t handle_ = 0;
     esp_err_t error_ = ESP_OK;
 };
+
+// Preferences::isKey reports false on read errors. A credential transaction
+// may retire its journal only after checked absence or exact readback.
+inline bool writeCheckedNvsString(Preferences& writer, const char* name, const char* key,
+                                  bool present, const String& value) {
+    if (!present) {
+        SettingsNvsReader before(name);
+        if (!before.good()) return false;
+        const bool exists = before.isKey(key);
+        if (!before.good() || (exists && !writer.remove(key))) return false;
+    } else if (writer.putString(key, value) != value.length()) {
+        return false;
+    }
+
+    SettingsNvsReader after(name);
+    if (!after.good()) return false;
+    if (!present) {
+        const bool stillPresent = after.isKey(key);
+        return after.good() && !stillPresent;
+    }
+    const String readBack = after.getString(key, "", true);
+    return after.good() && readBack == value;
+}

@@ -14,6 +14,7 @@
 #include "Arduino.h"
 #endif
 #include <cstdint>
+#include <optional>
 
 // Minimal display font enum (for compatibility with older tests)
 enum FontStyle : uint8_t {
@@ -275,6 +276,16 @@ public:
     void save() { ++saveCalls; }
     void updateBrightness(uint8_t brightness) { settings.brightness = brightness; }
     void updateVoiceVolume(uint8_t volume) { settings.voiceVolume = volume; }
+    uint8_t localSliderBrightness() const { return settings.brightness; }
+    uint8_t localSliderVoiceVolume() const { return settings.voiceVolume; }
+    bool saveLocalSliderAdjustments(std::optional<uint8_t> brightness, std::optional<uint8_t> voiceVolume,
+                                    bool deferPersistence) {
+        if (brightness) settings.brightness = *brightness;
+        if (voiceVolume) settings.voiceVolume = *voiceVolume;
+        if (!deferPersistence) return saveDeferredBackup();
+        requestDeferredPersist();
+        return false;
+    }
     bool saveDeferredBackup() { ++saveDeferredBackupCalls; return true; }
     void requestDeferredPersist() { ++requestDeferredPersistCalls; }
     void serviceDeferredPersist(uint32_t) {}

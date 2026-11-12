@@ -383,7 +383,7 @@ void test_runtime_callers_contain_no_sd_lock_or_filesystem_write() {
     TEST_ASSERT_EQUAL(std::string::npos, autoHeal.find("getFilesystem"));
 
     const std::string bootBackup = functionBody(
-        writer, "int backupCurrentBleBondsViaCore0AtBoot()");
+        writer, "int backupCurrentBleBondsViaCore0AtBoot(");
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           bootBackup.find("enqueueCurrentBondSnapshotImpl"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,

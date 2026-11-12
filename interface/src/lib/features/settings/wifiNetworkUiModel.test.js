@@ -68,25 +68,24 @@ describe('WiFi network UI model', () => {
         });
     });
 
-    it('normalizes labels and priority while preserving the exact SSID on a label-only edit', () => {
+    it('omits untouched priority and preserves the exact SSID on a label-only edit', () => {
         const editor = openWifiEditorState(
             3,
             {
                 mode: 'edit',
                 label: ' Phone ',
                 ssid: ' Hotspot ',
-                priority: 999,
                 hasExistingPassword: true
-            },
-            4
+            }
         );
 
-        expect(buildWifiEditorRequest(editor)).toEqual({
+        expect(buildWifiEditorRequest(editor, ' Hotspot ')).toEqual({
             index: 3,
+            expectedSsid: ' Hotspot ',
             label: 'Phone',
-            ssid: ' Hotspot ',
-            priority: 255
+            ssid: ' Hotspot '
         });
+        expect(buildWifiEditorRequest({ ...editor, priority: 999 }).priority).toBe(255);
         expect(
             closeWifiEditorState(editor, { actionInFlight: true })
         ).toEqual({ state: editor, closed: false });

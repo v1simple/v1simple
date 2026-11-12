@@ -665,6 +665,7 @@ def test_startup_progress_is_flushed_before_maintenance_usb_and_upload() -> None
         presentation_api_base_url="http://fixture.invalid",
     )
     with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(output), \
+            mock.patch.object(run_window_module, "DutLease"), \
             mock.patch.object(run_window_module, "V1RadioLease") as lease, \
             mock.patch.object(run_window_module, "wait_for_presentation_configuration", capture), \
             mock.patch.object(run_window_module, "wait_for_port", port), \
@@ -1543,9 +1544,76 @@ def test_presentation_selection_intent_is_explicit() -> None:
 
 def test_bench_upload_preserves_littlefs_settings() -> None:
     with mock.patch.object(run_window_module.subprocess, "run") as run:
-        run_window_module.run_upload("/dev/test", skip_web=False)
+        target = run_window_module.UsbTarget("/dev/test", "fixture-serial")
+        run_window_module.run_upload(target, skip_web=False)
     command = run.call_args.args[0]
-    assert_true("-u" in command and "-f" not in command, str(command))
+    assert_true(command[1:] == ["-u", "--upload-port", target.port], str(command))
+    assert_true(run.call_args.kwargs["env"][run_window_module.BENCH_USB_SERIAL_ENV] == target.serial_number,
+                "upload did not receive the pinned USB identity")
+
+
+def test_raw_and_preserving_benches_share_one_dut_lease() -> None:
+    from behavior_bench import DutLease as PreservingDutLease
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        lock = root / "managed-dut.lock"
+        args = SimpleNamespace(camera=False, git_sha=GIT_SHA)
+        with PreservingDutLease(lock), \
+                mock.patch.object(run_window_module, "DUT_LEASE_PATH", lock), \
+                mock.patch.object(run_window_module, "V1RadioLease") as radio, \
+                mock.patch.object(run_window_module, "wait_for_port") as discover:
+            try:
+                run_window_module.collect_live(args, root / "raw", {})
+            except RuntimeError as exc:
+                assert_true("owns the DUT" in str(exc), str(exc))
+            else:
+                raise AssertionError("raw collection began while preserving bench owned the DUT")
+            radio.assert_not_called()
+            discover.assert_not_called()
+        with run_window_module.DutLease(lock):
+            pass
+
+
+def test_raw_usb_never_substitutes_unselected_esp32_and_follows_only_same_serial() -> None:
+    from serial.tools import list_ports
+
+    def device(port, serial, vid=0x303A):
+        return SimpleNamespace(device=port, serial_number=serial, vid=vid, pid=0x1001)
+
+    selected = device("/fixture/usb/target", "fixture-target")
+    other = device("/fixture/usb/other", "fixture-other")
+    renamed = device("/fixture/usb/renamed", selected.serial_number)
+    generic = device("/fixture/usb/unsupported", "fixture-generic", vid=0x10C4)
+    with mock.patch.object(list_ports, "comports", return_value=[other, generic]) as discover:
+        try:
+            run_window_module.wait_for_port(selected.device, 0)
+        except RuntimeError as exc:
+            assert_true("selected" in str(exc), str(exc))
+        else:
+            raise AssertionError("an unrelated ESP32 replaced a missing explicit target")
+        discover.return_value = [other, selected, generic]
+        target = run_window_module.wait_for_port(selected.device, 0)
+        assert_true(target == (selected.device, selected.serial_number), str(target))
+        discover.return_value = [device(selected.device, other.serial_number), renamed]
+        reopened = run_window_module.wait_for_port("", 0, serial_number=target.serial_number)
+        assert_true(reopened == (renamed.device, selected.serial_number), str(reopened))
+        discover.return_value = [other, device(selected.device, other.serial_number)]
+        try:
+            run_window_module.wait_for_port("", 0, serial_number=target.serial_number)
+        except RuntimeError as exc:
+            assert_true("selected" in str(exc), str(exc))
+        else:
+            raise AssertionError("USB reopen admitted a recycled pathname with a different serial")
+        for ports in ([other, selected], [other, device(selected.device, other.serial_number)],
+                      [device(selected.device, None)]):
+            discover.return_value = ports
+            try:
+                run_window_module.wait_for_port("", 0)
+            except RuntimeError as exc:
+                assert_true("match" in str(exc) or "serial number" in str(exc), str(exc))
+            else:
+                raise AssertionError("ambiguous or unidentifiable ESP32 admitted for upload")
 
 
 def test_bench_joins_maintenance_wifi_without_usb_status_query() -> None:
@@ -1698,6 +1766,7 @@ def test_display_contract_binds_snapshot_stimulus_scenario_runtime_and_camera() 
             out_dir,
             artifacts=artifacts,
             runtime_identity={"boot_id": 7, "git_sha": "a" * 40, "image_id": "b" * 9},
+            source_commit="a" * 40,
             camera_result={"capture_manifest": "capture_manifest.json", "capture_id": "c" * 64},
         )
         payload = json.loads((out_dir / REPLAY_DISPLAY_CONTRACT_NAME).read_text())
@@ -1707,6 +1776,8 @@ def test_display_contract_binds_snapshot_stimulus_scenario_runtime_and_camera() 
         assert_true(payload["notification_delivery"]["path"] == REPLAY_DELIVERY_NAME, str(payload))
         assert_true(payload["terminal_persisted_emulator_state"]["path"] == "v1_emulator_state.json", str(payload))
         assert_true(payload["runtime"]["boot_id"] == 7 and payload["camera"]["capture_id"] == "c" * 64,
+                    str(payload))
+        assert_true(payload["schema_version"] == 2 and payload["runtime"]["source_git_sha"] == "a" * 40,
                     str(payload))
 
 
@@ -1757,6 +1828,8 @@ def main() -> int:
     test_presentation_capture_accepts_unassigned_slot_but_rejects_malformed_slot()
     test_presentation_selection_intent_is_explicit()
     test_bench_upload_preserves_littlefs_settings()
+    test_raw_and_preserving_benches_share_one_dut_lease()
+    test_raw_usb_never_substitutes_unselected_esp32_and_follows_only_same_serial()
     test_bench_joins_maintenance_wifi_without_usb_status_query()
     test_bench_retries_wifi_join_during_http_wait()
     test_wifi_join_uses_shared_deadline()

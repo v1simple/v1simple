@@ -429,6 +429,22 @@ void switchFromExistingLink(bool automatic, bool sameSsid, int outcome) {
 
 #include "contract_cases.h"
 
+void unavailableSavedCredentialNeverStartsAssociation() {
+    WiFiManager manager{};
+    WiFi = WiFiClass{};
+    manager.settings_.value.wifiStaSlots[0].ssid = "Saved";
+    manager.settings_.passwordUnavailable = true;
+    require(!manager.testSavedNetwork(0), "manual Test must defer while password authority is unresolved");
+
+    manager.station_.selectSessionMode(true);
+    WiFi.scanSsids = {"Saved"};
+    require(manager.station_.beginMaintenanceAutoConnectScan(manager.stationEnvironment(), false), "scan admission");
+    WiFi.scanState = 1;
+    manager.station_.processMaintenanceAutoConnect(manager.stationEnvironment());
+    manager.station_.processWifiClientConnectPhase(manager.stationEnvironment());
+    require(WiFi.begins == 0, "auto-connect must not try an unavailable password as an open network");
+}
+
 int main() {
     int failures = 0;
     const auto run = [&failures](const char* name, void (*test)()) {
@@ -440,6 +456,7 @@ int main() {
             std::cout << name << ": FAIL: " << error.what() << '\n';
         }
     };
+    run("unavailable_saved_credential_defers_manual_and_auto_connect", unavailableSavedCredentialNeverStartsAssociation);
     run("sole_scan_consumer", []() { reconnectAtScanBoundary(false, false); });
     run("sole_scan_delayed_framework_status", []() { reconnectAtScanBoundary(false, true); });
     run("shared_ui_scan", []() { reconnectAtScanBoundary(true, false); });

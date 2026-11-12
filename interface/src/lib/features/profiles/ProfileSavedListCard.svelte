@@ -1,7 +1,7 @@
 <script>
     import CardSectionHead from '#lib/components/CardSectionHead.svelte';
 
-    let { loading, profiles = [], allowEdit = true, mutationBusy = false, currentName = '', compact = false, oneditProfile, oncopyProfile, ondeleteProfile } = $props();
+    let { loading, profiles = [], allowEdit = true, mutationBusy = false, unconfirmedName, currentName = '', compact = false, oneditProfile, oncopyProfile, ondeleteProfile } = $props();
 </script>
 
 <div class="surface-card">
@@ -33,6 +33,7 @@
                             <div class="flex flex-wrap items-center gap-2">
                                 <span class="font-medium break-words">{profile.name}</span>
                                 {#if profile.name === currentName}<span class="badge badge-outline badge-sm">Selected</span>{/if}
+                                {#if profile.name === unconfirmedName}<span class="badge badge-outline badge-sm">Awaiting readback</span>{/if}
                             </div>
                             <div class="copy-caption">
                                 {profile.description || 'No description'}
@@ -42,12 +43,14 @@
                             {#if allowEdit}
                                 <button
                                     class="btn btn-secondary btn-xs"
+                                    disabled={profile.name === unconfirmedName}
                                     onclick={() => oneditProfile(profile.name)}
                                 >
                                     Edit
                                 </button>
                                 <button
                                     class="btn btn-secondary btn-xs"
+                                    disabled={profile.name === unconfirmedName}
                                     onclick={() => oncopyProfile(profile.name)}
                                 >
                                     Copy

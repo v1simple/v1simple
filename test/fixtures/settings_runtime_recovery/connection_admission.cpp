@@ -99,6 +99,9 @@ class DriveRuntime : public ConnectionCycleLifecycle {
         connectionCycle_.begin(*this);
     }
     void syncRecoveredSettings();
+    struct {
+        bool syncRecoveredSliderSettings(bool) { return false; }
+    } touchUi_;
     void processConnectionCycle(uint32_t nowMs, bool connected);
     void processObd(uint32_t nowMs, bool connected);
     void stopObdScan() override { obd_.stopActiveScan(); }

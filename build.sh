@@ -358,7 +358,9 @@ if [ "$UPLOAD_FW" = true ] && [ "$FACTORY_RESET" = false ]; then
     echo -e "${YELLOW}Resetting device for clean start...${NC}"
     sleep 1
     RESET_PORT="${UPLOAD_PORT:-${PLATFORMIO_UPLOAD_PORT:-}}"
-    if reset_device_via_rts "$RESET_PORT"; then
+    if [[ -n "${V1SIMPLE_BENCH_USB_SERIAL:-}" ]]; then
+        echo -e "${YELLOW}Managed bench will verify USB identity before resetting${NC}"
+    elif reset_device_via_rts "$RESET_PORT"; then
         echo -e "${GREEN}Device reset${NC}"
     else
         echo -e "${YELLOW}${RESET_SKIP_REASON}${NC}"

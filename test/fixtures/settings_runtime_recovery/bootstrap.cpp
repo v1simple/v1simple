@@ -562,6 +562,7 @@ void test_pending_restore_journal_preserves_reference_until_actual_boot_retry() 
         settings = SettingsManager(storage, profiles);
         settings.begin();
         storage.setFilesystem(&filesystem, false);
+        catalogShouldBeReady = false;
         DriveRuntime drive;
         MaintenanceRuntime maint;
         startBoot(maintenance, drive, maint);
@@ -577,6 +578,7 @@ void test_pending_restore_journal_preserves_reference_until_actual_boot_retry() 
         settings.begin();
         storage.setFilesystem(&filesystem, false);
         bootEffects.clear();
+        catalogShouldBeReady = true;
         DriveRuntime retryDrive;
         MaintenanceRuntime retryMaint;
         startBoot(maintenance, retryDrive, retryMaint);
@@ -586,6 +588,77 @@ void test_pending_restore_journal_preserves_reference_until_actual_boot_retry() 
         TEST_ASSERT_TRUE(profiles.loadProfile("Retained", retained));
         TEST_ASSERT_FALSE(filesystem.exists(RESTORE_TRANSACTION_PATH));
         assertHardwareEffects(maintenance, true, false);
+    }
+}
+
+void test_wrong_card_cannot_receive_staged_profile_during_bootstrap() {
+    for (bool maintenance : {false, true}) {
+        resetBoot();
+        for (const char* path : {"sd", "little", "other"}) {
+            std::filesystem::create_directories(g_tempRoot / path);
+        }
+        fs::FS sd(g_tempRoot / "sd");
+        fs::FS little(g_tempRoot / "little");
+        fs::FS other(g_tempRoot / "other");
+        storage.setFilesystem(&sd, true);
+        storage.setLittleFS(&little);
+        TEST_ASSERT_TRUE(profiles.begin(storage));
+        V1Profile original("Road");
+        original.description = "original";
+        TEST_ASSERT_TRUE(profiles.saveProfile(original).success);
+        TEST_ASSERT_TRUE(settings.saveDeferredBackup());
+
+        V1ProfileManager otherProfiles;
+        TEST_ASSERT_TRUE(otherProfiles.begin(&other));
+        V1Profile unrelated("Road");
+        unrelated.description = "unrelated card";
+        TEST_ASSERT_TRUE(otherProfiles.saveProfile(unrelated).success);
+        const std::string untouched = readFileToString(other, "/v1profiles/Road.json");
+
+        JsonDocument replacement;
+        replacement["_type"] = "v1simple_backup";
+        JsonObject incoming = replacement["profiles"].to<JsonArray>().add<JsonObject>();
+        incoming["name"] = "Road";
+        incoming["description"] = "staged uncommitted replacement";
+        JsonArray bytes = incoming["bytes"].to<JsonArray>();
+        for (int i = 0; i < 6; ++i) bytes.add(0);
+        settings.utInterruptRestoreAfterProfiles(true);
+        TEST_ASSERT_FALSE(settings.applyBackupDocument(replacement, true).success);
+        TEST_ASSERT_TRUE(little.exists(RESTORE_TRANSACTION_PATH));
+        TEST_ASSERT_TRUE(untouched != readFileToString(little, "/v1profiles/Road.json"));
+
+        storage.reset();
+        profiles = V1ProfileManager();
+        settings = SettingsManager(storage, profiles);
+        settings.begin();
+        storage.setFilesystem(&other, true);
+        storage.setLittleFS(&little);
+        catalogShouldBeReady = false;
+        DriveRuntime drive;
+        MaintenanceRuntime maint;
+        startBoot(maintenance, drive, maint);
+        TEST_ASSERT_FALSE(profiles.isReady());
+        profiles.serviceRecovery(millis() + 1001);
+        TEST_ASSERT_FALSE(profiles.isReady());
+        TEST_ASSERT_EQUAL_STRING(untouched.c_str(), readFileToString(other, "/v1profiles/Road.json").c_str());
+        TEST_ASSERT_TRUE(little.exists(RESTORE_TRANSACTION_PATH));
+
+        storage.reset();
+        profiles = V1ProfileManager();
+        settings = SettingsManager(storage, profiles);
+        settings.begin();
+        storage.setFilesystem(&sd, true);
+        storage.setLittleFS(&little);
+        catalogShouldBeReady = true;
+        DriveRuntime retryDrive;
+        MaintenanceRuntime retryMaint;
+        startBoot(maintenance, retryDrive, retryMaint);
+        V1Profile restored;
+        TEST_ASSERT_TRUE(profiles.loadProfile("Road", restored));
+        TEST_ASSERT_EQUAL_STRING("original", restored.description.c_str());
+        TEST_ASSERT_FALSE(little.exists(RESTORE_TRANSACTION_PATH));
+        TEST_ASSERT_FALSE(sd.exists(RESTORE_TRANSACTION_PATH));
+        TEST_ASSERT_EQUAL_STRING(untouched.c_str(), readFileToString(other, "/v1profiles/Road.json").c_str());
     }
 }
 
@@ -609,5 +682,6 @@ int main() {
     RUN_TEST(test_unreadable_sd_backup_preserves_settings_and_reference_recovery);
     RUN_TEST(test_failed_sd_restore_commit_has_no_success_display_effect);
     RUN_TEST(test_pending_restore_journal_preserves_reference_until_actual_boot_retry);
+    RUN_TEST(test_wrong_card_cannot_receive_staged_profile_during_bootstrap);
     return UNITY_END();
 }

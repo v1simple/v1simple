@@ -1,7 +1,7 @@
 name: Release
 
-# Every successful push-origin CI run on public main publishes the next release
-# automatically. Strict tags select the next patch; a reviewed FIRMWARE_VERSION
+# A successful push-origin CI run on the current public main can publish the next
+# release. Strict tags select the next patch; a reviewed FIRMWARE_VERSION
 # set to exactly the next minor or major selects that larger bump. Recover an
 # interrupted publication by rerunning the original Actions run so the release
 # marker stays stable.
@@ -11,9 +11,9 @@ name: Release
 #   2. Select that commit (or the same run's recorded release on retry)
 #   3. Select the semantic version without changing the checkout
 #   4. Build the exact production artifacts with that version
-#   5. Atomically publish the tag on the tested main commit
-#   6. Create or update the GitHub Release with generated notes
-#   7. Deploy the web installer to GitHub Pages
+#   5. Reserve the tag on the tested commit and reread the remote refs
+#   6. Stage all Release assets and recheck before publishing the draft
+#   7. Recheck current main and tag before deploying GitHub Pages
 
 on:
   workflow_run:
@@ -40,8 +40,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
-      published: ${{ steps.publish.outputs.published }}
-      deploy_pages: ${{ steps.publish.outputs.deploy_pages }}
+      sha: ${{ steps.base.outputs.sha }}
+      tag: ${{ steps.version.outputs.tag }}
+      deploy_pages: ${{ steps.publication.outputs.deploy_pages }}
     permissions:
       contents: write
       pages: write
@@ -199,14 +200,31 @@ jobs:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: python3 scripts/release_publication.py
 
-      - name: Create GitHub Release
+      - name: Recheck release eligibility
+        id: eligibility
         if: steps.publish.outputs.published == 'true'
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          RELEASE_SHA: ${{ steps.base.outputs.sha }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/release_publication.py --check-eligibility
+
+      - name: Stage GitHub Release assets
+        if: steps.eligibility.outputs.published == 'true'
         # v3.0.3, pinned so a mutable tag cannot change code running with contents:write.
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
+          draft: ${{ steps.eligibility.outputs.already_public != 'true' }}
+          make_latest: ${{ steps.eligibility.outputs.deploy_pages }}
+          fail_on_unmatched_files: true
+          body: |
+            This firmware uses Arduino-ESP32 under LGPL-2.1-or-later.
+            Download the [license](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/LGPL-2.1.txt) and [corresponding source with rebuild instructions](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/arduino-esp32-source.tar.gz).
           files: |
             release/*.bin
             release/manifest.json
@@ -228,20 +246,59 @@ jobs:
             release/SvelteKit-LICENSE.txt
             release/daisyUI-LICENSE.txt
             release/Tailwind-CSS-LICENSE.txt
+            release/LGPL-2.1.txt
+            release/arduino-esp32-source.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Recheck before public release
+        id: publication
+        if: steps.eligibility.outputs.published == 'true'
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          RELEASE_SHA: ${{ steps.base.outputs.sha }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/release_publication.py --check-eligibility
+
+      - name: Publish complete GitHub Release
+        if: steps.publication.outputs.deploy_pages == 'true' && steps.publication.outputs.already_public != 'true'
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest
 
   deploy-pages:
     needs: release
     if: needs.release.outputs.deploy_pages == 'true'
     runs-on: ubuntu-24.04
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Checkout qualified source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.release.outputs.sha }}
+
+      - name: Recheck Pages eligibility
+        id: eligibility
+        env:
+          BASE_SHA: ${{ needs.release.outputs.sha }}
+          RELEASE_SHA: ${{ needs.release.outputs.sha }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/release_publication.py --check-eligibility
+
       - name: Deploy GitHub Pages installer
         id: deployment
+        if: steps.eligibility.outputs.deploy_pages == 'true' && steps.eligibility.outputs.already_public == 'true'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

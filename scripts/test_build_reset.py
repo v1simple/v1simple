@@ -33,6 +33,7 @@ def run_reset(
     arguments: tuple[str, ...] = ("--reset",),
     reset_available: bool = False,
     inherited_upload_port: str = "",
+    bench_usb_serial: str = "",
     staged_audio: tuple[str, ...] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[list[str]], bool]:
     temp_dir = tempfile.TemporaryDirectory()
@@ -116,6 +117,10 @@ print("/dev/cu.usbmodemTARGETXXX")
     env["BUILD_RESET_TEST_LOG"] = str(log_path)
     env["BUILD_RESET_FAKE_SERIAL"] = "1" if reset_available else "0"
     env["PLATFORMIO_UPLOAD_PORT"] = inherited_upload_port
+    if bench_usb_serial:
+        env["V1SIMPLE_BENCH_USB_SERIAL"] = bench_usb_serial
+    else:
+        env.pop("V1SIMPLE_BENCH_USB_SERIAL", None)
     if fail_build:
         env["BUILD_RESET_FAIL_BUILD"] = "1"
 
@@ -282,6 +287,17 @@ def test_supplemental_reset_uses_only_a_concrete_upload_target() -> None:
             assert_true("skipping post-upload reset" in result.stdout, f"{context}: skip was not reported")
 
 
+def test_managed_bench_skips_path_only_supplemental_reset() -> None:
+    port = "/dev/cu.usbmodemTARGETXXX"
+    result, calls, _ = run_reset(confirmation="", reset_available=True,
+                                 arguments=("--skip-web", "--upload", "--upload-port", port),
+                                 bench_usb_serial="fixture-target")
+    assert_true(result.returncode == 0, result.stdout + result.stderr)
+    assert_true(["upload-target", port] in calls, str(calls))
+    assert_true(not any(call[0] == "reset" for call in calls), str(calls))
+    assert_true("Managed bench will verify USB identity before resetting" in result.stdout, result.stdout)
+
+
 def main() -> int:
     test_reset_contract()
     test_reset_rejects_missing_confirmation()
@@ -293,6 +309,7 @@ def main() -> int:
     test_reset_preserves_port_and_job_arguments()
     test_help_does_not_require_platformio()
     test_supplemental_reset_uses_only_a_concrete_upload_target()
+    test_managed_bench_skips_path_only_supplemental_reset()
     print("build reset tests: PASS")
     return 0
 

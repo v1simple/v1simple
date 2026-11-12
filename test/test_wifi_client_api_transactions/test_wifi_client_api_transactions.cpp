@@ -26,6 +26,7 @@ struct Probe {
     bool testResult = true;
     int upsertCalls = 0;
     bool upsertResult = true;
+    WifiClientApiService::SavedNetworkUpsertPayload upsertRequest;
     int deleteCalls = 0;
     bool deleteResult = true;
     int priorityCalls = 0;
@@ -62,10 +63,11 @@ WifiClientApiService::Runtime makeRuntime(Probe& probe) {
         return state->testResult;
     };
     runtime.testSavedNetworkCtx = &probe;
-    runtime.upsertSavedNetwork = [](const WifiClientApiService::SavedNetworkUpsertPayload&, size_t& indexOut,
+    runtime.upsertSavedNetwork = [](const WifiClientApiService::SavedNetworkUpsertPayload& request, size_t& indexOut,
                                     void* ctx) {
         auto* state = static_cast<Probe*>(ctx);
         state->upsertCalls++;
+        state->upsertRequest = request;
         indexOut = 0;
         return state->upsertResult;
     };
@@ -184,6 +186,37 @@ void test_saved_network_upsert_failure_is_not_reported_as_success() {
     TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, probe.upsertCalls);
     TEST_ASSERT_TRUE(contains(server.lastBody, "network_save_failed"));
+}
+
+void test_network_save_parses_optional_exact_slot_identity_and_priority() {
+    Probe probe;
+    const auto runtime = makeRuntime(probe);
+    WebServer edit(80);
+    edit.setArg("plain", R"({"index":0,"expectedSsid":" Old ","ssid":"New","label":"New label"})");
+    WifiClientApiService::handleApiNetworksSave(edit, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, edit.lastStatusCode);
+    TEST_ASSERT_TRUE(probe.upsertRequest.hasExpectedSsid);
+    TEST_ASSERT_EQUAL_STRING(" Old ", probe.upsertRequest.expectedSsid.c_str());
+    TEST_ASSERT_FALSE(probe.upsertRequest.hasPriority);
+
+    WebServer add(80);
+    add.setArg("plain", R"({"index":1,"expectedSsid":"","ssid":"New","priority":0})");
+    WifiClientApiService::handleApiNetworksSave(add, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, add.lastStatusCode);
+    TEST_ASSERT_TRUE(probe.upsertRequest.hasExpectedSsid);
+    TEST_ASSERT_EQUAL_STRING("", probe.upsertRequest.expectedSsid.c_str());
+    TEST_ASSERT_TRUE(probe.upsertRequest.hasPriority);
+    TEST_ASSERT_EQUAL_UINT8(0, probe.upsertRequest.priority);
+
+    for (const char* body : {R"({"expectedSsid":"Old","ssid":"New"})",
+                            R"({"index":0,"expectedSsid":null,"ssid":"New"})",
+                            R"({"index":0,"expectedSsid":"Old\u0000suffix","ssid":"New"})"}) {
+        WebServer invalid(80);
+        invalid.setArg("plain", body);
+        WifiClientApiService::handleApiNetworksSave(invalid, runtime, allow, nullptr, nullptr, nullptr);
+        TEST_ASSERT_EQUAL_INT(400, invalid.lastStatusCode);
+    }
+    TEST_ASSERT_EQUAL_INT(2, probe.upsertCalls);
 }
 
 void test_saved_network_delete_failure_is_not_reported_as_success() {
@@ -367,6 +400,7 @@ int main() {
     RUN_TEST(test_maintenance_enable_starts_now_without_deferred_boot_message);
     RUN_TEST(test_maintenance_saved_network_test_starts_live_connection);
     RUN_TEST(test_saved_network_upsert_failure_is_not_reported_as_success);
+    RUN_TEST(test_network_save_parses_optional_exact_slot_identity_and_priority);
     RUN_TEST(test_saved_network_delete_failure_is_not_reported_as_success);
     RUN_TEST(test_saved_network_connect_failure_is_not_reported_as_success);
     RUN_TEST(test_priority_batch_validates_all_entries_before_callback);

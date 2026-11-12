@@ -36,6 +36,7 @@
 #define PACKET_ID_DISPLAY_DATA 0x31    // infDisplayData
 #define PACKET_ID_ALERT_DATA 0x43      // respAlertData
 #define PACKET_ID_REQ_START_ALERT 0x41 // reqStartAlertData (matches T4S3 logic)
+#define PACKET_ID_REQ_STOP_ALERT 0x42  // reqStopAlertData
 #define PACKET_ID_VERSION 0x01         // reqVersion (request we send TO the V1)
 #define PACKET_ID_RESP_VERSION                                                                                         \
     0x02                                // respVersion (reply V1 sends back).

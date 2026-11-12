@@ -140,15 +140,28 @@ bool WiFiManager::upsertSavedNetwork(const WifiClientApiService::SavedNetworkUps
 
     const size_t index = static_cast<size_t>(selectedIndex);
     const WifiStaSlot& currentSlot = settings.wifiStaSlots[index];
+    // Indexed forms identify the slot they opened. An omitted priority lets
+    // this storage-resolved request use the actual current order.
+    if (request.hasExpectedSsid && (!request.hasIndex || request.expectedSsid != currentSlot.ssid)) {
+        return false;
+    }
+    uint8_t priority = currentSlot.priority;
+    if (request.hasPriority) {
+        priority = request.priority;
+    } else if (!currentSlot.isConfigured()) {
+        priority = 0;
+        for (const WifiStaSlot& slot : settings.wifiStaSlots) {
+            if (slot.isConfigured()) {
+                if (slot.priority == UINT8_MAX) return false;
+                priority = std::max(priority, static_cast<uint8_t>(slot.priority + 1));
+            }
+        }
+    }
     const auto mutation = station_.savedNetworkMutation(index);
     bool nvsReadFailed = false;
     const String password = request.hasPassword ? request.password : settings_.getWifiStaSlotPassword(index, &nvsReadFailed);
     if (nvsReadFailed) return false;
     const String label = request.hasLabel ? request.label : currentSlot.label;
-    const uint8_t priority = request.hasPriority
-                                 ? request.priority
-                                 : (currentSlot.isConfigured() ? currentSlot.priority : static_cast<uint8_t>(index));
-
     if (!settings_.setWifiStaSlotCredentials(index, ssid, password, label, priority)) {
         return false;
     }

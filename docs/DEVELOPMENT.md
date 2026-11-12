@@ -29,8 +29,16 @@ its executable. The selected `--env` also reaches filesystem staging and
 capacity checks. `scripts/build_production_artifacts.sh` uses `PIO_CMD` and
 `PIO_ENV` for its firmware, filesystem and verification steps.
 
+Run `V1_RELEASE_VERSION=<version> ./scripts/build_production_artifacts.sh`
+on the clean release commit before packaging. Keep untracked files outside the
+checkout and keep ignored build inputs out of source directories. The build
+records the source commit, firmware digest and qualified Arduino inputs. The
+packager checks the firmware's embedded version against the requested release
+tag and uses that record to produce a [corresponding source archive](ARDUINO_ESP32_REBUILD.md).
+
 Read-only release packaging can run without PlatformIO when supplied
-`--build-dir`, `--partitions`, `--flash-mode`, `--flash-freq` and `--flash-size`.
+`--build-dir`, `--partitions`, `--flash-mode`, `--flash-freq`, `--flash-size`
+and the build's installed `--arduino-source-dir`.
 Without those explicit inputs, `scripts/package_release_artifacts.py` resolves
 the selected environment through its PlatformIO interpreter. Missing selected
 tools fail the check; another home installation is not substituted.
@@ -87,6 +95,13 @@ This is not a verdict on every video frame or profile-based hold timing. An
 unavailable maintenance snapshot makes a collection incomplete, not a product
 failure.
 
+The raw bench requires an ESP32-S3 USB Serial/JTAG device with a unique USB
+serial number. Set `DEVICE_PORT` when several compatible devices are attached.
+An unavailable explicit port stops collection. The collector rechecks that port
+and its serial at the upload boundary, then finds the same serial after upload
+even if the device reappears at a different path. Raw and preserving benches
+share one DUT lease across Wi-Fi, USB reopen, upload and restoration.
+
 Preview old camera videos with `python3 scripts/cleanup_camera_videos.py`; add
 `--apply` to remove them. The command keeps 14 days of video under
 `.artifacts/bench`, preserves reports, logs, timing files and still images, and
@@ -106,13 +121,20 @@ tests, with explicit limits on what each fix proves and a bounded agent prompt.
 
 ## Releases
 
-Every successful reviewed publication to public `main` publishes a release.
+Successful push CI for the current public `main` qualifies a release.
 Ordinary pushes and IDE Sync use the same verified privacy gate. Patch is the
 default and is derived from the newest strict semantic-version tag. To select
 the next minor or major, change `FIRMWARE_VERSION` in the reviewed product
 change to exactly that next version. Arbitrary version jumps are rejected.
 
 Release builds inject the selected version, verify it in the firmware binary,
-and tag the exact commit that passed CI. Automation does not create a release
-commit or modify source files. [CHANGELOG.md](../CHANGELOG.md) is the curated
-summary; complete generated notes and history live in GitHub Releases.
+and reserve an annotated tag on the exact commit that passed CI. Release and
+Pages eligibility checks reread remote `main` and tags after reservation and
+immediately before each hosted publication. Git omits an unchanged branch from
+a tag push, and GitHub Release and Pages operations occur separately from ref
+reads. An intervening push can leave an unused, append-only version tag. If a
+check sees newer `main`, the run skips a new GitHub Release and Pages. The
+original run may repair assets for an already public Release at its own tag.
+New commits may still arrive after the last remote check while a hosted action
+is underway. [CHANGELOG.md](../CHANGELOG.md) is the curated summary. Generated
+notes and history live in GitHub Releases.

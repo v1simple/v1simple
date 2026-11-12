@@ -11,7 +11,7 @@ export async function fetchProfileCatalog() {
         const url = cursor
             ? `/api/v1/profiles?after=${encodeURIComponent(cursor)}&limit=10`
             : '/api/v1/profiles';
-        const result = await fetchJsonWithTimeout(url);
+        const result = await fetchJsonWithTimeout(url, { cache: 'no-store' });
         if (!result.ok || !Array.isArray(result.data?.profiles)) throw new Error('Invalid profile page');
         const data = result.data;
         profiles.push(...data.profiles);

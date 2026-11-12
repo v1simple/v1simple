@@ -15,10 +15,12 @@
     let catalogGeneration = 0;
     let loading = $state(true);
     let message = $state(null);
-    let deletingProfile = $state(false);
+    let deletingProfile = $state(null);
+    let unresolvedDeletion = $state(null);
+    let checkingDeletion = $state(false);
     const authoring = createProfileAuthoring({ onSaved: recordSavedProfile, onMessage: (next) => { message = next; } });
     // Publish catalog writes in the same order that they reach storage.
-    let mutationBusy = $derived(!!authoring.savingProfile || deletingProfile);
+    let mutationBusy = $derived(!!authoring.savingProfile || !!deletingProfile || !!unresolvedDeletion);
     let profileLoadGeneration = 0;
     let capturedSnapshot = $state(null);
     let snapshotLoading = $state(true);
@@ -132,6 +134,7 @@
 
     function applySavedProfile() {
         const savedName = authoring.acceptedProfile?.name;
+        if (savedName && (deletingProfile === savedName || unresolvedDeletion?.name === savedName)) return;
         const stillSaved = savedName && profiles.some((profile) => profile.name === savedName);
         const address = capturedSnapshot?.address;
         if (!stillSaved || !address) {
@@ -251,7 +254,7 @@
         // This Save supersedes earlier selections; later selections still own
         // their independent load generation and authoring source.
         profileLoadGeneration += 1;
-        return authoring.saveEdit(deletingProfile);
+        return authoring.saveEdit(mutationBusy);
     }
 
     async function copyProfile(name) {
@@ -333,7 +336,8 @@
         if (mutationBusy) return;
         if (!confirm(`Delete profile "${name}"?`)) return;
 
-        deletingProfile = true;
+        deletingProfile = name;
+        let failure = 'Failed to delete';
         try {
             const res = await fetchWithTimeout(
                 '/api/v1/profile/delete',
@@ -350,21 +354,38 @@
                     errorData: response.ok ? null : await response.json().catch(() => ({}))
                 })
             );
+            if (disposed) return;
             if (res.ok) {
                 catalogGeneration += 1;
                 profiles = profiles.filter((profile) => profile.name !== name);
                 message = { type: 'success', text: 'Profile deleted' };
-            } else {
-                const error = res.errorData?.error || res.errorData?.message;
-                message = {
-                    type: 'error',
-                    text: error ? `Failed to delete: ${error}` : 'Failed to delete'
-                };
+                return;
             }
-        } catch (e) {
-            message = { type: 'error', text: 'Failed to delete' };
+            const error = res.errorData?.error || res.errorData?.message;
+            if (error) failure = `Failed to delete: ${error}`;
+        } catch {
+            // The server may have completed the delete before the connection closed.
         } finally {
-            deletingProfile = false;
+            deletingProfile = null;
+        }
+        if (disposed) return;
+        unresolvedDeletion = { name, failure };
+        await checkProfileDeletion();
+    }
+
+    async function checkProfileDeletion() {
+        if (!unresolvedDeletion || checkingDeletion) return;
+        checkingDeletion = true;
+        try {
+            catalogGeneration += 1;
+            if (!await fetchProfiles() || disposed) return;
+            const { name, failure } = unresolvedDeletion;
+            unresolvedDeletion = null;
+            message = profiles.some((profile) => profile.name === name)
+                ? { type: 'error', text: failure }
+                : { type: 'success', text: `Profile "${name}" is no longer saved` };
+        } finally {
+            checkingDeletion = false;
         }
     }
 </script>
@@ -384,6 +405,17 @@
 
     <StatusAlert {message} />
 
+    {#if unresolvedDeletion}
+        <div class="surface-note" role="status">
+            {#if checkingDeletion}
+                Checking saved profiles after deleting {unresolvedDeletion.name}…
+            {:else}
+                Could not confirm deletion of {unresolvedDeletion.name}.
+                <button class="btn btn-outline btn-sm" onclick={checkProfileDeletion}>Reload saved profiles</button>
+            {/if}
+        </div>
+    {/if}
+
     {#if operationStatus}
         <ProfileOperationStatus {operationStatus} />
     {/if}
@@ -400,13 +432,14 @@
         savingProfile={authoring.savingProfile}
         {mutationBusy}
         oncancel={authoring.closeNamingDialog}
-        onsave={() => authoring.saveNewName(profiles, deletingProfile)}
+        onsave={() => authoring.saveNewName(profiles, mutationBusy)}
     />
 
     <ProfileSavedListCard
         {loading}
         {profiles}
         {mutationBusy}
+        unconfirmedName={unresolvedDeletion?.name}
         allowEdit={profileSchemaReady}
         currentName={authoring.acceptedProfile?.name || ''}
         compact={!!authoring.acceptedProfile?.settings}
@@ -420,7 +453,8 @@
             {authoring}
             {capturedSnapshot}
             canApply={!!authoring.acceptedProfile?.name && profiles.some((profile) => profile.name === authoring.acceptedProfile.name)}
-            applyDisabled={operationBusy || !capturedSnapshot?.address}
+            applyDisabled={operationBusy || !capturedSnapshot?.address || deletingProfile === authoring.acceptedProfile?.name ||
+                unresolvedDeletion?.name === authoring.acceptedProfile?.name}
             onapply={applySavedProfile}
             {mutationBusy}
             frequencyError={authoring.draft

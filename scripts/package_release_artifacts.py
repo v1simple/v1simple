@@ -11,7 +11,9 @@ import subprocess
 import sys
 
 from build_context import FlashPolicy, resolve
+from check_release_firmware_version import require_release_firmware_version
 import stage_release_licenses as licenses
+import stage_release_source as sources
 import write_release_manifests as manifests
 
 
@@ -115,6 +117,7 @@ def stage_installer(release_dir: Path) -> Path:
         manifests.UPDATE_MANIFEST,
         manifests.FRESH_IMAGE,
         manifests.UPDATE_IMAGE,
+        sources.ARCHIVE_NAME,
     ):
         shutil.copyfile(release_dir / name, pages_dir / name)
     licenses.stage(ROOT, release_dir, pages_dir)
@@ -129,9 +132,11 @@ def package_release(
     environment: str,
     partitions_path: Path,
     flash: FlashPolicy,
+    arduino_source_dir: Path,
 ) -> None:
     require_empty_directory(release_dir)
     copy_build_outputs(build_dir, release_dir)
+    require_release_firmware_version(release_dir / manifests.APP_IMAGE, version)
     run_checked(
         [
             sys.executable,
@@ -140,6 +145,7 @@ def package_release(
             str(release_dir / manifests.APP_IMAGE),
         ]
     )
+    sources.stage_source(ROOT, build_dir, arduino_source_dir, release_dir, version)
     merge_fresh_image(
         release_dir,
         flash=flash,
@@ -179,6 +185,7 @@ def main() -> int:
     parser.add_argument("--release-dir", type=Path, default=DEFAULT_RELEASE_DIR)
     parser.add_argument("--env", default=os.environ.get("PIO_ENV", "waveshare-349"))
     parser.add_argument("--partitions", type=Path)
+    parser.add_argument("--arduino-source-dir", type=Path)
     parser.add_argument("--pio", default=os.environ.get("PIO_CMD", "pio"))
     parser.add_argument("--flash-mode")
     parser.add_argument("--flash-freq")
@@ -190,6 +197,8 @@ def main() -> int:
         if any(explicit) and not all(explicit):
             raise ValueError("standalone packaging needs all three explicit flash policy fields")
         context = None if all(explicit) and args.build_dir and args.partitions else resolve(ROOT, args.env, args.pio)
+        if context is None and args.arduino_source_dir is None:
+            raise ValueError("standalone packaging requires --arduino-source-dir from the production build")
         flash = FlashPolicy(*explicit) if all(explicit) else context.flash
         package_release(
             build_dir=(args.build_dir or Path(context.build_dir)).resolve(),
@@ -198,8 +207,9 @@ def main() -> int:
             environment=args.env,
             partitions_path=(args.partitions or Path(context.partitions)).resolve(),
             flash=flash,
+            arduino_source_dir=(args.arduino_source_dir or Path(context.arduino_dir)).resolve(),
         )
-    except (OSError, RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"[release-package] {exc}", file=sys.stderr)
         return 1
 

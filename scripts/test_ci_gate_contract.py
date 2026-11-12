@@ -74,11 +74,25 @@ def test_release_publication_is_owned_by_tested_script() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
-    invocation = "run: python3 scripts/release_publication.py"
+    invocation = "run: python3 scripts/release_publication.py\n"
     require(
         workflow.count(invocation) == 1,
         "release workflow must invoke the tested publication owner exactly once",
     )
+    recheck = "run: python3 scripts/release_publication.py --check-eligibility"
+    require(workflow.count(recheck) == 3, "Release staging, public Release, and Pages need fresh eligibility")
+    steps = (
+        "name: Recheck release eligibility",
+        "name: Stage GitHub Release assets",
+        "name: Recheck before public release",
+        "name: Publish complete GitHub Release",
+        "name: Recheck Pages eligibility",
+        "name: Deploy GitHub Pages installer",
+    )
+    positions = [workflow.index(step) for step in steps]
+    require(positions == sorted(positions), "publication must use the current eligibility for each surface")
+    require("steps.eligibility.outputs.already_public == 'true'" in workflow,
+            "Pages must confirm that the matching GitHub Release is already public")
     require("git push" not in workflow, "release workflow must not carry inline push policy")
     gate = (ROOT / "scripts" / "ci-test.sh").read_text(encoding="utf-8")
     require(

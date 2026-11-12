@@ -819,8 +819,182 @@ void test_stopped_idle_receipt_and_ingress_rollover() {
   TEST_ASSERT_FALSE(f.parser.hasAlerts());
   TEST_ASSERT_EQUAL_UINT32(501, f.parser.clearedAlert().clearedAtMs);
 }
+
+void test_rejected_phone_stop_keeps_alert_and_allows_restart() {
+  StreamFixture f;
+  f.version();
+  f.alert();
+  f.phoneStop();
+  f.deliver(PACKET_ID_RESP_REQUEST_NOT_PROCESSED, {PACKET_ID_REQ_STOP_ALERT});
+  TEST_ASSERT_FALSE(f.client.phoneOwnsStoppedAlertStream());
+  TEST_ASSERT_TRUE(f.client.needsAlertDataStartRecovery());
+  TEST_ASSERT_TRUE(f.client.requestAlertData()); // Within the original START pacing interval.
+  TEST_ASSERT_EQUAL_UINT32(1, f.starts);
+  mockMillis += 2000;
+  f.idle();
+  f.assertLive();
+  TEST_ASSERT_TRUE(f.connection.process(mockMillis));
+  TEST_ASSERT_EQUAL_UINT32(2, f.starts);
+}
+
+void test_stop_rejection_during_actual_write_does_not_publish_ownership() {
+  for (bool indexed : {false, true}) {
+    for (bool worker : {false, true}) {
+      StreamFixture f;
+      NimBLECharacteristic longInput{"92A0B8D2-9E05-11E2-AA59-F23C91AEC05E"};
+      NimBLECharacteristic& input = indexed ? longInput : f.input;
+      f.client.acceptClientCallbacks_.store(true);
+      f.remote.setCanWrite(worker);
+      const auto enqueue = [&](const uint8_t* bytes, size_t length) {
+        input.setValue(bytes, length);
+        f.writer.onWrite(&input, f.phone);
+      };
+      const auto transmit = [&]() {
+        mockMillis += 10;
+        if (worker) {
+          TEST_ASSERT_EQUAL_INT(0, f.client.processPhoneCommandQueue());
+          TEST_ASSERT_NOT_NULL(g_mock_task_create_state.lastTaskFunction);
+          g_mock_task_create_state.lastTaskFunction(g_mock_task_create_state.lastTaskParameter);
+          TEST_ASSERT_FALSE(f.client.phoneOwnsStoppedAlertStream());
+        }
+        TEST_ASSERT_EQUAL_INT(1, f.client.processPhoneCommandQueue());
+      };
+      f.remote.setWriteEntryHook([&]() {
+        const auto& packet = f.remote.lastWriteValue();
+        if (!indexed || packet[0] == 0x12) {
+          f.deliver(PACKET_ID_RESP_REQUEST_NOT_PROCESSED, {PACKET_ID_REQ_STOP_ALERT});
+        }
+      });
+      if (indexed) {
+        // Queue both parts up front to also prove that out-of-order delivery
+        // is attributed to the final transmitted part, independent of index.
+        const uint8_t second[] = {0x22, 1, 0xAD, 0xAB};
+        const uint8_t first[] = {0x12, 0xAA, 0xDA, 0xE6, PACKET_ID_REQ_STOP_ALERT};
+        enqueue(second, sizeof(second));
+        enqueue(first, sizeof(first));
+        transmit();
+        transmit();
+      } else {
+        enqueue(kV1AlertStopRequest, sizeof(kV1AlertStopRequest));
+        transmit();
+      }
+      TEST_ASSERT_FALSE(f.client.phoneOwnsStoppedAlertStream());
+      TEST_ASSERT_TRUE(f.client.needsAlertDataStartRecovery());
+    }
+  }
+}
+
+void test_rejected_duplicate_phone_stop_preserves_the_prior_stop() {
+  for (bool duringWrite : {false, true}) {
+    StreamFixture f;
+    f.version();
+    f.alert();
+    f.phoneStop();
+    mockMillis += 2000;
+    f.enqueue(StreamFixture::frame(PACKET_ID_DISPLAY_DATA, {0x77, 0x77, 0, 0, 0, 0x0C, 0x04, 0x62}));
+    const uint32_t idleIngress = f.ingress;
+    if (duringWrite) {
+      f.remote.setWriteEntryHook([&]() {
+        f.deliver(PACKET_ID_RESP_REQUEST_NOT_PROCESSED, {PACKET_ID_REQ_STOP_ALERT});
+      });
+    }
+    f.phoneStop();
+    if (!duringWrite) f.deliver(PACKET_ID_RESP_REQUEST_NOT_PROCESSED, {PACKET_ID_REQ_STOP_ALERT});
+    TEST_ASSERT_TRUE(f.client.phoneOwnsStoppedAlertStream());
+    TEST_ASSERT_TRUE(f.client.receivedAfterPhoneAlertStop(idleIngress));
+  }
+}
+
+void test_stale_stop_rejection_cannot_revoke_new_phone_stop() {
+  StreamFixture f;
+  f.phoneStop();
+  f.enqueue(StreamFixture::frame(PACKET_ID_RESP_REQUEST_NOT_PROCESSED, {PACKET_ID_REQ_STOP_ALERT}));
+  f.disconnectPhone();
+  f.lifecycle.onConnect(nullptr, f.phone);
+  f.client.drainProxyCallbackEvents();
+  f.phoneStop();
+  f.present();
+  TEST_ASSERT_TRUE(f.client.phoneOwnsStoppedAlertStream());
+  f.deliver(PACKET_ID_RESP_REQUEST_NOT_PROCESSED, {PACKET_ID_REQ_STOP_ALERT});
+  TEST_ASSERT_FALSE(f.client.phoneOwnsStoppedAlertStream());
+  TEST_ASSERT_TRUE(f.client.needsAlertDataStartRecovery());
+}
+
+void test_malformed_indexed_stop_never_acquires_ownership() {
+  StreamFixture f;
+  NimBLECharacteristic input{"92A0B8D2-9E05-11E2-AA59-F23C91AEC05E"};
+  const uint8_t malformed[] = {0x11, 0xAA, 0xDA, 0xE6, PACKET_ID_REQ_STOP_ALERT, 1, 0, 0xAB};
+  input.setValue(malformed, sizeof(malformed));
+  f.writer.onWrite(&input, f.phone);
+  mockMillis += 100;
+  TEST_ASSERT_EQUAL_INT(1, f.client.processPhoneCommandQueue());
+  TEST_ASSERT_FALSE(f.client.phoneOwnsStoppedAlertStream());
+}
+
+void test_two_later_stop_rejections_preserve_the_earlier_effective_stop() {
+  StreamFixture f;
+  f.phoneStop();
+  f.phoneStop();
+  f.enqueue(StreamFixture::frame(PACKET_ID_RESP_REQUEST_NOT_PROCESSED, {PACKET_ID_REQ_STOP_ALERT}));
+  f.phoneStop();
+  f.deliver(PACKET_ID_RESP_REQUEST_NOT_PROCESSED, {PACKET_ID_REQ_STOP_ALERT});
+  TEST_ASSERT_TRUE(f.client.phoneOwnsStoppedAlertStream());
+}
+
+void test_repeated_stops_keep_hold_without_inferring_clearance_after_compaction() {
+  StreamFixture f;
+  for (size_t i = 0; i < 17; ++i) f.phoneStop();
+  TEST_ASSERT_TRUE(f.client.phoneOwnsStoppedAlertStream());
+  TEST_ASSERT_FALSE(f.client.needsAlertDataStartRecovery());
+  TEST_ASSERT_FALSE(f.client.receivedAfterPhoneAlertStop(f.client.noteV1NotificationIngress()));
+  for (size_t i = 0; i < 17; ++i) {
+    f.deliver(PACKET_ID_RESP_REQUEST_NOT_PROCESSED, {PACKET_ID_REQ_STOP_ALERT});
+  }
+  TEST_ASSERT_FALSE(f.client.phoneOwnsStoppedAlertStream());
+  TEST_ASSERT_TRUE(f.client.needsAlertDataStartRecovery());
+  mockMillis += 10; // The short-command transport retains its write pacing.
+  TEST_ASSERT_TRUE(f.client.requestAlertData());
+  TEST_ASSERT_TRUE(f.detailedStream);
+  f.feedDisplay(); // Release STOP retry holdoff.
+  f.phoneStop();
+  TEST_ASSERT_TRUE(f.client.phoneOwnsStoppedAlertStream());
+  TEST_ASSERT_TRUE(f.client.receivedAfterPhoneAlertStop(f.client.noteV1NotificationIngress()));
+}
+
+void test_rejected_indexed_start_during_write_keeps_the_prior_stop() {
+  for (bool worker : {false, true}) {
+    StreamFixture f;
+    f.phoneStop();
+    NimBLECharacteristic input{"92A0B8D2-9E05-11E2-AA59-F23C91AEC05E"};
+    const uint8_t start[] = {0x11, 0xAA, 0xDA, 0xE6, PACKET_ID_REQ_START_ALERT, 1, 0xAC, 0xAB};
+    f.client.acceptClientCallbacks_.store(true);
+    f.remote.setCanWrite(worker);
+    f.remote.setWriteEntryHook([&]() {
+      f.deliver(PACKET_ID_RESP_REQUEST_NOT_PROCESSED, {PACKET_ID_REQ_START_ALERT});
+    });
+    input.setValue(start, sizeof(start));
+    f.writer.onWrite(&input, f.phone);
+    mockMillis += 100;
+    if (worker) {
+      TEST_ASSERT_EQUAL_INT(0, f.client.processPhoneCommandQueue());
+      TEST_ASSERT_NOT_NULL(g_mock_task_create_state.lastTaskFunction);
+      g_mock_task_create_state.lastTaskFunction(g_mock_task_create_state.lastTaskParameter);
+    }
+    TEST_ASSERT_EQUAL_INT(1, f.client.processPhoneCommandQueue());
+    TEST_ASSERT_TRUE(f.client.phoneOwnsStoppedAlertStream());
+  }
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_rejected_phone_stop_keeps_alert_and_allows_restart);
+  RUN_TEST(test_stop_rejection_during_actual_write_does_not_publish_ownership);
+  RUN_TEST(test_rejected_duplicate_phone_stop_preserves_the_prior_stop);
+  RUN_TEST(test_stale_stop_rejection_cannot_revoke_new_phone_stop);
+  RUN_TEST(test_malformed_indexed_stop_never_acquires_ownership);
+  RUN_TEST(test_two_later_stop_rejections_preserve_the_earlier_effective_stop);
+  RUN_TEST(test_repeated_stops_keep_hold_without_inferring_clearance_after_compaction);
+  RUN_TEST(test_rejected_indexed_start_during_write_keeps_the_prior_stop);
   RUN_TEST(test_stopped_idle_persistence_zero);
   RUN_TEST(test_stopped_idle_persistence_three);
   RUN_TEST(test_stopped_idle_persistence_five);

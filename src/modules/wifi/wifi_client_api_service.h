@@ -46,6 +46,8 @@ struct SavedNetworkSlotPayload {
 struct SavedNetworkUpsertPayload {
     bool hasIndex = false;
     size_t index = 0;
+    bool hasExpectedSsid = false;
+    String expectedSsid;
     String ssid;
     bool hasPassword = false;
     String password;

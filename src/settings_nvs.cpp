@@ -558,7 +558,7 @@ bool readWifiPasswordNvsSnapshot(size_t slotIndex, WifiPasswordNvsSnapshot& snap
     if (!prefs.good()) return false;
     const auto read = [&](const char* key, bool& present, String& value) {
         present = prefs.isKey(key);
-        if (present) value = prefs.getString(key);
+        if (present) value = prefs.getString(key, "", true);
         return prefs.good() && value.length() <= MAX_ENCODED_WIFI_PASSWORD_BYTES;
     };
     return read(passwordKey, snapshot.slotPresent, snapshot.slotValue) &&
@@ -643,21 +643,7 @@ bool readWifiPasswordForTransaction(StorageManager& storage, size_t index,
 }
 
 bool writeWifiPasswordKeyState(Preferences& prefs, const char* key, bool present, const String& value) {
-    if (!key) {
-        return false;
-    }
-    if (!present) {
-        if (prefs.isKey(key) && !prefs.remove(key)) {
-            return false;
-        }
-        return !prefs.isKey(key);
-    }
-    const size_t written = prefs.putString(key, value);
-    if (written != value.length() || !prefs.isKey(key) ||
-        prefs.getStringLength(key) != value.length() + 1u) return false;
-    if (value.length() == 0) return true;
-    String readBack = prefs.getString(key, "");
-    return readBack.length() == value.length() && readBack == value;
+    return key && writeCheckedNvsString(prefs, WIFI_CLIENT_NS, key, present, value);
 }
 
 bool restoreWifiPasswordNvsSnapshot(size_t slotIndex, const WifiPasswordNvsSnapshot& snapshot) {
@@ -2126,6 +2112,10 @@ bool SettingsManager::persistSettingsAtomically() {
 
 String SettingsManager::getWifiStaSlotPassword(size_t index, bool* nvsReadFailed) {
     if (nvsReadFailed) *nvsReadFailed = false;
+    if (restoreCredentialRecoveryPending_) {
+        if (nvsReadFailed) *nvsReadFailed = true;
+        return "";
+    }
     if (!validWifiStaSlotIndex(index)) {
         return "";
     }
@@ -2219,13 +2209,12 @@ SettingsPersistResult SettingsManager::setWifiClientEnabled(bool enabled) {
 
 bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid, const String& password,
                                                 const String& label, uint8_t priority) {
-    if (!ensureSettingsLoaded()) return false;
     if (!validWifiStaSlotIndex(index)) {
         Serial.println("[Settings] WARN: Invalid WiFi credential slot index");
         return false;
     }
-    if (!resolveWifiCredentialTransaction()) {
-        Serial.println("[Settings] WARN: Unresolved WiFi credential transaction");
+    if (!resolveStorageTransactionsForMutation()) {
+        Serial.println("[Settings] WARN: Storage transaction recovery pending");
         return false;
     }
 
@@ -2403,11 +2392,10 @@ bool SettingsManager::markWifiStaSlotConnected(size_t index) {
 }
 
 bool SettingsManager::clearWifiStaSlot(size_t index) {
-    if (!ensureSettingsLoaded()) return false;
     if (!validWifiStaSlotIndex(index)) {
         return false;
     }
-    if (!resolveWifiCredentialTransaction()) {
+    if (!resolveStorageTransactionsForMutation()) {
         return false;
     }
     V1Settings before;
@@ -2479,8 +2467,7 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
 }
 
 bool SettingsManager::clearWifiClientCredentials() {
-    if (!ensureSettingsLoaded()) return false;
-    if (!resolveWifiCredentialTransaction()) {
+    if (!resolveStorageTransactionsForMutation()) {
         return false;
     }
 

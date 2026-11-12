@@ -246,11 +246,16 @@ bool SettingsManager::checkAndRestoreFromSD() {
         return false;
     }
     profileReferenceRecoveryPending_ = false;
+    if (!resolveWifiCredentialTransaction() || !resolveRestoreTransaction()) {
+        profileReferenceRecoveryPending_ = true;
+        Serial.println("[Settings] Storage transaction recovery remains pending");
+        return false;
+    }
     if (storage_->isReady() && (!profiles_ || !profiles_->isReady())) {
         profileReferenceRecoveryPending_ = true;
         return false;
     }
-    if (!resolveWifiCredentialTransaction() || !resolveRestoreTransaction() || !resolveProfileDeleteTransaction()) {
+    if (!resolveProfileDeleteTransaction()) {
         profileReferenceRecoveryPending_ = true;
         Serial.println("[Settings] Storage transaction recovery remains pending");
         return false;

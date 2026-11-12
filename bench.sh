@@ -25,6 +25,7 @@ usage() {
   printf 'Usage: ./bench.sh --replay --camera [--ku-qualification|--photo-label-qualification|--junk-qualification|--profile-controls-qualification] [--quiet-after-complete] [--agent-review-handoff]\n'
   printf 'Builds and flashes the current firmware, sends the generated replay stimuli, and retains raw synchronized capture.\n'
   printf 'With the DUT in maintenance, the bench joins V1-Simple and captures settings before serial discovery or upload.\n'
+  printf 'Set DEVICE_PORT to choose a specific ESP32-S3 USB Serial/JTAG device if several are attached.\n'
   printf 'Optional agent handoff uses a local private prompt; it does not run or grade with a model.\n'
   printf 'Bench fault: --command-ack-hold-ms 7000 holds one acknowledged START; 0 is the healthy ACK control.\n'
 }

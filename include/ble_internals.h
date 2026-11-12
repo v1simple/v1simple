@@ -6,8 +6,22 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <cstring>
+#include "config.h"
 
 class V1BLEClient;
+
+inline constexpr uint8_t kV1AlertStopRequest[] = {
+    ESP_PACKET_START, 0xDA, 0xE6, PACKET_ID_REQ_STOP_ALERT, 1, 0xAD, ESP_PACKET_END};
+inline constexpr uint8_t kV1AlertStartRequest[] = {
+    ESP_PACKET_START, 0xDA, 0xE6, PACKET_ID_REQ_START_ALERT, 1, 0xAC, ESP_PACKET_END};
+
+inline uint8_t v1AlertRequestId(const uint8_t* data, size_t length) {
+    if (length != sizeof(kV1AlertStopRequest)) return 0;
+    if (std::memcmp(data, kV1AlertStopRequest, length) == 0) return PACKET_ID_REQ_STOP_ALERT;
+    if (std::memcmp(data, kV1AlertStartRequest, length) == 0) return PACKET_ID_REQ_START_ALERT;
+    return 0;
+}
 
 // The default is a non-blocking try-lock. Callers that may wait must provide a
 // bounded timeout explicitly; BLE paths never use portMAX_DELAY.

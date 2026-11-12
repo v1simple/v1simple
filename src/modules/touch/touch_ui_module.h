@@ -42,6 +42,10 @@ class TouchUiModule {
     // Returns false when normal runtime presentation is authoritative.
     bool restorePresentationIfOwned();
 
+    // Refresh fields that the open menu has not edited when saved settings
+    // become authoritative. An active power presentation retains PWM.
+    bool syncRecoveredSliderSettings(bool applyBrightness);
+
     // Valentine's Law (docs/VALENTINE_PHILOSOPHY.md, screen/speaker contract):
     // an alert owns the screen; the settings sliders may not hold it. Called by
     // the loop when a live V1 or ALP alert arrives while adjust mode is active.
@@ -68,6 +72,8 @@ class TouchUiModule {
     bool brightnessAdjustMode_ = false;
     uint8_t brightnessAdjustValue_ = 200;
     uint8_t volumeAdjustValue_ = 75;
+    bool brightnessEdited_ = false;
+    bool volumeEdited_ = false;
     int activeSlider_ = 0;
     unsigned long lastVolumeChangeMs_ = 0;
     unsigned long lastSliderRedrawMs_ = 0;

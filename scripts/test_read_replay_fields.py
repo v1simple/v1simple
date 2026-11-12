@@ -112,16 +112,30 @@ class ReadReplayFieldsTest(unittest.TestCase):
         ReadReplayFieldsTest.publish_display_contract(run)
 
     @staticmethod
-    def publish_display_contract(run, stimulus_name="replay_stimulus.ndjson"):
+    def publish_display_contract(run, stimulus_name="replay_stimulus.ndjson", *, schema=2):
         def entry(path):
             data = path.read_bytes()
             return {"path": path.name, "size_bytes": len(data),
                     "sha256": hashlib.sha256(data).hexdigest()}
-        path = run / "replay_display_contract.json"
-        path.write_text(json.dumps({"schema_version": 1, "kind": "bench_replay_display_contract",
-                                    "expected_display_rubric": entry(run / stimulus_name)}))
         window_path = run / "window_result.json"
         window = json.loads(window_path.read_text())
+        contract = {"schema_version": 1, "kind": "bench_replay_display_contract",
+                    "expected_display_rubric": entry(run / stimulus_name)}
+        if "capture_manifest" in window["camera"]:
+            manifest = run / "camera" / window["camera"]["capture_manifest"]
+            build = run / "build_upload_artifacts.json"
+            build.write_text(json.dumps({"expected_runtime_image_id": "b" * 9}))
+            window["artifacts"]["build_upload"] = entry(build)
+            window["git_sha"] = "a" * 40
+            window["runtime_identity"] = {"boot_id": 3, "git_sha": "a" * 7, "image_id": "b" * 9}
+            runtime = {**window["runtime_identity"], "build_upload_manifest_sha256": entry(build)["sha256"]}
+            if schema == 2:
+                runtime["source_git_sha"] = window["git_sha"]
+            contract.update(schema_version=schema, runtime=runtime, camera={
+                "capture_id": window["camera"]["capture_id"],
+                "manifest": {**entry(manifest), "path": f"camera/{manifest.name}"}})
+        path = run / "replay_display_contract.json"
+        path.write_text(json.dumps(contract))
         window["artifacts"]["replay_display_contract"] = entry(path)
         window_path.write_text(json.dumps(window))
 
@@ -137,7 +151,7 @@ class ReadReplayFieldsTest(unittest.TestCase):
                     elif name.endswith(".ndjson"):
                         path.write_bytes(path.read_bytes().replace(b"24150", b"24151"))
                     else:
-                        path.write_bytes(path.read_bytes().replace(b'"schema_version": 1', b'"schema_version": 2'))
+                        path.write_bytes(path.read_bytes().replace(b'"schema_version": 2', b'"schema_version": 9'))
                     with (mock.patch.object(reader, "frame_at", return_value=(1.18, image)) as decode,
                           self.assertRaisesRegex(ValueError, "replay artifact changed|disappeared")):
                         reader.compare_run(run)
@@ -182,10 +196,80 @@ class ReadReplayFieldsTest(unittest.TestCase):
                     report = reader.compare_run(run)
                 self.assertEqual("FAIL" if wrong_band else "PASS", report["result"])
                 self.assertEqual("verified", report["source"]["cameraIntegrity"])
+                self.assertEqual("verified", report["source"]["runtimeIntegrity"])
+                self.assertEqual("a" * 40, report["source"]["gitSha"])
+                self.assertEqual("b" * 9, report["source"]["imageId"])
+                self.assertEqual(3, report["source"]["bootId"])
         image, registration = self.camera_pose(self.radar_frame())
         report = self.compare_frame(image, registration)
         self.assertEqual("PASS", report["result"])
         self.assertEqual("legacy-unverified", report["source"]["cameraIntegrity"])
+        self.assertEqual("legacy-unverified", report["source"]["runtimeIntegrity"])
+        self.assertIsNone(report["source"]["gitSha"])
+
+    def test_legacy_bound_contract_preserves_verified_firmware_abbreviation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            image, registration = self.camera_pose(self.radar_frame())
+            run = self.make_run(Path(temporary), registration, declared=True)
+            self.publish_display_contract(run, schema=1)
+            with mock.patch.object(reader, "frame_at", return_value=(1.18, image)):
+                report = reader.compare_run(run)
+            self.assertEqual("PASS", report["result"])
+            self.assertEqual("a" * 7, report["source"]["gitSha"])
+            self.assertEqual("verified", report["source"]["runtimeIntegrity"])
+
+    def test_current_display_contract_producer_matches_visual_reader(self):
+        from test_bench_window import run_window_module as producer
+
+        with tempfile.TemporaryDirectory() as temporary:
+            image, registration = self.camera_pose(self.radar_frame())
+            run = self.make_run(Path(temporary), registration, declared=True)
+            window_path = run / "window_result.json"
+            window = json.loads(window_path.read_text())
+            artifacts = window["artifacts"]
+            rubric_path = run / "replay_stimulus.ndjson"
+            events = [json.loads(line) for line in rubric_path.read_text().splitlines()]
+            rubric_path.write_text("".join(json.dumps({**event, "schemaVersion": 4,
+                "state": "stimulus_requested", "notifications": []}) + "\n" for event in events))
+            artifacts["replay_stimulus"] = {**producer.file_artifact(rubric_path), "event_count": len(events)}
+            for name in ("presentation_snapshot", "replay_delivery", "replay_scenario",
+                         "v1_emulator_state", "bench_timeline"):
+                path = run / f"{name}.json"
+                path.write_text('{"schemaVersion": 2, "samples": []}')
+                artifacts[name] = producer.file_artifact(path)
+            (run / "replay_display_contract.json").unlink()
+            artifacts["replay_display_contract"] = producer.publish_replay_display_contract(
+                run, artifacts=artifacts, runtime_identity=window["runtime_identity"],
+                source_commit=window["git_sha"], camera_result=window["camera"])
+            window_path.write_text(json.dumps(window))
+            with mock.patch.object(reader, "frame_at", return_value=(1.18, image)):
+                report = reader.compare_run(run)
+            self.assertEqual("PASS", report["result"])
+            self.assertEqual(window["git_sha"], report["source"]["gitSha"])
+            self.assertEqual(window["camera"]["capture_id"], report["source"]["cameraCaptureId"])
+
+    def test_window_cannot_reassign_bound_firmware_or_camera(self):
+        faults = {
+            "boot": lambda w: w["runtime_identity"].update(boot_id=4),
+            "image": lambda w: w["runtime_identity"].update(image_id="c" * 9),
+            "full_commit_same_prefix": lambda w: w.update(git_sha="a" * 7 + "c" * 33),
+            "both_git_fields": lambda w: (w.update(git_sha="c" * 40),
+                                          w["runtime_identity"].update(git_sha="c" * 7)),
+            "build_receipt": lambda w: w["artifacts"].pop("build_upload"),
+            "missing_camera": lambda w: w["camera"].pop("capture_manifest"),
+        }
+        for fault, change in faults.items():
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+                image, registration = self.camera_pose(self.radar_frame())
+                run = self.make_run(Path(temporary), registration, declared=True)
+                window_path = run / "window_result.json"
+                window = json.loads(window_path.read_text())
+                change(window)
+                window_path.write_text(json.dumps(window))
+                with (mock.patch.object(reader, "frame_at", return_value=(1.18, image)) as decode,
+                      self.assertRaisesRegex((ValueError, RuntimeError), "display contract")):
+                    reader.compare_run(run)
+                decode.assert_not_called()
 
     def test_declared_capture_rejects_corrupt_or_missing_files_before_decoding(self):
         for artifact in ("frame_timing", "video", "preflight", "bright_still"):
@@ -226,7 +310,7 @@ class ReadReplayFieldsTest(unittest.TestCase):
                 decode.assert_not_called()
 
     def test_manifest_identity_schema_and_replay_suite_are_required(self):
-        for change in ("window-id", "identity-digest", "schema", "suite", "suite-shape"):
+        for change in ("window-id", "identity-digest", "schema", "suite", "suite-shape", "manifest-summary"):
             with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
                 image, registration = self.camera_pose(self.radar_frame())
                 run = self.make_run(Path(temporary), registration, declared=True)
@@ -240,11 +324,14 @@ class ReadReplayFieldsTest(unittest.TestCase):
                 elif change in {"suite", "suite-shape"}:
                     manifest["identity"]["suite"] = "display" if change == "suite" else []
                     self.publish_manifest(run, manifest)
+                elif change == "manifest-summary":
+                    manifest["timestamp_utc"] = "altered fixture timestamp"
+                    manifest_path.write_text(json.dumps(manifest))
                 else:
                     manifest["schema_version" if change == "schema" else "capture_id"] = "invalid"
                     manifest_path.write_text(json.dumps(manifest))
                 with (mock.patch.object(reader, "frame_at", return_value=(1.18, image)) as decode,
-                      self.assertRaisesRegex(RuntimeError, "schema|identity|suite")):
+                      self.assertRaisesRegex((ValueError, RuntimeError), "schema|identity|suite|artifact changed")):
                     reader.compare_run(run)
                 decode.assert_not_called()
 

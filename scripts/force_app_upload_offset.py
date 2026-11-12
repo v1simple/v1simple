@@ -8,7 +8,10 @@ offset resets immediately before binary generation and upload so both outputs
 match partitions_v1.csv.
 """
 
+import os
 import re
+import sys
+from pathlib import Path
 
 from SCons.Script import COMMAND_LINE_TARGETS  # pylint: disable=import-error
 
@@ -76,12 +79,26 @@ def force_before_binary(target, source, env):
     force_flash_layout(env)
 
 
+def verify_bench_upload_target(env):
+    serial_number = os.environ.get("V1SIMPLE_BENCH_USB_SERIAL")
+    if serial_number is None:
+        return
+    sys.path.insert(0, str(Path(env.subst("$PROJECT_DIR")) / "scripts" / "bench"))
+    from usb_target import require_usb_target
+
+    upload = env.BoardConfig().get("upload", {})
+    if upload.get("use_1200bps_touch") or upload.get("wait_for_upload_port"):
+        raise RuntimeError("managed bench upload cannot let PlatformIO switch ports")
+    require_usb_target(env.subst("$UPLOAD_PORT"), serial_number)
+
+
 def force_before_upload(target, source, env):
     """Patch late-reset upload variables immediately before the upload action."""
     # This pre-action runs before PlatformIO's BeforeUpload() autodetects the
     # serial port, so do not subst() the whole command here.  Keep $UPLOAD_PORT
     # and $SOURCE symbolic, and only patch the offset/extra-image variables.
     force_flash_layout(env)
+    verify_bench_upload_target(env)
     print(
         f"[UploadOffset] pre-upload app image offset forced to {APP_OFFSET}; "
         f"boot_app0 skipped"

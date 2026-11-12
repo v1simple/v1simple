@@ -12,6 +12,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import write_release_manifests as release_manifests
+from stage_release_licenses import LICENSE_FILES
+from stage_release_source import ARCHIVE_NAME
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,23 +23,6 @@ NOTICE_PATH = "THIRD_PARTY_NOTICES.md"
 BRANDING_PATHS = (
     "../interface/static/branding/v1simple-logo-transparent.png",
     "v1simple-logo-transparent.png",
-)
-LICENSE_PATHS = (
-    "licenses/ArduinoJson-LICENSE.txt",
-    "licenses/NimBLE-Arduino-LICENSE.txt",
-    "licenses/NimBLE-Arduino-NOTICE.txt",
-    "licenses/Arduino-GFX-LICENSE.txt",
-    "licenses/OpenFontRender-LICENSE.txt",
-    "licenses/FreeType-FTL.txt",
-    "licenses/GNU-FreeFont-COPYING.txt",
-    "licenses/GNU-FreeFont-README.txt",
-    "licenses/OFL-1.1.txt",
-    "licenses/Geist-OFL-1.1.txt",
-    "licenses/CC-BY-4.0.txt",
-    "licenses/Svelte-LICENSE.md",
-    "licenses/SvelteKit-LICENSE.txt",
-    "licenses/daisyUI-LICENSE.txt",
-    "licenses/Tailwind-CSS-LICENSE.txt",
 )
 EXPECTED_INSTALL_SCRIPT = (
     "https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module",
@@ -268,7 +253,7 @@ def validate_notices(site_dir: Path, require_assets: bool) -> list[str]:
         return errors
 
     notice_text = notice_file.read_text(encoding="utf-8")
-    for relative_path in LICENSE_PATHS:
+    for relative_path in LICENSE_FILES:
         if relative_path not in notice_text:
             errors.append(
                 f"{display_path(notice_file)} must reference {relative_path}"
@@ -377,7 +362,7 @@ def main() -> int:
         if required_text not in index_text:
             errors.append(f"index.html must disclose analytics behavior: {required_text!r}")
 
-    for required_link in (PROJECT_LICENSE_PATH, NOTICE_PATH, *LICENSE_PATHS):
+    for required_link in (PROJECT_LICENSE_PATH, NOTICE_PATH, *LICENSE_FILES, ARCHIVE_NAME):
         if parser_obj.links.count(required_link) != 1:
             errors.append(
                 f"index.html must contain exactly one visible link to {required_link}"
@@ -398,6 +383,10 @@ def main() -> int:
         errors.append("fresh-install and app-only update manifests must use the same version")
 
     errors.extend(validate_notices(site_dir, require_assets=not args.template_only))
+    if not args.template_only:
+        source_archive = site_dir / ARCHIVE_NAME
+        if not source_archive.is_file() or source_archive.stat().st_size == 0:
+            errors.append("Arduino-ESP32 corresponding source archive is missing or empty")
 
     if errors:
         print("[web-installer] contract failed:", file=sys.stderr)

@@ -4879,11 +4879,12 @@ void test_profile_delete_double_failure_recovers_old_profile_and_assignments_on_
     journalShape["_version"] = PROFILE_DELETE_TRANSACTION_VERSION;
     journalShape["token"] = 1;
     journalShape["hadReferences"] = true;
+    writeJournalOrigin(journalShape, currentJournalOrigin(storage));
     writeProfileToJournal(journalShape["profile"].to<JsonObject>(), road);
     stampJournalCrc(journalShape);
     // Fit this exact journal (plus possible token/CRC digit growth), while
     // still interrupting the larger pretty profile's compensating rewrite.
-    fs::mock_set_fs_write_budget(measureJson(journalShape) + 32u);
+    fs::mock_set_fs_write_budget(sizeof(JournalOwnerRecord) + measureJson(journalShape) + 32u);
     mock_preferences::set_fail_writes_for_key(kNvsSlot0Profile);
     const ProfileOperationResult failed = manager.deleteProfileAndReferences("Road");
     TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError), static_cast<int>(failed.status));
@@ -4941,11 +4942,12 @@ void test_grandfathered_profile_delete_failure_restores_twelfth_member_on_reboot
     journalShape["_version"] = PROFILE_DELETE_TRANSACTION_VERSION;
     journalShape["token"] = 1;
     journalShape["hadReferences"] = true;
+    writeJournalOrigin(journalShape, currentJournalOrigin(storage));
     writeProfileToJournal(journalShape["profile"].to<JsonObject>(), road);
     stampJournalCrc(journalShape);
     // Fit this exact journal (plus possible token/CRC digit growth), while
     // still interrupting the larger pretty profile's compensating rewrite.
-    fs::mock_set_fs_write_budget(measureJson(journalShape) + 32u);
+    fs::mock_set_fs_write_budget(sizeof(JournalOwnerRecord) + measureJson(journalShape) + 32u);
     mock_preferences::set_fail_writes_for_key(kNvsSlot0Profile);
     TEST_ASSERT_FALSE(manager.deleteProfileAndReferences("Road").success());
     TEST_ASSERT_TRUE(fs.exists("/v1profile_delete_transaction.json"));
@@ -5224,7 +5226,11 @@ void test_divergent_pending_restore_mirrors_fail_closed_and_preserve_evidence() 
     TEST_ASSERT_FALSE(rebooted.checkAndRestoreFromSD());
     TEST_ASSERT_TRUE(sd.exists("/v1restore_transaction.json"));
     TEST_ASSERT_TRUE(little.exists("/v1restore_transaction.json"));
-    TEST_ASSERT_EQUAL_STRING("new-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    bool unavailable = false;
+    TEST_ASSERT_EQUAL_STRING("", rebooted.getWifiStaSlotPassword(0, &unavailable).c_str());
+    TEST_ASSERT_TRUE(unavailable);
+    const String stored = mock_preferences::getString(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0], "");
+    TEST_ASSERT_EQUAL_STRING("new-password", decodeObfuscatedFromStorage(stored).c_str());
 }
 
 void test_divergent_restore_mirrors_use_watermark_to_select_pending_record() {
@@ -7652,11 +7658,11 @@ void test_journal_cleanup_does_not_claim_success_for_unremoved_unreadable_journa
     fs::mock_exists_uses_read_open(true);
     fs::mock_fail_read_opens_for_full_path((g_tempRoot / (RESTORE_TRANSACTION_PATH + 1)).c_str());
     fs::mock_fail_next_remove(RESTORE_TRANSACTION_PATH);
-    TEST_ASSERT_FALSE(removeJournalAfterConvergence(storage, RESTORE_TRANSACTION_PATH, RESTORE_TRANSACTION_TMP_PATH));
+    TEST_ASSERT_FALSE(removeJournalAfterConvergence(storage, restoreJournalLocation));
     TEST_ASSERT_EQUAL_INT(StoragePathStatus::Present, storagePathStatus(filesystem, RESTORE_TRANSACTION_PATH));
-    TEST_ASSERT_TRUE(removeJournalAfterConvergence(storage, RESTORE_TRANSACTION_PATH, RESTORE_TRANSACTION_TMP_PATH));
+    TEST_ASSERT_TRUE(removeJournalAfterConvergence(storage, restoreJournalLocation));
     TEST_ASSERT_EQUAL_INT(StoragePathStatus::Missing, storagePathStatus(filesystem, RESTORE_TRANSACTION_PATH));
-    TEST_ASSERT_TRUE(removeJournalAfterConvergence(storage, RESTORE_TRANSACTION_PATH, RESTORE_TRANSACTION_TMP_PATH));
+    TEST_ASSERT_TRUE(removeJournalAfterConvergence(storage, restoreJournalLocation));
 }
 
 void test_unreadable_wifi_secret_merge_preserves_other_network_and_retries() {
@@ -8449,11 +8455,23 @@ void test_settings_backup_replacement_preserves_valid_previous_across_errors_and
 #include "wifi_journal_discovery_tests.h"
 #include "wifi_journal_payload_tests.h"
 #include "wifi_password_lookup_tests.h"
+#include "transaction_participant_tests.h"
 
 #include "display_contract_tests.h"
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_mirrored_restore_waits_for_original_card_and_retires_before_cleanup);
+    RUN_TEST(test_sd_only_restore_keeps_recovery_authority_when_card_is_absent);
+    RUN_TEST(test_pending_catalog_restore_requires_its_mirrors_before_later_profile_edits);
+    RUN_TEST(test_pending_profile_delete_requires_its_mirrors_before_later_profile_edits);
+    RUN_TEST(test_legacy_unidentified_journals_wait_for_original_primary);
+    RUN_TEST(test_restore_preparation_reset_retires_unapplied_journal_without_replay);
+    RUN_TEST(test_modern_restore_without_local_authority_is_preserved_after_nvs_loss);
+    RUN_TEST(test_foreign_restore_journal_is_preserved_even_when_its_token_is_obsolete_locally);
+    RUN_TEST(test_open_network_rollback_waits_for_proven_key_absence_and_retries);
+    RUN_TEST(test_restore_snapshot_does_not_convert_disappearing_present_password_to_empty);
+    RUN_TEST(test_ordinary_wifi_rollback_keeps_journal_until_absence_is_proven);
     RUN_TEST(test_http_restore_alias_allocation_failure_preserves_littlefs_state_then_retries);
     RUN_TEST(test_http_restore_alias_allocation_failure_preserves_sd_state_then_retries);
     RUN_TEST(test_wifi_password_lookup_open_failure_does_not_restore_stale_sd);

@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import errno
 import fcntl
-import glob
 import hashlib
 import json
 import os
@@ -32,6 +31,7 @@ from artifact_privacy import (
 from camera_artifacts import build_capture_manifest, publish_capture_manifest
 from camera_capture import CameraCapture
 from camera_preflight import run_camera_preflight
+from usb_target import BENCH_USB_SERIAL_ENV, ESP32_S3_NATIVE_USB, UsbTarget, find_usb_target, require_usb_target
 
 try:
     import serial  # type: ignore
@@ -109,6 +109,7 @@ V1_RADIO_LEASE_PATH = (
 )
 V1_RADIO_LEASE_FD_ENV = "V1SIMPLE_MANAGED_V1_LEASE_FD"
 V1_RADIO_QUIET_SECONDS = 1.0
+DUT_LEASE_PATH = ACCOUNT_HOME / ".local" / "state" / "v1simple" / "managed-dut.lock"
 
 
 class CameraPreflightFailure(RuntimeError):
@@ -236,6 +237,9 @@ def _secure_directory_chain(owner: Path, target: Path, *, create: bool) -> tuple
 class V1RadioLease:
     """Exclude concurrent managed V1 advertisers across clones and campaigns."""
 
+    inherited_fd_env = V1_RADIO_LEASE_FD_ENV
+    contention = "another managed V1 advertiser owns the radio"
+
     def __init__(
         self,
         path: Path = V1_RADIO_LEASE_PATH,
@@ -269,7 +273,7 @@ class V1RadioLease:
             raise RuntimeError("managed V1 radio lease directory changed while opening")
 
     def __enter__(self) -> V1RadioLease:
-        raw_fd = os.environ.get(V1_RADIO_LEASE_FD_ENV)
+        raw_fd = os.environ.get(self.inherited_fd_env) if self.inherited_fd_env else None
         if raw_fd is not None:
             try:
                 inherited_fd = int(raw_fd, 10)
@@ -302,7 +306,7 @@ class V1RadioLease:
             os.close(self.fd)
             self.fd = None
             if exc.errno in (errno.EACCES, errno.EAGAIN):
-                raise RuntimeError("another managed V1 advertiser owns the radio") from exc
+                raise RuntimeError(self.contention) from exc
             raise
         return self
 
@@ -313,6 +317,16 @@ class V1RadioLease:
             time.sleep(self.quiet_seconds)
         os.close(self.fd)
         self.fd = None
+
+
+class DutLease(V1RadioLease):
+    """Shared by both benches across serial reopen and maintenance gaps."""
+
+    inherited_fd_env = ""
+    contention = "another managed bench owns the DUT"
+
+    def __init__(self, path: Path | None = None) -> None:
+        super().__init__(DUT_LEASE_PATH if path is None else path, quiet_seconds=0)
 
 
 def parse_args() -> argparse.Namespace:
@@ -685,6 +699,7 @@ def publish_replay_display_contract(
     *,
     artifacts: dict[str, Any],
     runtime_identity: dict[str, Any],
+    source_commit: str,
     camera_result: dict[str, Any],
 ) -> dict[str, Any]:
     required = (
@@ -758,7 +773,7 @@ def publish_replay_display_contract(
             },
         }
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "bench_replay_display_contract",
         "presentation_snapshot": linked["presentation_snapshot"],
         "expected_display_rubric": stimulus_artifact,
@@ -769,6 +784,7 @@ def publish_replay_display_contract(
         "runtime": {
             "boot_id": runtime_identity.get("boot_id"),
             "git_sha": runtime_identity.get("git_sha"),
+            "source_git_sha": source_commit,
             "image_id": runtime_identity.get("image_id"),
             "build_upload_manifest_sha256": linked["build_upload"]["sha256"],
         },
@@ -1092,40 +1108,25 @@ def install_signal_handlers() -> None:
         signal.signal(signum, interrupt)
 
 
-def detect_port() -> str:
-    candidates: list[str] = []
-    for pattern in (
-        "/dev/cu.usbmodem*",
-        "/dev/ttyACM*",
-        "/dev/ttyUSB*",
-        "/dev/cu.usbserial*",
-        "/dev/tty.usbserial*",
-        "/dev/cu.SLAB_USBtoUART*",
-        "/dev/tty.SLAB_USBtoUART*",
-    ):
-        candidates.extend(glob.glob(pattern))
-    return sorted(dict.fromkeys(candidates))[0] if candidates else ""
-
-
-def wait_for_port(preferred: str, timeout_s: int = 30) -> str:
+def wait_for_port(preferred: str, timeout_s: int = 30, *, serial_number: str | None = None) -> UsbTarget:
     deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if preferred and Path(preferred).exists():
-            return preferred
-        detected = detect_port()
-        if detected:
-            return detected
-        time.sleep(1)
-    raise RuntimeError("No USB serial device detected")
+    while True:
+        target = find_usb_target(preferred, serial_number=serial_number)
+        if target is not None:
+            return target
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("the selected ESP32-S3 USB target is unavailable" if preferred or serial_number
+                               else "no ESP32-S3 USB target is available")
+        time.sleep(min(1, remaining))
 
 
-def run_upload(port: str, skip_web: bool) -> None:
-    command = [str(BUILD_SH), "-u"]
+def run_upload(target: UsbTarget, skip_web: bool) -> None:
+    command = [str(BUILD_SH), "-u", "--upload-port", target.port]
     if skip_web:
         command.append("--skip-web")
-    if port:
-        command.extend(["--upload-port", port])
-    subprocess.run(command, cwd=ROOT, check=True)
+    subprocess.run(command, cwd=ROOT, check=True,
+                   env={**os.environ, BENCH_USB_SERIAL_ENV: target.serial_number})
 
 
 def native_usb_reset_strategy(port: Any) -> tuple[Any, dict[str, Any]]:
@@ -1136,7 +1137,7 @@ def native_usb_reset_strategy(port: Any) -> tuple[Any, dict[str, Any]]:
         raise RuntimeError("bench reset requires pyserial in the bench Python environment") from exc
     device = os.path.realpath(port.port)
     matches = [item for item in list_ports.comports() if os.path.realpath(item.device) == device]
-    if len(matches) != 1 or (matches[0].vid, matches[0].pid) != (0x303A, 0x1001):
+    if len(matches) != 1 or (matches[0].vid, matches[0].pid) != ESP32_S3_NATIVE_USB:
         raise RuntimeError("bench reset requires the ESP32-S3 native USB Serial/JTAG port (303a:1001)")
     def reset() -> None:
         # The inspected esptool 5.3.0 HardReset(uses_usb=False) sequence:
@@ -1212,6 +1213,7 @@ class BenchSerial:
         self.ser.timeout = 0.25
         self.ser.dtr = False
         self.ser.rts = False
+        self.ser.exclusive = True
         self.ser.open()
         self.ser.reset_input_buffer()
         self.timeline = timeline
@@ -1658,7 +1660,7 @@ def collect_live(
 
     intended_git_sha = args.git_sha
 
-    with V1RadioLease() as lease:
+    with DutLease(), V1RadioLease() as lease:
         assert lease.fd is not None
         presentation_configuration: dict[str, Any] | None = None
         presentation_capture_ns: int | None = None
@@ -1673,16 +1675,15 @@ def collect_live(
             )
             presentation_capture_ns = time.monotonic_ns()
         print("[bench] waiting for the USB serial device", flush=True)
-        port = wait_for_port(args.port)
+        target = wait_for_port(args.port)
         print("[bench] building and uploading firmware; details in replay/run.log", flush=True)
-        run_upload(port, args.skip_web)
+        run_upload(target, args.skip_web)
         artifacts["build_upload"] = retain_build_upload_artifacts(
             out_dir,
             BUILD_OUTPUT_DIR,
             upload_performed=True,
         )
         print("[bench] firmware uploaded; waiting for USB to return", flush=True)
-        port = wait_for_port(port, 30)
         print(
             f"[bench] allowing {args.post_upload_settle_seconds}s for the device to settle",
             flush=True,
@@ -1737,7 +1738,9 @@ def collect_live(
                     raise CameraPreflightFailure(preflight, camera_result)
 
             print("[bench] resetting the device and verifying firmware identity", flush=True)
+            port = wait_for_port("", serial_number=target.serial_number).port
             observer = BenchSerial(port, args.baud, out_dir / "bench_serial.log", timeline)
+            require_usb_target(port, target.serial_number)
             observer.reset_for_boot()
             establish_serial_boundary(observer, args.ready_timeout_seconds, require_explicit_reset=True)
             assert observer.runtime_identity is not None
@@ -1861,6 +1864,7 @@ def collect_live(
                             out_dir,
                             artifacts=artifacts,
                             runtime_identity=observer.runtime_identity,
+                            source_commit=intended_git_sha,
                             camera_result=camera_result,
                         )
                 except Exception as exc:  # noqa: BLE001

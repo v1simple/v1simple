@@ -9,6 +9,10 @@
 #include <memory>
 #include <new>
 #include <utility>
+#include <esp_system.h>
+#ifndef UNIT_TEST
+#include <esp_mac.h>
+#endif
 
 #include "backup_payload_builder.h"
 #include "display_visual_contract.h"
@@ -179,18 +183,6 @@ namespace {
 constexpr size_t kMaxEncodedWifiPasswordBytes =
     sizeof("hex:") - 1u + MAX_WIFI_PASSWORD_LEN * 2u;
 constexpr size_t kMaxWifiSecretSnapshotBytes = 4096u;
-
-bool readBackupPreferenceStringExact(Preferences& prefs, const char* key,
-                                     size_t maxBytes, String& output) {
-    if (!key || !prefs.isKey(key)) return false;
-    const size_t storedBytesWithTerminator = prefs.getStringLength(key);
-    if (storedBytesWithTerminator == 0 || storedBytesWithTerminator - 1u > maxBytes) return false;
-    String value = prefs.getString(key, "");
-    if (value.length() + 1u != storedBytesWithTerminator ||
-        std::strlen(value.c_str()) != value.length()) return false;
-    output = std::move(value);
-    return true;
-}
 
 bool decodeObfuscatedChecked(const String& encoded, String& decoded) {
     if (encoded.length() == 0) return false;
@@ -426,14 +418,9 @@ bool clearWifiStaSlotPasswordsForRestore(StorageManager& storage, bool clearSdSe
     }
     bool cleared = true;
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
-        if (prefs.isKey(kNvsWifiStaSlotPassword[i])) {
-            cleared = prefs.remove(kNvsWifiStaSlotPassword[i]) &&
-                      !prefs.isKey(kNvsWifiStaSlotPassword[i]) && cleared;
-        }
+        cleared = writeCheckedNvsString(prefs, WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[i], false, "") && cleared;
     }
-    if (prefs.isKey(kNvsWifiPassword)) {
-        cleared = prefs.remove(kNvsWifiPassword) && !prefs.isKey(kNvsWifiPassword) && cleared;
-    }
+    cleared = writeCheckedNvsString(prefs, WIFI_CLIENT_NS, kNvsWifiPassword, false, "") && cleared;
     prefs.end();
     if (clearSdSecret) {
         cleared = clearWifiClientSecretFromSD(storage) && cleared;
@@ -1703,21 +1690,56 @@ bool restoreProfileSnapshot(V1ProfileManager& profiles, const std::vector<V1Prof
 constexpr const char* RESTORE_TRANSACTION_PATH = "/v1restore_transaction.json";
 constexpr const char* RESTORE_TRANSACTION_TMP_PATH = "/v1restore_transaction.tmp";
 constexpr const char* RESTORE_TRANSACTION_TYPE = "v1simple_restore_transaction";
-constexpr int RESTORE_TRANSACTION_VERSION = 3;
+constexpr int RESTORE_TRANSACTION_VERSION = 4;
 constexpr size_t RESTORE_TRANSACTION_MAX_BYTES = 128 * 1024;
 
 constexpr const char* PROFILE_DELETE_TRANSACTION_PATH = "/v1profile_delete_transaction.json";
 constexpr const char* PROFILE_DELETE_TRANSACTION_TMP_PATH = "/v1profile_delete_transaction.tmp";
 constexpr const char* PROFILE_DELETE_TRANSACTION_TYPE = "v1simple_profile_delete_transaction";
-constexpr int PROFILE_DELETE_TRANSACTION_VERSION = 3;
+constexpr int PROFILE_DELETE_TRANSACTION_VERSION = 4;
 // The measured maximal schema-v4 delete journal is pinned by native tests.
 // Round its compact representation to the next 4 KiB quantum so deleting a
 // legal maximal profile remains available, including as the over-cap prune
 // path for grandfathered catalogs.
 constexpr size_t PROFILE_DELETE_TRANSACTION_MAX_BYTES = 16 * 1024;
 
+enum class JournalStorage : uint8_t { Legacy, LittleFS, SD, Mirrored };
+
+struct JournalOrigin {
+    JournalStorage storage = JournalStorage::Legacy;
+    uint64_t cardWitness = 0;
+    uint64_t device = 0;
+};
+
+enum class JournalPhase : uint64_t { None, Preparing, Pending, RolledBack };
+
+struct JournalOwnerRecord {
+    uint64_t token = 0;
+    uint64_t cardWitness = 0;
+    JournalPhase phase = JournalPhase::None;
+};
+static_assert(sizeof(JournalOwnerRecord) == 3 * sizeof(uint64_t));
+
+struct JournalLocation {
+    const char* path;
+    const char* tempPath;
+    const char* cardPath;
+    const char* ownerKey;
+    size_t maxBytes;
+};
+
+constexpr JournalLocation restoreJournalLocation = {
+    RESTORE_TRANSACTION_PATH, RESTORE_TRANSACTION_TMP_PATH,
+    "/v1restore_transaction.card", "restoreJournal", RESTORE_TRANSACTION_MAX_BYTES,
+};
+constexpr JournalLocation deleteJournalLocation = {
+    PROFILE_DELETE_TRANSACTION_PATH, PROFILE_DELETE_TRANSACTION_TMP_PATH,
+    "/v1profile_delete_transaction.card", "deleteJournal", PROFILE_DELETE_TRANSACTION_MAX_BYTES,
+};
+
 struct RestoreTransactionJournal {
     uint64_t token = 0;
+    JournalOrigin origin;
     bool credentialsMutated = false;
     RestoreCredentialSnapshot credentialsBefore;
     bool profilesMutated = false;
@@ -1726,6 +1748,7 @@ struct RestoreTransactionJournal {
 
 struct ProfileDeleteTransactionJournal {
     uint64_t token = 0;
+    JournalOrigin origin;
     bool hadReferences = false;
     V1Profile profile;
 };
@@ -1734,6 +1757,7 @@ enum class JournalCopyStatus : uint8_t {
     Missing,
     Invalid,
     Unavailable,
+    Foreign,
     Parsed,
     Valid,
 };
@@ -1774,8 +1798,13 @@ bool credentialSnapshotsEqual(const RestoreCredentialSnapshot& lhs, const Restor
            (!(lhs.sdRelevant && lhs.sdFilePresent) || lhs.sdFileBytes == rhs.sdFileBytes);
 }
 
+bool journalOriginsEqual(const JournalOrigin& lhs, const JournalOrigin& rhs) {
+    return lhs.storage == rhs.storage && lhs.cardWitness == rhs.cardWitness && lhs.device == rhs.device;
+}
+
 bool restoreJournalsEqual(const RestoreTransactionJournal& lhs, const RestoreTransactionJournal& rhs) {
-    if (lhs.token != rhs.token || lhs.credentialsMutated != rhs.credentialsMutated ||
+    if (lhs.token != rhs.token || !journalOriginsEqual(lhs.origin, rhs.origin) ||
+        lhs.credentialsMutated != rhs.credentialsMutated ||
         lhs.profilesMutated != rhs.profilesMutated ||
         (lhs.credentialsMutated && !credentialSnapshotsEqual(lhs.credentialsBefore, rhs.credentialsBefore)) ||
         lhs.profilesBefore.size() != rhs.profilesBefore.size()) {
@@ -1791,7 +1820,8 @@ bool restoreJournalsEqual(const RestoreTransactionJournal& lhs, const RestoreTra
 
 bool deleteJournalsEqual(const ProfileDeleteTransactionJournal& lhs,
                          const ProfileDeleteTransactionJournal& rhs) {
-    return lhs.token == rhs.token && lhs.hadReferences == rhs.hadReferences &&
+    return lhs.token == rhs.token && journalOriginsEqual(lhs.origin, rhs.origin) &&
+           lhs.hadReferences == rhs.hadReferences &&
            profileSnapshotsEqual(lhs.profile, rhs.profile);
 }
 
@@ -1901,6 +1931,89 @@ bool journalCrcValid(const JsonDocument& doc) {
            doc["_crc32"].as<uint32_t>() == BackupPayloadBuilder::computeBackupCrc32(doc);
 }
 
+bool readJournalOwner(const char* key, JournalOwnerRecord& owner) {
+    owner = {};
+    SettingsNvsReader meta(SETTINGS_NS_META);
+    if (meta.error() == ESP_ERR_NVS_NOT_FOUND) return true;
+    if (!meta.good()) return false;
+    const bool present = meta.isKey(key);
+    return meta.good() && (!present ||
+        (meta.getFixedBlob(key, &owner, sizeof(owner)) && owner.token > 0 &&
+         owner.token <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) &&
+         owner.phase >= JournalPhase::Preparing && owner.phase <= JournalPhase::RolledBack));
+}
+
+bool writeJournalOwner(const char* key, const JournalOwnerRecord& owner) {
+    Preferences meta;
+    if (!meta.begin(SETTINGS_NS_META, false)) return false;
+    const bool written = meta.putBytes(key, &owner, sizeof(owner)) == sizeof(owner);
+    meta.end();
+    JournalOwnerRecord verified;
+    return written && readJournalOwner(key, verified) && verified.token == owner.token &&
+           verified.cardWitness == owner.cardWitness && verified.phase == owner.phase;
+}
+
+bool readCardWitness(fs::FS& filesystem, const char* path, const JournalOwnerRecord& expected) {
+    File file = filesystem.open(path, FILE_READ);
+    JournalOwnerRecord actual;
+    return file && file.size() == sizeof(actual) &&
+           file.read(reinterpret_cast<uint8_t*>(&actual), sizeof(actual)) == sizeof(actual) &&
+           actual.token == expected.token && actual.cardWitness == expected.cardWitness &&
+           actual.phase == JournalPhase::Preparing;
+}
+
+bool writeCardWitness(StorageManager& storage, const char* path, const JournalOwnerRecord& owner) {
+    StorageManager::SDLockBlocking lock(storage.getSDMutex());
+    fs::FS* filesystem = storage.getFilesystem();
+    if (!lock || !filesystem || !storage.isSDCard()) return false;
+    File file = filesystem->open(path, FILE_WRITE);
+    if (!file) return false;
+    const size_t written = file.write(reinterpret_cast<const uint8_t*>(&owner), sizeof(owner));
+    file.flush();
+    file.close();
+    return written == sizeof(owner) && readCardWitness(*filesystem, path, owner);
+}
+
+uint64_t journalDevice() {
+#ifdef UNIT_TEST
+    return 1;
+#else
+    uint8_t address[6];
+    if (esp_efuse_mac_get_default(address) != ESP_OK) return 0;
+    uint64_t identity = 14695981039346656037ull;
+    for (uint8_t byte : address) identity = (identity ^ byte) * 1099511628211ull;
+    return identity;
+#endif
+}
+
+JournalOrigin currentJournalOrigin(StorageManager& storage) {
+    if (!storage.isSDCard()) return {JournalStorage::LittleFS, 0, journalDevice()};
+    const bool mirrored = storage.getLittleFS() && storage.getLittleFS() != storage.getFilesystem();
+    // A board's transaction sequence is local to NVS. The separate witness
+    // also distinguishes cards that happen to carry the same sequence value.
+    const uint64_t witness = (static_cast<uint64_t>(esp_random()) << 32) | esp_random();
+    return {mirrored ? JournalStorage::Mirrored : JournalStorage::SD, witness ? witness : 1, journalDevice()};
+}
+
+void writeJournalOrigin(JsonDocument& doc, const JournalOrigin& origin) {
+    doc["storage"] = static_cast<uint8_t>(origin.storage);
+    doc["cardWitness"] = origin.cardWitness;
+    doc["device"] = origin.device;
+}
+
+bool readJournalOrigin(const JsonDocument& doc, bool legacy, JournalOrigin& origin) {
+    if (legacy) return true;
+    if (!doc["storage"].is<uint8_t>() || !doc["cardWitness"].is<uint64_t>() ||
+        !doc["device"].is<uint64_t>() || doc["device"].as<uint64_t>() == 0) return false;
+    const uint8_t source = doc["storage"].as<uint8_t>();
+    if (source < static_cast<uint8_t>(JournalStorage::LittleFS) ||
+        source > static_cast<uint8_t>(JournalStorage::Mirrored)) return false;
+    origin.storage = static_cast<JournalStorage>(source);
+    origin.cardWitness = doc["cardWitness"].as<uint64_t>();
+    origin.device = doc["device"].as<uint64_t>();
+    return (origin.storage == JournalStorage::LittleFS) == (origin.cardWitness == 0);
+}
+
 bool writeJournalAtomically(StorageManager& storage, const char* path, const char* tempPath,
                             size_t maxBytes, const JsonDocument& doc) {
     const size_t expected = measureJson(doc);
@@ -1960,7 +2073,21 @@ bool writeJournalAtomically(StorageManager& storage, const char* path, const cha
     return true;
 }
 
-bool loadJournalMirrors(StorageManager& storage, const char* path, size_t maxBytes, JournalMirrors& mirrors) {
+bool reserveJournal(StorageManager& storage, const JournalLocation& location, uint64_t token,
+                    const JournalOrigin& origin, JsonDocument& doc) {
+    if (origin.device == 0 || doc.overflowed()) return false;
+    JournalOwnerRecord owner{token, origin.cardWitness, JournalPhase::Preparing};
+    writeJournalOrigin(doc, origin);
+    stampJournalCrc(doc);
+    if (!writeJournalOwner(location.ownerKey, owner) ||
+        (origin.cardWitness != 0 && !writeCardWitness(storage, location.cardPath, owner)) ||
+        !writeJournalAtomically(storage, location.path, location.tempPath, location.maxBytes, doc)) return false;
+    owner.phase = JournalPhase::Pending;
+    return writeJournalOwner(location.ownerKey, owner);
+}
+
+bool loadJournalMirrors(StorageManager& storage, const char* path, size_t maxBytes, JournalMirrors& mirrors,
+                        uint32_t lockTimeoutMs = 500) {
     if (!path || maxBytes == 0) {
         return false;
     }
@@ -1983,7 +2110,7 @@ bool loadJournalMirrors(StorageManager& storage, const char* path, size_t maxByt
         return false;
     }
     if (primaryPath == StoragePathStatus::Missing && secondaryPath == StoragePathStatus::Missing) return true;
-    StorageManager::SDLockBlocking lock(storage.getSDMutex());
+    StorageManager::SDLockTimed lock(storage.getSDMutex(), lockTimeoutMs);
     if (!lock) {
         return false;
     }
@@ -2048,7 +2175,7 @@ bool loadJournalMirrors(StorageManager& storage, const char* path, size_t maxByt
            mirrors.secondary.status != JournalCopyStatus::Unavailable;
 }
 
-bool removeJournalAfterConvergence(StorageManager& storage, const char* path, const char* tempPath,
+bool removeJournalAfterConvergence(StorageManager& storage, const JournalLocation& location,
                                    JournalCopyStatus primaryStatus = JournalCopyStatus::Valid,
                                    JournalCopyStatus secondaryStatus = JournalCopyStatus::Valid) {
     if (!storage.isReady()) {
@@ -2066,32 +2193,29 @@ bool removeJournalAfterConvergence(StorageManager& storage, const char* path, co
     if (secondary == primary) {
         secondary = nullptr;
     }
-    const auto removeOne = [&](fs::FS* fs) {
-        if (!fs) {
-            return true;
-        }
-        if (tempPath && fs->exists(tempPath)) {
-            fs->remove(tempPath);
-        }
-        return storageRemoveFileIfPresent(*fs, path);
-    };
+    const auto removeOne = [&](fs::FS* fs) { return !fs || storageRemoveFileIfPresent(*fs, location.path); };
     // Remove an invalid/missing mirror before the sole valid recovery record.
     // With two valid mirrors either may go first; a failed second removal still
     // leaves the other valid record for an idempotent retry.
-    if (primaryStatus == JournalCopyStatus::Valid && secondaryStatus != JournalCopyStatus::Valid) {
-        return removeOne(secondary) && removeOne(primary);
-    }
-    return removeOne(primary) && removeOne(secondary);
+    // Leave the fixed-size witness available across partial cleanup. The next
+    // transaction on that card replaces it after its own NVS preparation.
+    return primaryStatus == JournalCopyStatus::Valid && secondaryStatus != JournalCopyStatus::Valid
+               ? removeOne(secondary) && removeOne(primary)
+               : removeOne(primary) && removeOne(secondary);
 }
 
-uint64_t allocateTransactionId(const char* sequenceKey, uint64_t selectedWatermark) {
+uint64_t allocateTransactionId(const char* sequenceKey, const JournalLocation& location, uint64_t selectedWatermark) {
+    JournalOwnerRecord owner;
+    if (!readJournalOwner(location.ownerKey, owner)) return 0;
+    SettingsNvsReader reader(SETTINGS_NS_META);
+    const int64_t storedSequence = reader.good() ? reader.getLong64(sequenceKey, 0) : 0;
+    if (!reader.good() && reader.error() != ESP_ERR_NVS_NOT_FOUND) return 0;
     Preferences meta;
     if (!meta.begin(SETTINGS_NS_META, false)) {
         return 0;
     }
-    const int64_t storedSequence = meta.getLong64(sequenceKey, 0);
     const uint64_t sequence = storedSequence > 0 ? static_cast<uint64_t>(storedSequence) : 0;
-    const uint64_t floor = std::max(sequence, selectedWatermark);
+    const uint64_t floor = std::max(owner.token, std::max(sequence, selectedWatermark));
     if (floor >= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
         meta.end();
         return 0;
@@ -2121,18 +2245,18 @@ bool writeRestoreTransactionJournal(StorageManager& storage, uint64_t token, boo
             writeProfileToJournal(profiles.add<JsonObject>(), profile);
         }
     }
-    stampJournalCrc(doc);
-    return writeJournalAtomically(storage, RESTORE_TRANSACTION_PATH, RESTORE_TRANSACTION_TMP_PATH,
-                                  RESTORE_TRANSACTION_MAX_BYTES, doc);
+    return reserveJournal(storage, restoreJournalLocation, token, currentJournalOrigin(storage), doc);
 }
 
 JournalCopyStatus readRestoreTransactionJournal(const JsonDocument& doc,
                                                 RestoreTransactionJournal& journal) {
+    const int version = doc["_version"].as<int>();
+    const bool legacy = version == 2 || version == 3;
     if (!exactV1JsonToken(doc["_type"], RESTORE_TRANSACTION_TYPE) ||
-        !doc["_version"].is<int>() || (doc["_version"].as<int>() != 2 && doc["_version"].as<int>() != RESTORE_TRANSACTION_VERSION) ||
+        !doc["_version"].is<int>() || (!legacy && version != RESTORE_TRANSACTION_VERSION) ||
         !doc["token"].is<int64_t>() || doc["token"].as<int64_t>() <= 0 ||
         !doc["credentialsMutated"].is<bool>() || !doc["profilesMutated"].is<bool>() ||
-        !journalCrcValid(doc)) {
+        !journalCrcValid(doc) || !readJournalOrigin(doc, legacy, journal.origin)) {
         return JournalCopyStatus::Invalid;
     }
     journal.token = static_cast<uint64_t>(doc["token"].as<int64_t>());
@@ -2166,8 +2290,14 @@ JournalCopyStatus readRestoreTransactionJournal(const JsonDocument& doc,
             return JournalCopyStatus::Unavailable;
         }
     }
-    const size_t expectedKeys = 6 + (journal.credentialsMutated ? 1 : 0) +
+    if (!legacy && journal.credentialsMutated && journal.credentialsBefore.sdRelevant !=
+        (journal.origin.storage != JournalStorage::LittleFS)) return JournalCopyStatus::Invalid;
+    if (legacy && journal.credentialsMutated && !journal.credentialsBefore.sdRelevant) {
+        journal.origin.storage = JournalStorage::LittleFS;
+    }
+    const size_t expectedKeys = (legacy ? 6 : 9) + (journal.credentialsMutated ? 1 : 0) +
                                 (journal.profilesMutated ? 1 : 0);
+    if (!legacy && journal.origin.device != journalDevice()) return JournalCopyStatus::Foreign;
     return jsonHasExactSize(doc.as<JsonObjectConst>(), expectedKeys)
                ? JournalCopyStatus::Valid
                : JournalCopyStatus::Invalid;
@@ -2181,21 +2311,22 @@ bool writeProfileDeleteTransactionJournal(StorageManager& storage, uint64_t toke
     doc["token"] = static_cast<int64_t>(token);
     doc["hadReferences"] = hadReferences;
     writeProfileToJournal(doc["profile"].to<JsonObject>(), profile);
-    stampJournalCrc(doc);
-    return writeJournalAtomically(storage, PROFILE_DELETE_TRANSACTION_PATH,
-                                  PROFILE_DELETE_TRANSACTION_TMP_PATH,
-                                  PROFILE_DELETE_TRANSACTION_MAX_BYTES, doc);
+    return reserveJournal(storage, deleteJournalLocation, token, currentJournalOrigin(storage), doc);
 }
 
 JournalCopyStatus readProfileDeleteTransactionJournal(const JsonDocument& doc,
                                                       ProfileDeleteTransactionJournal& journal) {
+    const int version = doc["_version"].as<int>();
+    const bool legacy = version == 2 || version == 3;
     if (!exactV1JsonToken(doc["_type"], PROFILE_DELETE_TRANSACTION_TYPE) ||
-        !doc["_version"].is<int>() || (doc["_version"].as<int>() != 2 && doc["_version"].as<int>() != PROFILE_DELETE_TRANSACTION_VERSION) ||
+        !doc["_version"].is<int>() || (!legacy && version != PROFILE_DELETE_TRANSACTION_VERSION) ||
         !doc["token"].is<int64_t>() || doc["token"].as<int64_t>() <= 0 ||
         !doc["hadReferences"].is<bool>() || !doc["profile"].is<JsonObjectConst>() ||
-        !journalCrcValid(doc) || !jsonHasExactSize(doc.as<JsonObjectConst>(), 6)) {
+        !journalCrcValid(doc) || !readJournalOrigin(doc, legacy, journal.origin) ||
+        !jsonHasExactSize(doc.as<JsonObjectConst>(), legacy ? 6 : 9)) {
         return JournalCopyStatus::Invalid;
     }
+    if (!legacy && journal.origin.device != journalDevice()) return JournalCopyStatus::Foreign;
     journal.token = static_cast<uint64_t>(doc["token"].as<int64_t>());
     journal.hadReferences = doc["hadReferences"].as<bool>();
     return readProfileFromJournal(doc["profile"].as<JsonObjectConst>(), journal.profile)
@@ -2210,18 +2341,52 @@ struct MirroredJournalMessages {
     const char* cleanupRetry;
 };
 
+bool journalParticipantsAvailable(StorageManager& storage, const JournalLocation& location,
+                                  const JournalOrigin& origin, uint64_t token, bool matchingLegacyMirrors,
+                                  uint32_t lockTimeoutMs) {
+    if (origin.storage == JournalStorage::LittleFS) return !storage.isSDCard();
+    if (!storage.isSDCard()) return false;
+    // A sole legacy SD copy can be a pending original or an obsolete copy
+    // left after an older firmware rolled back without the card. Without
+    // matching peers, replay could undo later acknowledged edits.
+    if (origin.storage == JournalStorage::Legacy) return matchingLegacyMirrors;
+    if (origin.storage == JournalStorage::Mirrored && !storage.getLittleFS()) return false;
+    StorageManager::SDLockTimed lock(storage.getSDMutex(), lockTimeoutMs);
+    fs::FS* card = storage.getFilesystem();
+    return lock && card && readCardWitness(*card, location.cardPath,
+        {token, origin.cardWitness, JournalPhase::Preparing});
+}
+
 template <typename Journal, typename ReadJournal, typename JournalsEqual, typename RecoverPending>
-bool resolveMirroredTransactionJournal(StorageManager& storage, const char* path, const char* tempPath,
-                                       size_t maxBytes, uint64_t commitWatermark,
+bool resolveMirroredTransactionJournal(StorageManager& storage, const JournalLocation& location,
+                                       uint64_t commitWatermark,
                                        const MirroredJournalMessages& messages, ReadJournal readJournal,
-                                       JournalsEqual journalsEqual, RecoverPending recoverPending) {
+                                       JournalsEqual journalsEqual, RecoverPending recoverPending, bool apply,
+                                       bool* pendingEffects = nullptr) {
+    if (pendingEffects) *pendingEffects = true;
+    JournalOwnerRecord owner;
+    if (!readJournalOwner(location.ownerKey, owner)) return false;
+    if (owner.token != 0) {
+        // Preparation cannot begin while an earlier transaction of this kind
+        // is unresolved. Retain that fact even after the owner slot advances.
+        const uint64_t settled = owner.phase == JournalPhase::RolledBack ? owner.token : owner.token - 1u;
+        commitWatermark = std::max(commitWatermark, settled);
+    }
+    const bool preparing = owner.phase == JournalPhase::Preparing && owner.token > commitWatermark;
+    const bool recoveryReserved = owner.phase == JournalPhase::Pending && owner.token > commitWatermark;
+    const auto recordRollback = [&](uint64_t token, uint64_t cardWitness) {
+        return writeJournalOwner(location.ownerKey, {token, cardWitness, JournalPhase::RolledBack});
+    };
+
     JournalMirrors mirrors;
-    if (!loadJournalMirrors(storage, path, maxBytes, mirrors)) {
+    const uint32_t lockTimeoutMs = apply ? 500 : 0;
+    if (!loadJournalMirrors(storage, location.path, location.maxBytes, mirrors, lockTimeoutMs)) {
         return false;
     }
     if (mirrors.primary.status == JournalCopyStatus::Missing &&
         mirrors.secondary.status == JournalCopyStatus::Missing) {
-        return true;
+        if (pendingEffects) *pendingEffects = recoveryReserved;
+        return !recoveryReserved && (!preparing || !apply || recordRollback(owner.token, owner.cardWitness));
     }
 
     Journal primaryJournal;
@@ -2238,7 +2403,9 @@ bool resolveMirroredTransactionJournal(StorageManager& storage, const char* path
     // unknown state, not corrupt input. Never discard it in favor of another
     // mirror or remove it as an invalid copy.
     if (mirrors.primary.status == JournalCopyStatus::Unavailable ||
-        mirrors.secondary.status == JournalCopyStatus::Unavailable) {
+        mirrors.secondary.status == JournalCopyStatus::Unavailable ||
+        mirrors.primary.status == JournalCopyStatus::Foreign ||
+        mirrors.secondary.status == JournalCopyStatus::Foreign) {
         return false;
     }
 
@@ -2263,18 +2430,45 @@ bool resolveMirroredTransactionJournal(StorageManager& storage, const char* path
         }
     }
 
-    // Recovery is rollback-only. At or below the durable watermark the
-    // transaction already committed, and its payload may name data recreated
-    // later (notably a same-name profile after deletion).
+    // A corrupt SD payload can be replaced by its good mirror only when the
+    // independent witness identifies the mounted card as that participant.
+    // Do not delete an unrelated corrupt record during local-only cleanup.
+    if (storage.isSDCard() && mirrors.primary.status == JournalCopyStatus::Invalid &&
+        (!journal || journal->origin.cardWitness == 0 ||
+         !journalParticipantsAvailable(storage, location, journal->origin, journal->token, false,
+                                       lockTimeoutMs))) return false;
+
+    // Settled records are cleanup-only. A prepared local record may also be
+    // retired without replay because no external effect was admitted yet.
     if (journal && journal->token > commitWatermark) {
-        if (!recoverPending(*journal)) {
+        const bool matchingOwner = journal->token == owner.token && journal->origin.cardWitness == owner.cardWitness;
+        if (((preparing || recoveryReserved) && !matchingOwner) ||
+            (journal->origin.device != 0 && !preparing && !recoveryReserved)) {
+            Serial.println("[Settings] Transaction journal disagrees with its NVS recovery record");
             return false;
         }
+        if (!preparing) {
+            const bool matchingLegacyMirrors = primaryValid && secondaryValid &&
+                journalsEqual(primaryJournal, secondaryJournal);
+            if (!journalParticipantsAvailable(storage, location, journal->origin, journal->token,
+                                              matchingLegacyMirrors, lockTimeoutMs)) {
+                Serial.println("[Settings] Waiting for transaction storage participants");
+                return false;
+            }
+            if (!apply) return true;
+            if (!recoverPending(*journal)) return false;
+        }
+        if (pendingEffects) *pendingEffects = false;
+        if (!apply) return true;
+        if (!recordRollback(journal->token, journal->origin.cardWitness)) return false;
     } else {
+        if (recoveryReserved || (preparing && apply && !recordRollback(owner.token, owner.cardWitness))) return false;
+        if (pendingEffects) *pendingEffects = false;
+        if (!apply) return true;
         Serial.println(messages.committedOrObsolete);
     }
 
-    if (!removeJournalAfterConvergence(storage, path, tempPath, mirrors.primary.status,
+    if (!removeJournalAfterConvergence(storage, location, mirrors.primary.status,
                                        mirrors.secondary.status)) {
         if (messages.cleanupRetry) {
             Serial.println(messages.cleanupRetry);
@@ -2300,7 +2494,7 @@ bool captureRestoreCredentialSnapshot(StorageManager& storage, RestoreCredential
             present = prefs.isKey(key);
             if (!prefs.good()) return false;
             if (!present) return true;
-            encoded = prefs.getString(key);
+            encoded = prefs.getString(key, "", true);
             String decoded;
             return prefs.good() && encoded.length() <= kMaxEncodedWifiPasswordBytes &&
                    decodeStoredObfuscatedChecked(encoded, decoded);
@@ -2368,35 +2562,21 @@ bool captureRestoreCredentialSnapshot(StorageManager& storage, RestoreCredential
 }
 
 bool restoreCredentialSnapshot(StorageManager& storage, const RestoreCredentialSnapshot& snapshot) {
+    if (snapshot.sdRelevant && (!storage.isReady() || !storage.isSDCard())) return false;
     Preferences prefs;
     if (!prefs.begin(WIFI_CLIENT_NS, false)) {
         return false;
     }
     bool restored = true;
     const auto restoreKey = [&](const char* key, bool present, const String& value) {
-        if (!present) {
-            if (prefs.isKey(key)) {
-                restored = prefs.remove(key) && restored;
-            }
-            restored = !prefs.isKey(key) && restored;
-            return;
-        }
-        const size_t written = prefs.putString(key, value);
-        bool verified = written == value.length() && prefs.isKey(key) &&
-                        prefs.getStringLength(key) == value.length() + 1u;
-        if (verified && value.length() > 0) {
-            String readBack;
-            verified = readBackupPreferenceStringExact(prefs, key, value.length(), readBack) &&
-                       readBack == value;
-        }
-        restored = verified && restored;
+        restored = writeCheckedNvsString(prefs, WIFI_CLIENT_NS, key, present, value) && restored;
     };
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         restoreKey(kNvsWifiStaSlotPassword[i], snapshot.passwordPresent[i], snapshot.passwordValues[i]);
     }
     restoreKey(kNvsWifiPassword, snapshot.legacyPasswordPresent, snapshot.legacyPasswordValue);
     prefs.end();
-    if (!snapshot.sdRelevant) {
+    if (!restored || !snapshot.sdRelevant) {
         return restored;
     }
 
@@ -2435,7 +2615,17 @@ bool restoreCredentialSnapshot(StorageManager& storage, const RestoreCredentialS
         fs->remove(tempPath);
         return false;
     }
-    return StorageManager::promoteTempFileWithRollback(*fs, tempPath, WIFI_CLIENT_SD_SECRET_PATH) && restored;
+    const auto matchesSnapshot = [&](const char* path) {
+        File readback = fs->open(path, FILE_READ);
+        if (!readback || readback.size() != snapshot.sdFileBytes.length()) return false;
+        for (size_t index = 0; index < snapshot.sdFileBytes.length(); ++index) {
+            if (readback.read() != static_cast<uint8_t>(snapshot.sdFileBytes[index])) return false;
+        }
+        return true;
+    };
+    return matchesSnapshot(tempPath) &&
+           StorageManager::promoteTempFileWithRollback(*fs, tempPath, WIFI_CLIENT_SD_SECRET_PATH) &&
+           matchesSnapshot(WIFI_CLIENT_SD_SECRET_PATH);
 }
 
 } // namespace
@@ -2451,7 +2641,7 @@ bool backupDocumentCanApply(const JsonDocument& doc, const V1Settings& current, 
                                           currentBackupReplacesProfileCatalog(doc));
 }
 
-bool SettingsManager::resolveRestoreTransaction() {
+bool SettingsManager::resolveRestoreTransaction(bool apply) {
     const MirroredJournalMessages messages = {
         "[Settings] ERROR: Restore journals exist but neither mirror is valid",
         "[Settings] ERROR: Divergent pending restore journals are ambiguous",
@@ -2459,8 +2649,7 @@ bool SettingsManager::resolveRestoreTransaction() {
         "[Settings] WARN: Restore journal cleanup will retry",
     };
     return resolveMirroredTransactionJournal<RestoreTransactionJournal>(
-        *storage_, RESTORE_TRANSACTION_PATH, RESTORE_TRANSACTION_TMP_PATH,
-        RESTORE_TRANSACTION_MAX_BYTES, restoreCommitWatermark_, messages,
+        *storage_, restoreJournalLocation, restoreCommitWatermark_, messages,
         readRestoreTransactionJournal, restoreJournalsEqual,
         [this](const RestoreTransactionJournal& journal) {
             bool recovered = true;
@@ -2468,7 +2657,7 @@ bool SettingsManager::resolveRestoreTransaction() {
                 recovered = restoreCredentialSnapshot(*storage_, journal.credentialsBefore) && recovered;
             }
             if (journal.profilesMutated) {
-                if (!profiles_->isReady()) {
+                if (!profiles_ || !profiles_->isReady()) {
                     profileReferenceRecoveryPending_ = true;
                     Serial.println("[Settings] Restore transaction recovery waiting for profile storage");
                     return false;
@@ -2482,10 +2671,10 @@ bool SettingsManager::resolveRestoreTransaction() {
             }
             Serial.println("[Settings] Rolled back interrupted restore transaction");
             return true;
-        });
+        }, apply, &restoreCredentialRecoveryPending_);
 }
 
-bool SettingsManager::resolveProfileDeleteTransaction() {
+bool SettingsManager::resolveProfileDeleteTransaction(bool apply) {
     const MirroredJournalMessages messages = {
         "[Settings] ERROR: Profile-delete journals exist but neither mirror is valid",
         "[Settings] ERROR: Divergent pending profile-delete journals are ambiguous",
@@ -2493,8 +2682,7 @@ bool SettingsManager::resolveProfileDeleteTransaction() {
         nullptr,
     };
     return resolveMirroredTransactionJournal<ProfileDeleteTransactionJournal>(
-        *storage_, PROFILE_DELETE_TRANSACTION_PATH, PROFILE_DELETE_TRANSACTION_TMP_PATH,
-        PROFILE_DELETE_TRANSACTION_MAX_BYTES, profileDeleteCommitWatermark_, messages,
+        *storage_, deleteJournalLocation, profileDeleteCommitWatermark_, messages,
         readProfileDeleteTransactionJournal, deleteJournalsEqual,
         [this](const ProfileDeleteTransactionJournal& journal) {
             if (!profiles_->isReady()) {
@@ -2511,7 +2699,13 @@ bool SettingsManager::resolveProfileDeleteTransaction() {
             Serial.printf("[Settings] Restored profile '%s' after interrupted delete\n",
                           journal.profile.name.c_str());
             return true;
-        });
+        }, apply);
+}
+
+bool SettingsManager::canOpenProfileStorage() {
+    // Catalog initialization reconciles mirrored files before the settings
+    // rollback can run. Admit that write only on the transaction's own media.
+    return resolveRestoreTransaction(false) && resolveProfileDeleteTransaction(false);
 }
 
 bool SettingsManager::resolveStorageTransactionsForMutation() {
@@ -2549,7 +2743,7 @@ ProfileOperationResult SettingsManager::deleteProfileAndReferences(const String&
     const bool hadReferences = settings_.slot0_default.profileName == profile.name ||
                                settings_.slot1_highway.profileName == profile.name ||
                                settings_.slot2_comfort.profileName == profile.name;
-    const uint64_t token = allocateTransactionId(kNvsProfileDeleteTransactionSequence,
+    const uint64_t token = allocateTransactionId(kNvsProfileDeleteTransactionSequence, deleteJournalLocation,
                                                  profileDeleteCommitWatermark_);
     if (token == 0 || !writeProfileDeleteTransactionJournal(*storage_, token, profile, hadReferences)) {
         return profileOperationResult(ProfileStorageStatus::IoError, "Failed to prepare profile delete");
@@ -2566,8 +2760,11 @@ ProfileOperationResult SettingsManager::deleteProfileAndReferences(const String&
     const ProfileOperationResult deleted = profiles_->deleteProfileResult(profile.name, 250);
     if (!deleted.success()) {
         if (deleted.status == ProfileStorageStatus::Busy) {
-            if (!removeJournalAfterConvergence(*storage_, PROFILE_DELETE_TRANSACTION_PATH,
-                                               PROFILE_DELETE_TRANSACTION_TMP_PATH)) {
+            JournalOwnerRecord owner;
+            if (!readJournalOwner(deleteJournalLocation.ownerKey, owner) ||
+                owner.token != token || owner.phase != JournalPhase::Pending ||
+                !writeJournalOwner(deleteJournalLocation.ownerKey, {owner.token, owner.cardWitness, JournalPhase::RolledBack}) ||
+                !removeJournalAfterConvergence(*storage_, deleteJournalLocation)) {
                 return profileOperationResult(ProfileStorageStatus::IoError,
                                               "Failed to cancel busy profile delete");
             }
@@ -2626,15 +2823,13 @@ ProfileOperationResult SettingsManager::deleteProfileAndReferences(const String&
 #endif
 
     // At this point profile deletion and assignment clearing are both durable.
-    // A leftover journal is harmless: boot recovery observes no references and
-    // completes the same deletion before removing it.
+    // The settings watermark makes a leftover journal cleanup-only.
     bool leaveJournal = false;
 #ifdef UNIT_TEST
     leaveJournal = leaveProfileDeleteJournalAfterCommit_;
     leaveProfileDeleteJournalAfterCommit_ = false;
 #endif
-    if (!leaveJournal && !removeJournalAfterConvergence(*storage_, PROFILE_DELETE_TRANSACTION_PATH,
-                                                        PROFILE_DELETE_TRANSACTION_TMP_PATH)) {
+    if (!leaveJournal && !removeJournalAfterConvergence(*storage_, deleteJournalLocation)) {
         Serial.println("[Settings] WARN: Committed profile delete journal cleanup will retry");
     }
     return profileOperationResult(ProfileStorageStatus::Success);
@@ -2706,7 +2901,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     bool journalWritten = false;
     uint64_t restoreToken = 0;
     if (externalStoresMutated) {
-        restoreToken = allocateTransactionId(kNvsRestoreTransactionSequence,
+        restoreToken = allocateTransactionId(kNvsRestoreTransactionSequence, restoreJournalLocation,
                                              restoreCommitWatermark_);
         if (restoreToken == 0 ||
             !writeRestoreTransactionJournal(*storage_, restoreToken, credentialsMutated, credentialsBefore,
@@ -2721,17 +2916,9 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         settings_ = std::move(settingsBefore);
         restorePending_ = restorePendingBefore;
         restoreCommitWatermark_ = restoreWatermarkBefore;
-        const bool credentialsRestored = !credentialsMutated || restoreCredentialSnapshot(*storage_, credentialsBefore);
-        const bool profilesRestored = !profilesMutated || restoreProfileSnapshot(*profiles_, profilesBefore);
-        if (!credentialsRestored || !profilesRestored) {
+        if (journalWritten && !resolveRestoreTransaction()) {
             profileReferenceRecoveryPending_ = true;
-            Serial.printf("[Settings] ERROR: Restore rollback incomplete credentials=%s profiles=%s\n",
-                          credentialsRestored ? "ok" : "failed", profilesRestored ? "ok" : "failed");
-        }
-        if (journalWritten && credentialsRestored && profilesRestored &&
-            !removeJournalAfterConvergence(*storage_, RESTORE_TRANSACTION_PATH,
-                                           RESTORE_TRANSACTION_TMP_PATH)) {
-            Serial.println("[Settings] WARN: Restore rollback journal cleanup will retry on boot");
+            Serial.println("[Settings] ERROR: Restore rollback incomplete");
         }
     };
 
@@ -2857,8 +3044,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         leaveRestoreJournalAfterCommit_ = false;
 #endif
         if (!leaveJournal &&
-            !removeJournalAfterConvergence(*storage_, RESTORE_TRANSACTION_PATH,
-                                           RESTORE_TRANSACTION_TMP_PATH)) {
+            !removeJournalAfterConvergence(*storage_, restoreJournalLocation)) {
             Serial.println("[Settings] WARN: Committed restore journal cleanup will retry on boot");
         }
     }

@@ -68,9 +68,17 @@ Versions below come from `platformio.ini`:
   This software is based in part on the work of the FreeType Team.
   `scripts/patch_openfontrender.py` applies a local source change at build time.
 
-The pinned ESP32 platform also supplies the Arduino core, ESP-IDF, toolchain,
-and transitive components. This file does not establish their complete
-component-level inventory.
+- Arduino-ESP32 3.3.12 — LGPL-2.1-or-later for the linked Arduino sources
+  bearing that notice. The release includes `licenses/LGPL-2.1.txt` (named
+  `LGPL-2.1.txt` in GitHub Releases) and `arduino-esp32-source.tar.gz`.
+  The archive provides the V1Simple source, patched Arduino framework and
+  instructions for rebuilding or relinking with a modified library. The
+  archived `NetworkClient.cpp` carries Hristo Gochkov's notice and
+  `WebServer/Parsing.cpp` and `FS.h` carry Ivan Grokhotkov's notices. Their
+  source headers give the applicable copyright and license terms.
+
+The pinned ESP32 platform also supplies ESP-IDF, the toolchain and transitive
+components. This inventory covers the dependencies identified above.
 
 ## Maintenance web bundle
 

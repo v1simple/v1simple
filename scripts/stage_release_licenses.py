@@ -18,6 +18,7 @@ ROOT_FILES = (
 )
 
 LICENSE_FILES = (
+    "licenses/LGPL-2.1.txt",
     "licenses/ArduinoJson-LICENSE.txt",
     "licenses/NimBLE-Arduino-LICENSE.txt",
     "licenses/NimBLE-Arduino-NOTICE.txt",
@@ -39,7 +40,10 @@ LICENSE_FILES = (
 # - GNU FreeFont 2012-05-03 OTF archive from ftp.gnu.org, archive SHA-256
 #   3a6c51868c71b006c33c4bcde63d90927e6fcca8f51c965b8ad62d021614a860
 # - Creative Commons BY 4.0 legalcode.txt from creativecommons.org
+# - LGPL 2.1 as included verbatim with GNU Libtool 2.6.2 (COPYING.LIB)
 PINNED_SOURCE_SHA256 = {
+    "licenses/LGPL-2.1.txt":
+        "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
     "licenses/GNU-FreeFont-COPYING.txt":
         "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
     "licenses/GNU-FreeFont-README.txt":

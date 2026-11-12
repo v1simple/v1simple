@@ -34,7 +34,7 @@ from behavior_state import (BehaviorFailure, DeviceHttpError, HttpDevice, Incomp
                             atomic_json, differences, result_status, semantic_snapshot, verify_identity)
 from behavior_visual import (observe_frame, evaluate_palette, evaluate_clearance,
                              evaluate_card_clearance, evaluate_takeover)
-from run_window import try_join_maintenance_wifi, V1RadioLease, ACCOUNT_HOME
+from run_window import DutLease as ManagedDutLease, try_join_maintenance_wifi
 
 SENTINELS = {"red": 0xF800, "green": 0x07E0, "blue": 0x001F,
              "cyan": 0x07FF, "magenta": 0xF81F, "yellow": 0xFFE0}
@@ -69,23 +69,12 @@ def required_checks(suite: str) -> set[str]:
     return checks
 
 
-class DutLease(V1RadioLease):
-    """Exclude separate behavior runs through USB reopen and maintenance gaps."""
-    def __init__(self, path=None):
-        super().__init__(path or ACCOUNT_HOME / ".local/state/v1simple/managed-dut.lock", quiet_seconds=0)
-
+class DutLease(ManagedDutLease):
     def __enter__(self):
-        # The radio lease's inherited descriptor belongs to a different resource.
-        from run_window import V1_RADIO_LEASE_FD_ENV
-        inherited = os.environ.pop(V1_RADIO_LEASE_FD_ENV, None)
         try:
-            try:
-                return super().__enter__()
-            except RuntimeError as exc:
-                raise Incomplete("Managed DUT lease unavailable: " + str(exc)) from exc
-        finally:
-            if inherited is not None:
-                os.environ[V1_RADIO_LEASE_FD_ENV] = inherited
+            return super().__enter__()
+        except RuntimeError as exc:
+            raise Incomplete("Managed DUT lease unavailable: " + str(exc)) from exc
 
 
 def qualify_candidate(args, directory: Path) -> dict:
@@ -297,10 +286,12 @@ class Runner:
                                      headless=not self.args.headed)
         self.browser.__enter__()
 
-    def save_display(self, patch: dict, label: str):
+    def save_display(self, patch: dict, label: str, *, require_change: bool = False):
         current = self.http.display()
         target = canonical_display({**current, **patch})
         if target == current:
+            if require_change:
+                raise Incomplete("Color trial requires a settings change before browser Save: " + label)
             return target
         self.journal.validate_display_change(current, patch)
         self.journal.display_intent(patch)
@@ -337,11 +328,17 @@ class Runner:
         atomic_json(self.directory / "observations.json", self.plan)
 
     def colors(self):
-        for name, color, bars, band in (("custom_a", "magenta", BARS_A, False),
-                                         ("custom_b", "cyan", BARS_B, False),
-                                         ("band_colors", "magenta", BARS_B, True)):
+        trials = [(name, trial_patch(color, bars, band_mode=band), bars, band)
+                  for name, color, bars, band in (("custom_a", "magenta", BARS_A, False),
+                                                  ("custom_b", "cyan", BARS_B, False),
+                                                  ("band_colors", "magenta", BARS_B, True))]
+        current = self.http.display()
+        if all(current[key] == value for key, value in trials[0][1].items()):
+            # Keep the three optical trials, but each must exercise a real Save.
+            trials = trials[1:] + trials[:1]
+        for name, patch, bars, band in trials:
             progress("checking saved colors: " + name)
-            target = self.save_display(trial_patch(color, bars, band_mode=band), name)
+            target = self.save_display(patch, name, require_change=True)
             self.preview(name + "_saved", target, bars, band)
             self.mode("normal")
             self.mode("maintenance")

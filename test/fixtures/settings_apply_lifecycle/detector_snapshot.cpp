@@ -33,9 +33,13 @@ class DriveRuntime {
   public:
     static DriveRuntime* callbackOwner_;
     static void onV1Connected();
+    void processStableDetector(bool requireLiveAddress);
+    void serviceDeferredConnectionAutoPush();
+    uint32_t pendingConnectionAutoPushSession_ = 0;
     uint32_t bootId_ = 17;
     struct AdmissionProbe {
         bool ownsConnection = false;
+        bool allowsOrdinaryAutoPush() const { return !ownsConnection; }
         SettingsOperationCoordinator::StableAdmission onStableConnection() {
             events.push_back("operation-admission");
             return ownsConnection ? SettingsOperationCoordinator::StableAdmission::OwnedOrBlocked
@@ -56,6 +60,8 @@ class DriveRuntime {
         std::vector<uint32_t> definitionBoundaries{100};
         mutable size_t boundaryReads = 0, copyCalls = 0;
         NimBLEAddress getConnectedAddress() const { return address; }
+        bool connected = true;
+        bool isConnected() const { return connected; }
         uint32_t sessionGeneration() const { return generation; }
         bool settingsCaptureTimedOut() const { events.push_back("capture"); return timedOut; }
         uint32_t v1FirmwareVersion() const { return firmware; }
@@ -114,6 +120,8 @@ class DriveRuntime {
         AutoPushSlot slot;
         String lastAddress;
         int requestedSlot = -1;
+        bool pendingRecovery = false;
+        bool recoveryPending() const { return pendingRecovery; }
         const V1Settings& get() const { return value; }
         void setLastV1Address(const String& address) { events.push_back("last-address"); lastAddress = address; }
         void requestLastV1AddressFallbackPersist(const String&) { events.push_back("fallback-persist"); }
@@ -446,6 +454,40 @@ static void test_fallback_and_absent_identity_paths() {
     eventsAre({"quiet", "operation-admission", "capture", "preapply", "slot"});
 }
 
+static void test_deferred_autopush_uses_recovered_slot_only_for_the_live_session() {
+    for (int condition = 0; condition < 5; ++condition) {
+        events.clear();
+        auto r = ready();
+        r.settings_.pendingRecovery = true;
+        equal(complete(r), connectionSnapshot(r));
+        TEST_ASSERT_EQUAL_INT(-1, r.autoPush_.queuedSlot);
+        TEST_ASSERT_EQUAL_INT(-1, r.display_.selected);
+        TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", r.devices_.recordedAddress.c_str());
+        r.serviceDeferredConnectionAutoPush();
+        TEST_ASSERT_EQUAL_UINT32(r.ble_.generation, r.pendingConnectionAutoPushSession_);
+        TEST_ASSERT_EQUAL_INT(-1, r.autoPush_.queuedSlot);
+
+        r.settings_.pendingRecovery = false;
+        r.settings_.value.activeSlot = 2;
+        if (condition == 1) ++r.ble_.generation;
+        if (condition == 2) r.ble_.connected = false;
+        if (condition == 3) r.settingsOperationCoordinator_.ownsConnection = true;
+        if (condition == 4) {
+            r.ble_.address.value.clear();
+            r.settings_.value.lastV1Address = "AA:BB:CC:DD:EE:FF";
+        }
+        events.clear();
+        r.serviceDeferredConnectionAutoPush();
+        TEST_ASSERT_EQUAL_UINT32(0, r.pendingConnectionAutoPushSession_);
+        TEST_ASSERT_EQUAL_INT(condition == 0 ? 2 : -1, r.autoPush_.queuedSlot);
+        TEST_ASSERT_EQUAL_INT(condition == 0 ? 2 : -1, r.display_.selected);
+        if (condition != 0) eventsAre({});
+        events.clear();
+        r.serviceDeferredConnectionAutoPush();
+        eventsAre({});
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_complete_mapping_and_connection_handoff);
@@ -459,5 +501,6 @@ int main() {
     RUN_TEST(test_connection_store_failure_stops_after_preapply_handoff);
     RUN_TEST(test_connection_slot_selection_and_disabled_autopush);
     RUN_TEST(test_fallback_and_absent_identity_paths);
+    RUN_TEST(test_deferred_autopush_uses_recovered_slot_only_for_the_live_session);
     return UNITY_END();
 }

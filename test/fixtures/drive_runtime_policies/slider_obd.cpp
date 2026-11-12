@@ -4,6 +4,7 @@
 #define main existing_obd_main
 #include "test/test_obd_runtime/test_obd_runtime.cpp"
 #undef main
+#include <optional>
 
 // OBD already includes the production settings types. Supply only the storage
 // and display boundaries needed by the real local-input owner.
@@ -21,11 +22,14 @@ class SettingsManager {
         result.success = true;
         return result;
     }
-    void updateBrightness(uint8_t value) { settings.brightness = value; }
-    void updateVoiceVolume(uint8_t value) { settings.voiceVolume = value; }
-    void requestDeferredPersist() {}
-    bool saveDeferredBackup() { return true; }
-    bool deferredPersistPending() const { return false; }
+    uint8_t localSliderBrightness() const { return settings.brightness; }
+    uint8_t localSliderVoiceVolume() const { return settings.voiceVolume; }
+    bool saveLocalSliderAdjustments(std::optional<uint8_t> brightness, std::optional<uint8_t> voiceVolume,
+                                    bool deferPersistence) {
+        if (brightness) settings.brightness = *brightness;
+        if (voiceVolume) settings.voiceVolume = *voiceVolume;
+        return !deferPersistence;
+    }
 };
 #include "test/mocks/runtime_presentation_source.h"
 #include "test/mocks/display.h"

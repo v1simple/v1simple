@@ -423,7 +423,12 @@ func syntheticBuffer(rate: Int32, frameOffset: Int, count: Int, pts: CMTime) thr
     guard CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &asbd,
         layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil,
         extensions: nil, formatDescriptionOut: &description) == noErr, let description else { throw AudioFailure.selfTest }
-    let samples = (0..<count).map { Int16((sin(Double(frameOffset + $0) * 2 * .pi * 440 / Double(rate)) * 10_000).rounded()) }
+    let samples = (0..<count).map { index -> Int16 in
+        let frame = Double(frameOffset + index)
+        let phase = frame * 2 * Double.pi * 440 / Double(rate)
+        let amplitude = sin(phase) * 10_000
+        return Int16(amplitude.rounded())
+    }
     var block: CMBlockBuffer?
     guard CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: nil,
         blockLength: count * 2, blockAllocator: kCFAllocatorDefault, customBlockSource: nil,
